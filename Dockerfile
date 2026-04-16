@@ -1,0 +1,48 @@
+# ContatoSync Evolution API - Dockerfile
+
+FROM node:18-alpine
+
+# Instalar dependências do sistema
+RUN apk add --no-cache \
+    python3 \
+    make \
+    g++ \
+    cairo-dev \
+    jpeg-dev \
+    pango-dev \
+    musl-dev \
+    giflib-dev \
+    pixman-dev \
+    pangomm-dev \
+    libjpeg-turbo-dev \
+    freetype-dev
+
+# Criar diretório da aplicação
+WORKDIR /app
+
+# Copiar arquivos de dependências
+COPY package*.json ./
+
+# Instalar dependências
+RUN npm ci --only=production
+
+# Copiar código fonte
+COPY src ./src
+
+# Criar usuário não-root
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodeuser -u 1001
+
+# Alterar ownership dos arquivos
+RUN chown -R nodeuser:nodejs /app
+USER nodeuser
+
+# Expor porta
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD node healthcheck.js
+
+# Comando de início
+CMD ["node", "src/server.js"]

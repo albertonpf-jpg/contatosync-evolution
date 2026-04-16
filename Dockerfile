@@ -26,8 +26,8 @@ COPY package*.json ./
 # Instalar dependências
 RUN npm ci --only=production
 
-# Copiar código fonte
-COPY src ./src
+# Copiar TUDO (exceto o que está no .dockerignore)
+COPY . .
 
 # Criar usuário não-root
 RUN addgroup -g 1001 -S nodejs && \
@@ -38,11 +38,11 @@ RUN chown -R nodeuser:nodejs /app
 USER nodeuser
 
 # Expor porta
-EXPOSE 3000
+EXPOSE 3003
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD node healthcheck.js
 
 # Comando de início
-CMD ["node", "src/server.js"]
+CMD ["node", "server-baileys.js"]

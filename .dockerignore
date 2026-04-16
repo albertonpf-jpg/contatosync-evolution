@@ -45,3 +45,13 @@ coverage
 Dockerfile
 .dockerignore
 docker-compose.yml
+docker-compose-evolution.yml
+
+# Frontend (deploy separado no Vercel)
+contatosync-evolution-frontend
+
+# Baileys sessions locais
+baileys_sessions
+
+# Mock files
+mock-*.js

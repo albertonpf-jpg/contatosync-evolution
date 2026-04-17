@@ -25,27 +25,58 @@ class BaileysService {
     try {
       console.log(`📱 Criando sessão Baileys: ${sessionName}`);
 
-      const sessionDir = path.join(this.authDir, sessionName);
-      const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-
-      const sock = makeWASocket({
-        auth: state,
-        printQRInTerminal: true,
-        browser: ['ContatoSync', 'Chrome', '1.0.0'],
-        logger: {
-          level: 'warn',
-          child: () => ({ level: 'warn', trace: () => {}, debug: () => {}, info: () => {}, warn: (...args) => console.log('⚠️ Baileys warn:', ...args), error: (...args) => console.error('❌ Baileys error:', ...args), fatal: (...args) => console.error('💀 Baileys fatal:', ...args) })
-        }
-      });
-
-      // Guardar referência da sessão
+      // Registrar sessão imediatamente (antes de conectar)
       this.sessions.set(sessionName, {
-        socket: sock,
-        saveCreds,
+        socket: null,
+        saveCreds: null,
         status: 'connecting',
         qrCode: null,
         createdAt: new Date()
       });
+
+      // Iniciar conexão em background (não bloqueia o request HTTP)
+      this._connectSession(sessionName, webhookUrl).catch(err => {
+        console.error(`❌ Erro background ao conectar ${sessionName}:`, err.message);
+        const session = this.sessions.get(sessionName);
+        if (session) session.status = 'error';
+      });
+
+      return {
+        sessionName,
+        status: 'created',
+        message: 'Sessão criada com sucesso'
+      };
+
+    } catch (error) {
+      console.error(`Erro ao criar sessão ${sessionName}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Conectar sessão em background (não-bloqueante)
+   */
+  async _connectSession(sessionName, webhookUrl = null) {
+    const sessionDir = path.join(this.authDir, sessionName);
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+
+    const sock = makeWASocket({
+      auth: state,
+      printQRInTerminal: true,
+      browser: ['ContatoSync', 'Chrome', '1.0.0'],
+      connectTimeoutMs: 60000,
+      logger: {
+        level: 'warn',
+        child: () => ({ level: 'warn', trace: () => {}, debug: () => {}, info: () => {}, warn: (...args) => console.log('⚠️ Baileys warn:', ...args), error: (...args) => console.error('❌ Baileys error:', ...args), fatal: (...args) => console.error('💀 Baileys fatal:', ...args) })
+      }
+    });
+
+    // Atualizar sessão com socket real
+    const session = this.sessions.get(sessionName);
+    if (session) {
+      session.socket = sock;
+      session.saveCreds = saveCreds;
+    }
 
       // Eventos do socket
       sock.ev.on('connection.update', async (update) => {
@@ -71,7 +102,7 @@ class BaileysService {
 
           if (shouldReconnect) {
             // Reconectar se não foi logout
-            setTimeout(() => this.createSession(sessionName, webhookUrl), 3000);
+            setTimeout(() => this._connectSession(sessionName, webhookUrl), 3000);
           } else {
             // Remover sessão se foi logout
             this.sessions.delete(sessionName);
@@ -89,17 +120,6 @@ class BaileysService {
 
       // Salvar credenciais quando atualizadas
       sock.ev.on('creds.update', saveCreds);
-
-      return {
-        sessionName,
-        status: 'created',
-        message: 'Sessão criada com sucesso'
-      };
-
-    } catch (error) {
-      console.error(`Erro ao criar sessão ${sessionName}:`, error);
-      throw error;
-    }
   }
 
   /**

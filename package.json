@@ -21,7 +21,7 @@
   "license": "MIT",
   "dependencies": {
     "@supabase/supabase-js": "^2.39.8",
-    "@whiskeysockets/baileys": "^7.0.0-rc.9",
+    "@whiskeysockets/baileys": "^6.6.0",
     "axios": "^1.6.7",
     "bcrypt": "^6.0.0",
     "bcryptjs": "^2.4.3",

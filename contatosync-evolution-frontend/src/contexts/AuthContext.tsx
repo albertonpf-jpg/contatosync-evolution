@@ -42,14 +42,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         try {
           const freshUserData = await apiService.getProfile();
           setUser(freshUserData);
-        } catch (error) {
+        } catch (error: unknown) {
           // Token inválido, limpar dados
           apiService.clearAuth();
           setToken(null);
           setUser(null);
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Erro ao verificar autenticação:', error);
     } finally {
       setIsLoading(false);

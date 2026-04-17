@@ -48,7 +48,7 @@ export default function ContactsPage() {
 
       setContacts(response.items || []);
       setTotalPages(Math.ceil((response.pagination?.total || 0) / 10));
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Erro ao carregar contatos:', error);
     } finally {
       setLoading(false);
@@ -61,7 +61,7 @@ export default function ContactsPage() {
     try {
       await apiService.deleteContact(contactId);
       loadContacts();
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Erro ao excluir contato:', error);
     }
   };

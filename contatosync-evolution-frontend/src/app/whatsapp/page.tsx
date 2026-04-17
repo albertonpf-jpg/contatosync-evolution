@@ -39,10 +39,11 @@ export default function WhatsAppPage() {
     try {
       const data = await apiService.getWhatsAppSessions();
       setSessions(data || []);
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Erro ao carregar sessões:', error);
       // Em caso de rate limiting, não mostrar erro para o usuário
-      if (error.response?.status !== 429) {
+      const axiosError = error as { response?: { status?: number } };
+      if (axiosError.response?.status !== 429) {
         console.error('Erro não relacionado ao rate limit:', error);
       }
     } finally {
@@ -55,7 +56,7 @@ export default function WhatsAppPage() {
       await apiService.createWhatsAppSession(sessionName);
       setShowNewSession(false);
       loadSessions();
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Erro ao criar sessão:', error);
     }
   };
@@ -66,7 +67,7 @@ export default function WhatsAppPage() {
     try {
       await apiService.deleteWhatsAppSession(session.session_name);
       loadSessions();
-    } catch (error) {
+    } catch (error: unknown) {
       console.error('Erro ao excluir sessão:', error);
     }
   };

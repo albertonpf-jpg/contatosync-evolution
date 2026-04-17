@@ -109,11 +109,14 @@ class BaileysService {
       throw new Error('Sessão não encontrada');
     }
 
-    // Limite de 3 tentativas para evitar recursão infinita
-    if (!qrCode && session.status === 'connecting' && _retries < 3) {
+    // Aumentado para 10 tentativas (20 segundos total) - Railway é mais lento
+    if (!qrCode && (session.status === 'connecting' || session.status === 'qr_ready') && _retries < 10) {
+      console.log(`⏳ Aguardando QR Code para ${sessionName}... tentativa ${_retries + 1}/10`);
       await new Promise(resolve => setTimeout(resolve, 2000));
       return this.getQRCode(sessionName, _retries + 1);
     }
+
+    console.log(`📱 getQRCode resultado: session=${sessionName}, hasQR=${!!qrCode}, status=${session.status}, retries=${_retries}`);
 
     return {
       base64: qrCode || null,

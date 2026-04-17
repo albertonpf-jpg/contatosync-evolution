@@ -50,7 +50,7 @@ export default function QRCodeModal({ session, onClose, onConnected }: QRCodeMod
     try {
       setCheckingStatus(true);
       const statusData = await apiService.getSessionStatus(session.session_name);
-      const newStatus = statusData.instance.state;
+      const newStatus = statusData?.instance?.state || statusData?.state || statusData?.status || 'close';
 
       if (newStatus !== status) {
         setStatus(newStatus);

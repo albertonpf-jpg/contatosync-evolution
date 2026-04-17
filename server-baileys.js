@@ -74,6 +74,28 @@ app.get('/debug/baileys', (req, res) => {
   });
 });
 
+// Capturar logs em buffer para debug remoto
+const logBuffer = [];
+const originalLog = console.log;
+const originalError = console.error;
+console.log = (...args) => {
+  const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+  logBuffer.push({ t: Date.now(), level: 'log', msg });
+  if (logBuffer.length > 200) logBuffer.shift();
+  originalLog.apply(console, args);
+};
+console.error = (...args) => {
+  const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
+  logBuffer.push({ t: Date.now(), level: 'error', msg });
+  if (logBuffer.length > 200) logBuffer.shift();
+  originalError.apply(console, args);
+};
+
+app.get('/debug/logs', (req, res) => {
+  const last = parseInt(req.query.last) || 50;
+  res.json(logBuffer.slice(-last));
+});
+
 // Rotas públicas
 app.use('/api/auth', authRoutes);
 app.use('/api/webhooks', webhooksRoutes);

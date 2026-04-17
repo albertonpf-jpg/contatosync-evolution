@@ -57,26 +57,28 @@ class BaileysService {
    * Conectar sessão em background (não-bloqueante)
    */
   async _connectSession(sessionName, webhookUrl = null) {
-    const sessionDir = path.join(this.authDir, sessionName);
-    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    try {
+      console.log(`🔌 _connectSession iniciando para: ${sessionName}`);
+      const sessionDir = path.join(this.authDir, sessionName);
+      console.log(`📁 Session dir: ${sessionDir}`);
+      
+      const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+      console.log(`✅ Auth state carregado para: ${sessionName}`);
 
-    const sock = makeWASocket({
-      auth: state,
-      printQRInTerminal: true,
-      browser: ['ContatoSync', 'Chrome', '1.0.0'],
-      connectTimeoutMs: 60000,
-      logger: {
-        level: 'warn',
-        child: () => ({ level: 'warn', trace: () => {}, debug: () => {}, info: () => {}, warn: (...args) => console.log('⚠️ Baileys warn:', ...args), error: (...args) => console.error('❌ Baileys error:', ...args), fatal: (...args) => console.error('💀 Baileys fatal:', ...args) })
+      const sock = makeWASocket({
+        auth: state,
+        printQRInTerminal: true,
+        browser: ['ContatoSync', 'Chrome', '1.0.0'],
+        connectTimeoutMs: 60000
+      });
+      console.log(`✅ Socket criado para: ${sessionName}`);
+
+      // Atualizar sessão com socket real
+      const session = this.sessions.get(sessionName);
+      if (session) {
+        session.socket = sock;
+        session.saveCreds = saveCreds;
       }
-    });
-
-    // Atualizar sessão com socket real
-    const session = this.sessions.get(sessionName);
-    if (session) {
-      session.socket = sock;
-      session.saveCreds = saveCreds;
-    }
 
       // Eventos do socket
       sock.ev.on('connection.update', async (update) => {
@@ -120,6 +122,12 @@ class BaileysService {
 
       // Salvar credenciais quando atualizadas
       sock.ev.on('creds.update', saveCreds);
+      console.log(`✅ Eventos registrados para: ${sessionName}`);
+    } catch (err) {
+      console.error(`💀 _connectSession CRASH para ${sessionName}:`, err.message, err.stack);
+      const session = this.sessions.get(sessionName);
+      if (session) session.status = 'error';
+    }
   }
 
   /**

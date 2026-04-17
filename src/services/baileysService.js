@@ -21,9 +21,12 @@ class BaileysService {
     this.sessions = new Map();
     this.qrCodes = new Map();
     this.authDir = path.join(__dirname, '../../baileys_sessions');
-    if (!fs.existsSync(this.authDir)) {
-      fs.mkdirSync(this.authDir, { recursive: true });
+    // Limpar sessões antigas no startup (Railway reseta filesystem)
+    if (fs.existsSync(this.authDir)) {
+      fs.rmSync(this.authDir, { recursive: true, force: true });
     }
+    fs.mkdirSync(this.authDir, { recursive: true });
+    console.log('🧹 Baileys sessions dir limpo no startup');
   }
 
   async createSession(sessionName, webhookUrl = null) {
@@ -59,7 +62,8 @@ class BaileysService {
         auth: state,
         printQRInTerminal: false,
         logger: makeSilentLogger(),
-        browser: ['ContatoSync', 'Chrome', '120.0.0']
+        browser: ['ContatoSync', 'Chrome', '120.0.0'],
+        connectTimeoutMs: 60000
       });
 
       const session = this.sessions.get(sessionName);

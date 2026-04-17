@@ -68,8 +68,9 @@ class BaileysService {
       const sock = makeWASocket({
         auth: state,
         printQRInTerminal: true,
-        browser: ['ContatoSync', 'Chrome', '1.0.0'],
-        connectTimeoutMs: 60000
+        browser: ['Ubuntu', 'Chrome', '20.0.04'],
+        connectTimeoutMs: 60000,
+        retryRequestDelayMs: 500
       });
       console.log(`✅ Socket criado para: ${sessionName}`);
 

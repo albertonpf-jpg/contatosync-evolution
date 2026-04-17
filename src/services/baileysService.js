@@ -30,8 +30,12 @@ class BaileysService {
 
       const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false,
-        browser: ['ContatoSync', 'Chrome', '1.0.0']
+        printQRInTerminal: true,
+        browser: ['ContatoSync', 'Chrome', '1.0.0'],
+        logger: {
+          level: 'warn',
+          child: () => ({ level: 'warn', trace: () => {}, debug: () => {}, info: () => {}, warn: (...args) => console.log('⚠️ Baileys warn:', ...args), error: (...args) => console.error('❌ Baileys error:', ...args), fatal: (...args) => console.error('💀 Baileys fatal:', ...args) })
+        }
       });
 
       // Guardar referência da sessão

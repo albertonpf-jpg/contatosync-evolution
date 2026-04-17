@@ -56,6 +56,24 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Debug endpoint para verificar estado do Baileys
+app.get('/debug/baileys', (req, res) => {
+  const baileysService = require('./src/services/baileysService');
+  const sessions = baileysService.getAllSessions();
+  const qrCodes = {};
+  for (const [name, qr] of baileysService.qrCodes.entries()) {
+    qrCodes[name] = qr ? `data:image... (${qr.length} chars)` : null;
+  }
+  res.json({
+    totalSessions: sessions.length,
+    sessions,
+    qrCodesAvailable: Object.keys(qrCodes),
+    qrCodesDetail: qrCodes,
+    memoryUsage: process.memoryUsage(),
+    uptime: process.uptime()
+  });
+});
+
 // Rotas públicas
 app.use('/api/auth', authRoutes);
 app.use('/api/webhooks', webhooksRoutes);

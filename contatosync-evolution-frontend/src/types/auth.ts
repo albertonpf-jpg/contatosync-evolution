@@ -3,11 +3,16 @@ export interface User {
   email: string;
   name: string;
   company?: string;
+  company_name?: string;
   phone?: string;
   plan: 'basic' | 'pro' | 'enterprise';
   status: 'active' | 'inactive' | 'trial' | 'suspended';
-  ai_enabled: boolean;
+  ai_enabled?: boolean;
+  total_contacts_saved?: number;
+  total_messages_sent?: number;
+  total_ai_responses?: number;
   created_at: string;
+  updated_at?: string;
 }
 
 export interface LoginCredentials {

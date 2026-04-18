@@ -51,8 +51,6 @@ export default function QRCodeModal({ session, onClose, onConnected }: QRCodeMod
       setCheckingStatus(true);
       const statusData = await apiService.getSessionStatus(session.session_name);
 
-      console.log('Status data recebida:', statusData);
-
       // Verificar se está conectado - múltiplas possibilidades
       const isConnected =
         statusData?.state === 'open' ||
@@ -60,8 +58,6 @@ export default function QRCodeModal({ session, onClose, onConnected }: QRCodeMod
         statusData?.instance?.state === 'open';
 
       const newStatus = isConnected ? 'open' : (statusData?.state || statusData?.status || 'close');
-
-      console.log('Status atual:', status, '-> Novo status:', newStatus, 'isConnected:', isConnected);
 
       if (newStatus !== status) {
         setStatus(newStatus);
@@ -240,7 +236,7 @@ export default function QRCodeModal({ session, onClose, onConnected }: QRCodeMod
               </div>
 
               {/* Refresh Button */}
-              <div className="flex justify-center space-x-3">
+              <div className="flex justify-center">
                 <button
                   onClick={handleRefresh}
                   disabled={loading}
@@ -248,29 +244,6 @@ export default function QRCodeModal({ session, onClose, onConnected }: QRCodeMod
                 >
                   <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
                   Atualizar QR Code
-                </button>
-
-                {/* Debug: Forçar verificação */}
-                <button
-                  onClick={() => {
-                    console.log('🔍 Forçando verificação de status...');
-                    checkStatus();
-                  }}
-                  className="inline-flex items-center px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                >
-                  🔍 Debug Status
-                </button>
-
-                {/* Debug: Simular conectado */}
-                <button
-                  onClick={() => {
-                    console.log('🧪 Simulando conexão...');
-                    setStatus('open');
-                    setTimeout(() => onConnected(), 500);
-                  }}
-                  className="inline-flex items-center px-3 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700"
-                >
-                  🧪 Testar Fechamento
                 </button>
               </div>
             </div>

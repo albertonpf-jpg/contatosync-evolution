@@ -151,20 +151,15 @@ class BaileysService {
     // Verificar se socket ainda existe e está conectado
     let actualStatus = session.status;
 
-    // Verificação correta para Baileys v6.6.0
-    if (session.status === 'connected') {
-      // Verificar se socket e ws existem (readyState é undefined no v6.6.0)
-      const socketExists = session.socket && session.socket.ws;
-
-      if (!socketExists) {
-        console.log(`⚠️ Socket ${sessionName} não existe, updating status`);
-        session.status = 'disconnected';
-        actualStatus = 'disconnected';
-      } else {
-        // Verificação adicional: tentar ping ativo (a cada 30s max)
-        this._verifyActiveConnection(sessionName);
-      }
-    }
+    // REMOVER verificação por enquanto - está dando falso positivo
+    // if (session.status === 'connected') {
+    //   const socketExists = session.socket && session.socket.ws;
+    //   if (!socketExists) {
+    //     console.log(`⚠️ Socket ${sessionName} não existe, updating status`);
+    //     session.status = 'disconnected';
+    //     actualStatus = 'disconnected';
+    //   }
+    // }
 
     let state = 'close';
     if (actualStatus === 'connected') state = 'open';

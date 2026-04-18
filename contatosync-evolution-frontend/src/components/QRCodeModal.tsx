@@ -21,10 +21,10 @@ export default function QRCodeModal({ session, onClose, onConnected }: QRCodeMod
   useEffect(() => {
     loadQRCode();
 
-    // Verificar status a cada 3 segundos
+    // Verificar status a cada 1 segundo (mais agressivo)
     const statusInterval = setInterval(() => {
       checkStatus();
-    }, 3000);
+    }, 1000);
 
     return () => clearInterval(statusInterval);
   }, []);
@@ -240,7 +240,7 @@ export default function QRCodeModal({ session, onClose, onConnected }: QRCodeMod
               </div>
 
               {/* Refresh Button */}
-              <div className="flex justify-center">
+              <div className="flex justify-center space-x-3">
                 <button
                   onClick={handleRefresh}
                   disabled={loading}
@@ -248,6 +248,29 @@ export default function QRCodeModal({ session, onClose, onConnected }: QRCodeMod
                 >
                   <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
                   Atualizar QR Code
+                </button>
+
+                {/* Debug: Forçar verificação */}
+                <button
+                  onClick={() => {
+                    console.log('🔍 Forçando verificação de status...');
+                    checkStatus();
+                  }}
+                  className="inline-flex items-center px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  🔍 Debug Status
+                </button>
+
+                {/* Debug: Simular conectado */}
+                <button
+                  onClick={() => {
+                    console.log('🧪 Simulando conexão...');
+                    setStatus('open');
+                    setTimeout(() => onConnected(), 500);
+                  }}
+                  className="inline-flex items-center px-3 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700"
+                >
+                  🧪 Testar Fechamento
                 </button>
               </div>
             </div>

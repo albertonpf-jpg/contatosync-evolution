@@ -133,8 +133,7 @@ app.put('/internal/sessions/:sessionName/status', async (req, res) => {
       .update({
         status: status,
         last_seen: timestamp,
-        updated_at: timestamp,
-        disconnect_reason: reason
+        updated_at: timestamp
       })
       .eq('session_name', sessionName);
 

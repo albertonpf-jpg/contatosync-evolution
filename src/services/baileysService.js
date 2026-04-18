@@ -149,10 +149,23 @@ class BaileysService {
 
     // Verificar se socket ainda existe e está conectado
     let actualStatus = session.status;
-    if (session.status === 'connected' && (!session.socket || session.socket.ws?.readyState !== 1)) {
-      console.log(`⚠️ Socket ${sessionName} disconnected, updating status`);
-      session.status = 'disconnected';
-      actualStatus = 'disconnected';
+
+    // DEBUG: verificar estrutura do socket
+    if (session.status === 'connected') {
+      console.log(`🔍 Socket debug ${sessionName}:`, {
+        hasSocket: !!session.socket,
+        socketType: typeof session.socket,
+        hasWs: !!session.socket?.ws,
+        wsReadyState: session.socket?.ws?.readyState,
+        socketKeys: session.socket ? Object.keys(session.socket).slice(0, 10) : 'no socket'
+      });
+
+      // TEMPORARIAMENTE: não verificar readyState até identificar estrutura correta
+      // if (session.status === 'connected' && (!session.socket || session.socket.ws?.readyState !== 1)) {
+      //   console.log(`⚠️ Socket ${sessionName} disconnected, updating status`);
+      //   session.status = 'disconnected';
+      //   actualStatus = 'disconnected';
+      // }
     }
 
     let state = 'close';

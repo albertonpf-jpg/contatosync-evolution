@@ -28,6 +28,52 @@ class BaileysService {
     }
     fs.mkdirSync(this.authDir, { recursive: true });
     console.log('🧹 Baileys sessions dir limpo no startup');
+
+    // Iniciar heartbeat para verificar conexões ativas
+    this.startHeartbeat();
+  }
+
+  startHeartbeat() {
+    // Verificar todas as sessões a cada 60 segundos
+    setInterval(() => {
+      this.checkAllConnections();
+    }, 60000);
+    console.log('💓 Heartbeat iniciado - verificação a cada 60s');
+  }
+
+  async checkAllConnections() {
+    for (const [sessionName, session] of this.sessions.entries()) {
+      if (session.status === 'connected') {
+        await this.testConnection(sessionName);
+      }
+    }
+  }
+
+  async testConnection(sessionName) {
+    const session = this.sessions.get(sessionName);
+    if (!session || session.status !== 'connected') return;
+
+    try {
+      console.log(`🔍 Testando conexão ${sessionName}...`);
+
+      // Tentar acessar informações básicas que falham se desconectado
+      if (!session.socket || !session.socket.user || !session.socket.user.id) {
+        throw new Error('Socket ou user info não disponível');
+      }
+
+      console.log(`✅ Conexão ${sessionName} ativa`);
+
+      // Marcar última verificação bem-sucedida
+      session.lastHeartbeat = new Date().toISOString();
+
+    } catch (error) {
+      console.log(`❌ Conexão ${sessionName} falhou no teste:`, error.message);
+      console.log(`🔄 Marcando ${sessionName} como desconectado`);
+
+      // Marcar como desconectado
+      session.status = 'disconnected';
+      session.lastError = error.message;
+    }
   }
 
   async createSession(sessionName, webhookUrl = null) {

@@ -86,17 +86,29 @@ class BaileysService {
         if (connection === 'close') {
           const code = lastDisconnect?.error?.output?.statusCode;
           const shouldReconnect = code !== DisconnectReason.loggedOut;
-          console.log(`Conexão fechada ${sessionName}, code=${code}, reconnect=${shouldReconnect}`);
+          console.log(`❌ Conexão fechada ${sessionName}, code=${code}, reconnect=${shouldReconnect}`);
+
+          // SEMPRE atualizar status para disconnected quando connection fecha
+          if (s) {
+            s.status = 'disconnected';
+            s.qrCode = null;
+          }
+          this.qrCodes.delete(sessionName);
+
           if (shouldReconnect) {
+            console.log(`🔄 Tentando reconectar ${sessionName} em 3s...`);
             setTimeout(() => this._connectSession(sessionName, webhookUrl), 3000);
           } else {
+            console.log(`🚫 ${sessionName} foi deslogado - removendo sessão`);
             this.sessions.delete(sessionName);
-            this.qrCodes.delete(sessionName);
           }
         } else if (connection === 'open') {
           console.log(`✅ Sessão ${sessionName} conectada!`);
           if (s) { s.status = 'connected'; s.qrCode = null; }
           this.qrCodes.delete(sessionName);
+        } else if (connection === 'connecting') {
+          console.log(`🔄 ${sessionName} conectando...`);
+          if (s) { s.status = 'connecting'; }
         }
       });
 
@@ -124,10 +136,27 @@ class BaileysService {
   getSessionStatus(sessionName) {
     const session = this.sessions.get(sessionName);
     if (!session) return { sessionName, status: 'not_found', state: 'close' };
+
+    // Verificar se socket ainda existe e está conectado
+    let actualStatus = session.status;
+    if (session.status === 'connected' && (!session.socket || session.socket.ws?.readyState !== 1)) {
+      console.log(`⚠️ Socket ${sessionName} disconnected, updating status`);
+      session.status = 'disconnected';
+      actualStatus = 'disconnected';
+    }
+
     let state = 'close';
-    if (session.status === 'connected') state = 'open';
-    else if (session.status === 'connecting' || session.status === 'qr_ready') state = 'connecting';
-    return { sessionName, status: session.status, state, hasQR: !!session.qrCode, createdAt: session.createdAt };
+    if (actualStatus === 'connected') state = 'open';
+    else if (actualStatus === 'connecting' || actualStatus === 'qr_ready') state = 'connecting';
+
+    return {
+      sessionName,
+      status: actualStatus,
+      state,
+      hasQR: !!session.qrCode,
+      createdAt: session.createdAt,
+      socketState: session.socket?.ws?.readyState || 'no_socket'
+    };
   }
 
   async sendTextMessage(sessionName, phone, message) {
@@ -141,9 +170,25 @@ class BaileysService {
   getAllSessions() {
     const sessions = [];
     for (const [name, session] of this.sessions.entries()) {
-      sessions.push({ sessionName: name, status: session.status, hasQR: !!session.qrCode, createdAt: session.createdAt });
+      // Verificar status real de cada sessão
+      const statusInfo = this.getSessionStatus(name);
+      sessions.push({
+        sessionName: name,
+        status: statusInfo.status,
+        state: statusInfo.state,
+        hasQR: !!session.qrCode,
+        createdAt: session.createdAt
+      });
     }
     return sessions;
+  }
+
+  // Método para verificar e corrigir status de todas as sessões
+  verifyAllSessions() {
+    console.log('🔍 Verificando status de todas as sessões...');
+    for (const [sessionName] of this.sessions.entries()) {
+      this.getSessionStatus(sessionName); // Isso atualiza o status se necessário
+    }
   }
 
   async deleteSession(sessionName) {

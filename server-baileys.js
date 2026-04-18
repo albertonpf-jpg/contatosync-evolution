@@ -59,6 +59,10 @@ app.get('/health', (req, res) => {
 // Debug endpoint para verificar estado do Baileys
 app.get('/debug/baileys', (req, res) => {
   const baileysService = require('./src/services/baileysService');
+
+  // Verificar status real de todas as sessões
+  baileysService.verifyAllSessions();
+
   const sessions = baileysService.getAllSessions();
   const qrCodes = {};
   for (const [name, qr] of baileysService.qrCodes.entries()) {

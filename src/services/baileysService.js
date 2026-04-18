@@ -108,6 +108,7 @@ class BaileysService {
           if (s) {
             s.status = 'connected';
             s.qrCode = null;
+            s.lastActivity = new Date().toISOString(); // Marcar atividade
             console.log(`🗑️ QR Code removido para ${sessionName}`);
           }
           this.qrCodes.delete(sessionName);
@@ -211,39 +212,37 @@ class BaileysService {
     }
   }
 
-  // Verificação ativa de conexão (ping test)
+  // Verificação ativa de conexão (timeout detection)
   _verifyActiveConnection(sessionName) {
     const session = this.sessions.get(sessionName);
     if (!session || session.status !== 'connected') return;
 
-    // Evitar ping muito frequente
+    // Evitar verificação muito frequente
     const now = Date.now();
-    if (session.lastPing && (now - session.lastPing) < 30000) return; // 30s interval
-    session.lastPing = now;
+    if (session.lastCheck && (now - session.lastCheck) < 30000) return; // 30s interval
+    session.lastCheck = now;
 
-    console.log(`🏓 Ping test para ${sessionName}...`);
+    console.log(`🔍 Verificação timeout para ${sessionName}...`);
 
-    try {
-      // Tentar uma operação simples que falhará se desconectado
-      session.socket.query({
-        tag: 'iq',
-        attrs: { type: 'get', xmlns: 'w:sync:app:state' },
-        content: []
-      }).then((result) => {
-        console.log(`✅ Ping OK para ${sessionName}`);
-        // Conexão está ativa
-      }).catch((error) => {
-        console.log(`❌ Ping falhou para ${sessionName}:`, error.message);
-        // Marcar como desconectado
-        if (session.status === 'connected') {
-          console.log(`🔄 Marcando ${sessionName} como desconectado devido a ping failure`);
+    // Verificar se há atividade recente (ex: última mensagem, evento)
+    const lastActivity = session.lastActivity || session.createdAt;
+    const timeSinceActivity = now - new Date(lastActivity).getTime();
+
+    // Se não há atividade há mais de 5 minutos, considerar suspeito
+    if (timeSinceActivity > 300000) { // 5 minutos
+      console.log(`⏰ ${sessionName} sem atividade há ${Math.round(timeSinceActivity/1000/60)}min`);
+
+      // Tentar um teste mais simples - verificar se user info ainda existe
+      try {
+        if (session.socket && session.socket.user) {
+          console.log(`✅ User info OK para ${sessionName}`);
+          session.lastActivity = new Date().toISOString();
+        } else {
+          console.log(`❌ User info perdido para ${sessionName}, marcando como desconectado`);
           session.status = 'disconnected';
         }
-      });
-    } catch (error) {
-      console.log(`❌ Erro no ping test ${sessionName}:`, error.message);
-      // Socket não responde, marcar como desconectado
-      if (session.status === 'connected') {
+      } catch (error) {
+        console.log(`❌ Erro verificando user info ${sessionName}:`, error.message);
         session.status = 'disconnected';
       }
     }

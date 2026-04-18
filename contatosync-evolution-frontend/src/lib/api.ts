@@ -5,8 +5,23 @@ class ApiService {
   private api: AxiosInstance;
 
   constructor() {
+    // Auto-detectar URL da API baseado no ambiente
+    const getApiUrl = () => {
+      if (process.env.NEXT_PUBLIC_API_URL) {
+        return process.env.NEXT_PUBLIC_API_URL;
+      }
+
+      // Em produção, usar Railway URL
+      if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {
+        return 'https://web-production-50297.up.railway.app/api';
+      }
+
+      // Local development
+      return 'http://localhost:3003/api';
+    };
+
     this.api = axios.create({
-      baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3003/api',
+      baseURL: getApiUrl(),
       headers: {
         'Content-Type': 'application/json',
       },

@@ -147,6 +147,9 @@ class BaileysService {
           } else {
             console.log(`🚫 ${sessionName} foi deslogado - removendo sessão`);
             this.sessions.delete(sessionName);
+
+            // ATUALIZAR BANCO: marcar como desconectado
+            this._updateDatabaseStatus(sessionName, 'disconnected', 'logout');
           }
         } else if (connection === 'open') {
           console.log(`✅ Sessão ${sessionName} conectada!`);
@@ -313,6 +316,30 @@ class BaileysService {
     // Aguardar um pouco e retornar status atualizado
     await new Promise(resolve => setTimeout(resolve, 1000));
     return this.getSessionStatus(sessionName);
+  }
+
+  // Atualizar status no banco de dados
+  async _updateDatabaseStatus(sessionName, status, reason = 'unknown') {
+    try {
+      console.log(`📊 Atualizando banco: ${sessionName} → ${status} (${reason})`);
+
+      // Como não temos acesso direto ao Supabase aqui, vamos usar um endpoint interno
+      // Alternativa: emitir evento para ser capturado pelo endpoint
+      const axios = require('axios');
+
+      // URL interna para atualizar status (mesmo servidor)
+      const response = await axios.put(`http://localhost:${process.env.PORT || 3003}/internal/sessions/${sessionName}/status`, {
+        status: status,
+        reason: reason,
+        timestamp: new Date().toISOString()
+      });
+
+      console.log(`✅ Banco atualizado para ${sessionName}: ${status}`);
+
+    } catch (error) {
+      console.error(`❌ Erro atualizando banco ${sessionName}:`, error.message);
+      // Não falhar o processo principal se banco falha
+    }
   }
 }
 

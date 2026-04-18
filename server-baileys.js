@@ -113,6 +113,45 @@ app.get('/debug/ping/:sessionName', async (req, res) => {
   }
 });
 
+// Endpoint interno para atualizar status no banco
+app.put('/internal/sessions/:sessionName/status', async (req, res) => {
+  const { sessionName } = req.params;
+  const { status, reason, timestamp } = req.body;
+
+  try {
+    const { executeWithRLS } = require('./src/config/supabase');
+    const { createClient } = require('@supabase/supabase-js');
+
+    // Usar service role para acesso interno
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE
+    );
+
+    const { error } = await supabase
+      .from('evolution_sessions')
+      .update({
+        status: status,
+        last_seen: timestamp,
+        updated_at: timestamp,
+        disconnect_reason: reason
+      })
+      .eq('session_name', sessionName);
+
+    if (error) {
+      console.error('Erro atualizando banco:', error);
+      return res.status(500).json({ error: error.message });
+    }
+
+    console.log(`✅ Banco atualizado: ${sessionName} → ${status}`);
+    res.json({ success: true, sessionName, status });
+
+  } catch (error) {
+    console.error('Erro endpoint interno:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Rotas públicas
 app.use('/api/auth', authRoutes);
 app.use('/api/webhooks', webhooksRoutes);

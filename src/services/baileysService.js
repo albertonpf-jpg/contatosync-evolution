@@ -104,8 +104,18 @@ class BaileysService {
           }
         } else if (connection === 'open') {
           console.log(`✅ Sessão ${sessionName} conectada!`);
-          if (s) { s.status = 'connected'; s.qrCode = null; }
+          console.log(`🔄 Status sendo atualizado: ${s?.status} -> connected`);
+          if (s) {
+            s.status = 'connected';
+            s.qrCode = null;
+            console.log(`🗑️ QR Code removido para ${sessionName}`);
+          }
           this.qrCodes.delete(sessionName);
+          console.log(`📱 Estado final da sessão ${sessionName}:`, {
+            status: s?.status,
+            hasQrCode: !!s?.qrCode,
+            socketState: sock?.ws?.readyState
+          });
         } else if (connection === 'connecting') {
           console.log(`🔄 ${sessionName} conectando...`);
           if (s) { s.status = 'connecting'; }

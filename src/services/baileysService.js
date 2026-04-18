@@ -2,18 +2,19 @@ const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 
+// Importação direta CommonJS igual ao ContatoSync original
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore
+} = require('@whiskeysockets/baileys');
+
 // Silent logger igual ao ContatoSync original
 function makeSilentLogger() {
   const noop = () => {};
   return { level: 'silent', trace: noop, debug: noop, info: noop, warn: noop, error: noop, fatal: noop, child: () => makeSilentLogger() };
-}
-
-// Dynamic import (ESM) igual ao ContatoSync original
-let baileysModule = null;
-async function loadBaileys() {
-  if (baileysModule) return baileysModule;
-  baileysModule = await import('@whiskeysockets/baileys');
-  return baileysModule;
 }
 
 class BaileysService {
@@ -49,7 +50,6 @@ class BaileysService {
 
   async _connectSession(sessionName, webhookUrl = null) {
     try {
-      const { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = await loadBaileys();
       const sessionDir = path.join(this.authDir, sessionName);
       if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
 
@@ -59,9 +59,12 @@ class BaileysService {
 
       const sock = makeWASocket({
         version,
-        auth: state,
-        printQRInTerminal: false,
         logger: makeSilentLogger(),
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, makeSilentLogger()),
+        },
+        printQRInTerminal: false,
         browser: ['ContatoSync', 'Chrome', '120.0.0'],
         connectTimeoutMs: 60000
       });

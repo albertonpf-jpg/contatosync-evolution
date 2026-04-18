@@ -100,6 +100,19 @@ app.get('/debug/logs', (req, res) => {
   res.json(logBuffer.slice(-last));
 });
 
+// Debug endpoint para forçar verificação de sessão específica
+app.get('/debug/ping/:sessionName', async (req, res) => {
+  const baileysService = require('./src/services/baileysService');
+  const { sessionName } = req.params;
+
+  try {
+    const result = await baileysService.forceCheckConnection(sessionName);
+    res.json({ sessionName, result });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Rotas públicas
 app.use('/api/auth', authRoutes);
 app.use('/api/webhooks', webhooksRoutes);

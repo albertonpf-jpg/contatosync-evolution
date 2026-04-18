@@ -159,6 +159,9 @@ class BaileysService {
         console.log(`⚠️ Socket ${sessionName} não existe, updating status`);
         session.status = 'disconnected';
         actualStatus = 'disconnected';
+      } else {
+        // Verificação adicional: tentar ping ativo (a cada 30s max)
+        this._verifyActiveConnection(sessionName);
       }
     }
 
@@ -208,6 +211,44 @@ class BaileysService {
     }
   }
 
+  // Verificação ativa de conexão (ping test)
+  _verifyActiveConnection(sessionName) {
+    const session = this.sessions.get(sessionName);
+    if (!session || session.status !== 'connected') return;
+
+    // Evitar ping muito frequente
+    const now = Date.now();
+    if (session.lastPing && (now - session.lastPing) < 30000) return; // 30s interval
+    session.lastPing = now;
+
+    console.log(`🏓 Ping test para ${sessionName}...`);
+
+    try {
+      // Tentar uma operação simples que falhará se desconectado
+      session.socket.query({
+        tag: 'iq',
+        attrs: { type: 'get', xmlns: 'w:sync:app:state' },
+        content: []
+      }).then((result) => {
+        console.log(`✅ Ping OK para ${sessionName}`);
+        // Conexão está ativa
+      }).catch((error) => {
+        console.log(`❌ Ping falhou para ${sessionName}:`, error.message);
+        // Marcar como desconectado
+        if (session.status === 'connected') {
+          console.log(`🔄 Marcando ${sessionName} como desconectado devido a ping failure`);
+          session.status = 'disconnected';
+        }
+      });
+    } catch (error) {
+      console.log(`❌ Erro no ping test ${sessionName}:`, error.message);
+      // Socket não responde, marcar como desconectado
+      if (session.status === 'connected') {
+        session.status = 'disconnected';
+      }
+    }
+  }
+
   async deleteSession(sessionName) {
     const session = this.sessions.get(sessionName);
     if (session && session.socket) { try { session.socket.end(); } catch(e) {} }
@@ -216,6 +257,22 @@ class BaileysService {
     const sessionDir = path.join(this.authDir, sessionName);
     if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true });
     return { success: true, message: 'Sessão deletada' };
+  }
+
+  // Método manual para forçar verificação de conexão
+  async forceCheckConnection(sessionName) {
+    const session = this.sessions.get(sessionName);
+    if (!session) return { error: 'Sessão não encontrada' };
+
+    console.log(`🔍 Verificação forçada para ${sessionName}`);
+
+    // Reset do timestamp para forçar ping
+    session.lastPing = 0;
+    this._verifyActiveConnection(sessionName);
+
+    // Aguardar um pouco e retornar status atualizado
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    return this.getSessionStatus(sessionName);
   }
 }
 

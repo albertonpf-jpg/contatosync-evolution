@@ -23,8 +23,8 @@ WORKDIR /app
 # Copiar arquivos de dependências
 COPY package*.json ./
 
-# Instalar dependências
-RUN npm ci --only=production
+# Instalar dependências - usar npm install com legacy-peer-deps
+RUN npm install --only=production --legacy-peer-deps
 
 # Copiar TUDO (exceto o que está no .dockerignore)
 COPY . .

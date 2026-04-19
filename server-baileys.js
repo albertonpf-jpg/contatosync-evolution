@@ -130,13 +130,13 @@ app.get('/debug/qr/:sessionName?', async (req, res) => {
     const qr = await baileysService.getQRCode(sessionName);
 
     if (qr.base64) {
-      res.send(\`
+      res.send(`
         <html>
           <body style="text-align: center; font-family: Arial;">
             <h2>📱 WhatsApp QR Code - ContatoSync</h2>
-            <p><strong>Sessão:</strong> \${sessionName}</p>
-            <p><strong>Status:</strong> \${qr.status}</p>
-            <img src="\${qr.base64}" alt="QR Code" style="max-width: 400px; border: 2px solid #25D366;">
+            <p><strong>Sessão:</strong> ${sessionName}</p>
+            <p><strong>Status:</strong> ${qr.status}</p>
+            <img src="${qr.base64}" alt="QR Code" style="max-width: 400px; border: 2px solid #25D366;">
             <h3>INSTRUÇÕES:</h3>
             <ol style="text-align: left; max-width: 400px; margin: 0 auto;">
               <li>Abra WhatsApp no celular</li>
@@ -149,7 +149,7 @@ app.get('/debug/qr/:sessionName?', async (req, res) => {
             </p>
           </body>
         </html>
-      \`);
+      `);
     } else {
       res.json({
         error: 'QR Code não disponível',

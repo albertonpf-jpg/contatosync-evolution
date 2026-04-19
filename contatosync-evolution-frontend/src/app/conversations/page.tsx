@@ -1,276 +1,65 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { MessageSquare, Send, Search, Phone, User, Clock, ChevronRight } from 'lucide-react';
-import { apiService } from '@/lib/api';
+import { MessageSquare } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 
-interface Contact {
-  id: string;
-  name: string;
-  phone: string;
-  email?: string;
-}
-
-interface Conversation {
-  id: string;
-  client_id: string;
-  contact_id: string;
-  status: 'active' | 'inactive' | 'archived';
-  last_message_at: string;
-  created_at: string;
-  evolution_contacts: Contact;
-  last_message?: {
-    content: string;
-    created_at: string;
-  };
-}
-
-interface Message {
-  id: string;
-  conversation_id: string;
-  content: string;
-  direction: 'in' | 'out';
-  status: 'sent' | 'delivered' | 'read';
-  created_at: string;
-}
-
 export default function ConversationsPage() {
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    loadConversations();
+    // Simular carregamento sem API calls
+    setTimeout(() => {
+      setLoading(false);
+      console.log('Conversas página carregada com sucesso');
+    }, 1000);
   }, []);
 
-  useEffect(() => {
-    if (selectedConversation) {
-      loadMessages(selectedConversation.id);
-    }
-  }, [selectedConversation]);
-
-  const loadConversations = async () => {
-    try {
-      setLoading(true);
-      const response = await apiService.getConversations(1, 50);
-      setConversations(response.data || []);
-    } catch (error) {
-      console.error('Erro ao carregar conversas:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadMessages = async (conversationId: string) => {
-    try {
-      const response = await apiService.getMessages(conversationId, 1, 100);
-      setMessages(response.data || []);
-    } catch (error) {
-      console.error('Erro ao carregar mensagens:', error);
-    }
-  };
-
-  const sendMessage = async () => {
-    if (!selectedConversation || !newMessage.trim() || sending) return;
-
-    try {
-      setSending(true);
-      await apiService.sendMessage({
-        conversation_id: selectedConversation.id,
-        content: newMessage.trim(),
-        message_type: 'text'
-      });
-
-      setNewMessage('');
-      await loadMessages(selectedConversation.id);
-    } catch (error) {
-      console.error('Erro ao enviar mensagem:', error);
-      alert('Erro ao enviar mensagem. Tente novamente.');
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const formatTime = (dateString: string) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffInHours = Math.abs(now.getTime() - date.getTime()) / (1000 * 60 * 60);
-
-    if (diffInHours < 24) {
-      return date.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    } else {
-      return date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
-    }
-  };
-
-  const filteredConversations = conversations.filter(conv =>
-    !searchTerm ||
-    conv.evolution_contacts?.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    conv.evolution_contacts?.phone.includes(searchTerm)
-  );
+  if (error) {
+    return (
+      <DashboardLayout>
+        <div className="p-6">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+            <h2 className="text-red-800 font-semibold">Erro</h2>
+            <p className="text-red-700">{error}</p>
+          </div>
+        </div>
+      </DashboardLayout>
+    );
+  }
 
   return (
     <DashboardLayout>
-      <div className="h-[calc(100vh-8rem)] flex bg-white rounded-lg shadow-sm border overflow-hidden">
-        {/* Lista de Conversas */}
-        <div className="w-1/3 border-r flex flex-col">
-          <div className="p-4 border-b bg-gray-50">
-            <h2 className="text-lg font-semibold text-gray-900 mb-3">Conversas</h2>
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-              <input
-                type="text"
-                placeholder="Buscar conversas..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-              />
-            </div>
-          </div>
+      <div className="p-6">
+        <div className="bg-white rounded-lg shadow-sm border p-6">
+          <div className="text-center">
+            <MessageSquare className="h-16 w-16 text-blue-500 mx-auto mb-4" />
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">Conversas WhatsApp</h1>
 
-          <div className="flex-1 overflow-y-auto">
             {loading ? (
-              <div className="p-4 text-center">
-                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600 mx-auto"></div>
-                <p className="text-gray-500 mt-2">Carregando...</p>
-              </div>
-            ) : filteredConversations.length === 0 ? (
-              <div className="p-4 text-center">
-                <MessageSquare className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-                <p className="text-gray-500">Nenhuma conversa encontrada</p>
+              <div>
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto mb-2"></div>
+                <p className="text-gray-600">Carregando conversas...</p>
               </div>
             ) : (
-              <div className="divide-y divide-gray-200">
-                {filteredConversations.map((conversation) => (
-                  <div
-                    key={conversation.id}
-                    onClick={() => setSelectedConversation(conversation)}
-                    className={`p-4 hover:bg-gray-50 cursor-pointer transition-colors ${
-                      selectedConversation?.id === conversation.id ? 'bg-green-50 border-r-2 border-green-500' : ''
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3 flex-1 min-w-0">
-                        <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
-                          <User className="h-5 w-5 text-green-600" />
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-gray-900 truncate">
-                            {conversation.evolution_contacts?.name || 'Sem nome'}
-                          </p>
-                          <p className="text-xs text-gray-500 truncate flex items-center">
-                            <Phone className="h-3 w-3 mr-1" />
-                            {conversation.evolution_contacts?.phone}
-                          </p>
-                          {conversation.last_message && (
-                            <p className="text-xs text-gray-600 truncate mt-1">
-                              {conversation.last_message.content}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex flex-col items-end space-y-1">
-                        <span className="text-xs text-gray-500 flex items-center">
-                          <Clock className="h-3 w-3 mr-1" />
-                          {formatTime(conversation.last_message_at)}
-                        </span>
-                        <ChevronRight className="h-4 w-4 text-gray-400" />
-                      </div>
-                    </div>
-                  </div>
-                ))}
+              <div className="space-y-4">
+                <p className="text-green-600 font-semibold">✅ Página carregou com sucesso!</p>
+                <p className="text-gray-600">Versão debug - sem API calls</p>
+
+                <div className="bg-blue-50 border border-blue-200 rounded p-4 text-left">
+                  <h3 className="font-semibold text-blue-900 mb-2">Debug Info:</h3>
+                  <ul className="text-blue-800 text-sm space-y-1">
+                    <li>✅ Imports funcionando</li>
+                    <li>✅ DashboardLayout funcionando</li>
+                    <li>✅ useState/useEffect funcionando</li>
+                    <li>✅ TailwindCSS funcionando</li>
+                    <li>🔄 Próximo: testar API calls</li>
+                  </ul>
+                </div>
               </div>
             )}
           </div>
-        </div>
-
-        {/* Área de Mensagens */}
-        <div className="flex-1 flex flex-col">
-          {selectedConversation ? (
-            <>
-              {/* Header da Conversa */}
-              <div className="p-4 border-b bg-gray-50 flex items-center">
-                <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center mr-3">
-                  <User className="h-5 w-5 text-green-600" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900">
-                    {selectedConversation.evolution_contacts?.name || 'Sem nome'}
-                  </h3>
-                  <p className="text-sm text-gray-500 flex items-center">
-                    <Phone className="h-3 w-3 mr-1" />
-                    {selectedConversation.evolution_contacts?.phone}
-                  </p>
-                </div>
-              </div>
-
-              {/* Mensagens */}
-              <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                {messages.length === 0 ? (
-                  <div className="text-center py-8">
-                    <MessageSquare className="h-12 w-12 text-gray-400 mx-auto mb-3" />
-                    <p className="text-gray-500">Nenhuma mensagem ainda</p>
-                  </div>
-                ) : (
-                  messages.map((message) => (
-                    <div
-                      key={message.id}
-                      className={`flex ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}
-                    >
-                      <div className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                        message.direction === 'out'
-                          ? 'bg-green-500 text-white'
-                          : 'bg-gray-100 text-gray-900'
-                      }`}>
-                        <p className="text-sm">{message.content}</p>
-                        <p className={`text-xs mt-1 ${
-                          message.direction === 'out' ? 'text-green-100' : 'text-gray-500'
-                        }`}>
-                          {formatTime(message.created_at)}
-                        </p>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              {/* Input de Mensagem */}
-              <div className="p-4 border-t bg-gray-50">
-                <div className="flex items-center space-x-3">
-                  <input
-                    type="text"
-                    placeholder="Digite sua mensagem..."
-                    value={newMessage}
-                    onChange={(e) => setNewMessage(e.target.value)}
-                    onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                    className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                    disabled={sending}
-                  />
-                  <button
-                    onClick={sendMessage}
-                    disabled={!newMessage.trim() || sending}
-                    className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed flex items-center space-x-2"
-                  >
-                    <Send className="h-4 w-4" />
-                    <span>{sending ? 'Enviando...' : 'Enviar'}</span>
-                  </button>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="flex-1 flex items-center justify-center bg-gray-50">
-              <div className="text-center">
-                <MessageSquare className="h-16 w-16 text-gray-400 mx-auto mb-4" />
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">Selecione uma conversa</h3>
-                <p className="text-gray-500">Escolha uma conversa na lista para ver as mensagens</p>
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </DashboardLayout>

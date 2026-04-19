@@ -173,6 +173,17 @@ class BaileysService {
       });
 
       sock.ev.on('creds.update', saveCreds);
+
+      // Handler para mensagens recebidas
+      sock.ev.on('messages.upsert', async (m) => {
+        const messages = m.messages || [];
+        for (const msg of messages) {
+          if (!msg.key.fromMe && msg.message) {
+            await this._processIncomingMessage(sessionName, msg);
+          }
+        }
+      });
+
       console.log(`✅ Eventos registrados para: ${sessionName}`);
     } catch (err) {
       console.error(`💀 _connectSession CRASH ${sessionName}:`, err.message);
@@ -316,6 +327,47 @@ class BaileysService {
     // Aguardar um pouco e retornar status atualizado
     await new Promise(resolve => setTimeout(resolve, 1000));
     return this.getSessionStatus(sessionName);
+  }
+
+  // Processar mensagem recebida e salvar no banco
+  async _processIncomingMessage(sessionName, message) {
+    try {
+      const session = this.sessions.get(sessionName);
+      if (!session) return;
+
+      const phone = message.key?.remoteJid?.replace('@s.whatsapp.net', '');
+      const messageContent = message.message?.conversation ||
+                            message.message?.extendedTextMessage?.text ||
+                            message.message?.imageMessage?.caption ||
+                            '[Mídia]';
+
+      if (!phone) return;
+
+      console.log(`📩 Mensagem recebida de ${phone}: ${messageContent.substring(0, 50)}...`);
+
+      // URL interna para processar mensagem
+      const axios = require('axios');
+      await axios.post(`http://localhost:${process.env.PORT || 3003}/internal/messages/process`, {
+        sessionName,
+        phone,
+        content: messageContent,
+        messageType: this._getMessageType(message),
+        whatsappMessageId: message.key.id,
+        pushName: message.pushName
+      });
+
+    } catch (error) {
+      console.error('❌ Erro processando mensagem:', error.message);
+    }
+  }
+
+  // Determinar tipo da mensagem
+  _getMessageType(message) {
+    if (message.message?.imageMessage) return 'image';
+    if (message.message?.audioMessage) return 'audio';
+    if (message.message?.videoMessage) return 'video';
+    if (message.message?.documentMessage) return 'document';
+    return 'text';
   }
 
   // Atualizar status no banco de dados

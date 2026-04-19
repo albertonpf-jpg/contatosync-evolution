@@ -165,7 +165,7 @@ class ApiService {
     const response = await this.api.get('/conversations', {
       params: { page, limit, status }
     });
-    return response.data;
+    return response.data.data;
   }
 
   // Mensagens
@@ -173,7 +173,7 @@ class ApiService {
     const response = await this.api.get(`/messages/conversation/${conversationId}`, {
       params: { page, limit }
     });
-    return response.data;
+    return response.data.data;
   }
 
   async sendMessage(data: {
@@ -182,24 +182,24 @@ class ApiService {
     message_type?: string;
   }) {
     const response = await this.api.post('/messages', data);
-    return response.data;
+    return response.data.data;
   }
 
   // Configuração da IA
   async getAIConfig() {
     const response = await this.api.get('/ai/config');
-    return response.data;
+    return response.data.data;
   }
 
   async updateAIConfig(data: any) {
     const response = await this.api.put('/ai/config', data);
-    return response.data;
+    return response.data.data;
   }
 
   // Health check
   async healthCheck() {
     const response = await this.api.get('/health');
-    return response.data;
+    return response.data.data;
   }
 
   // Gerenciamento de token

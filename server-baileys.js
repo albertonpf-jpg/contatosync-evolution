@@ -15,7 +15,6 @@ const integrationsRoutes = require('./src/routes/integrations');
 const sessionsRoutes = require('./src/routes/sessions');
 const whatsappRoutes = require('./src/routes/whatsapp');
 const webhooksRoutes = require('./src/routes/webhooks');
-
 const { auth } = require('./src/middleware/auth');
 const socketAuth = require('./src/middleware/socketAuth');
 const { initializeSocket } = require('./src/services/socketService');
@@ -33,26 +32,24 @@ const io = socketIo(server, {
   }
 });
 
-// Middleware básico - SEM RATE LIMITING
-app.use(cors({
-  origin: "*",
-  credentials: true
-}));
+// Middleware básico
+app.use(cors({ origin: "*", credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 console.log('🚀 ContatoSync com BAILEYS na porta', PORT);
 console.log('✅ WhatsApp direto, sem Evolution API');
 console.log('📱 QR Codes nativos do Baileys');
-console.log('🔓 Rate limiting REMOVIDO');
 
-// Debug endpoint - sem auth
+// ========================
+// DEBUG ENDPOINTS (sem auth)
+// ========================
+
 app.get('/debug/conversations/:email', async (req, res) => {
   try {
     const email = req.params.email;
     const { supabaseAdmin } = require('./src/config/supabase');
 
-    // Buscar cliente por email
     const { data: client } = await supabaseAdmin
       .from('evolution_clients')
       .select('id')
@@ -63,7 +60,6 @@ app.get('/debug/conversations/:email', async (req, res) => {
       return res.json({ error: 'Cliente não encontrado', email });
     }
 
-    // Buscar conversas
     const { data: conversations } = await supabaseAdmin
       .from('evolution_conversations')
       .select(`
@@ -80,74 +76,61 @@ app.get('/debug/conversations/:email', async (req, res) => {
       count: conversations?.length || 0,
       timestamp: new Date().toISOString()
     });
-
   } catch (error) {
     res.json({ error: error.message });
   }
 });
 
-// Debug sessões Baileys - sem auth
 app.get('/debug/baileys-sessions', (req, res) => {
   try {
     const baileysService = require('./src/services/baileysService');
     const sessions = baileysService.getAllSessions();
-
-    res.json({
-      sessions,
-      count: sessions.length,
-      timestamp: new Date().toISOString()
-    });
+    res.json({ sessions, count: sessions.length, timestamp: new Date().toISOString() });
   } catch (error) {
     res.json({ error: error.message });
   }
 });
 
-// Criar sessão WhatsApp - sem auth
 app.post('/debug/create-session', async (req, res) => {
   try {
     const { sessionName } = req.body;
     const baileysService = require('./src/services/baileysService');
-
     const result = await baileysService.createSession(sessionName || 'whatsapp_alberto_principal');
-
     res.json({
       success: true,
       result,
       message: 'Aguarde 3 segundos e acesse /debug/qr para obter QR Code'
     });
-
   } catch (error) {
     res.json({ error: error.message });
   }
 });
 
-// Obter QR Code - sem auth
 app.get('/debug/qr/:sessionName?', async (req, res) => {
   try {
     const sessionName = req.params.sessionName || 'whatsapp_alberto_principal';
     const baileysService = require('./src/services/baileysService');
-
     const qr = await baileysService.getQRCode(sessionName);
 
     if (qr.base64) {
       res.send(`
         <html>
-          <body style="text-align: center; font-family: Arial;">
-            <h2>📱 WhatsApp QR Code - ContatoSync</h2>
-            <p><strong>Sessão:</strong> ${sessionName}</p>
-            <p><strong>Status:</strong> ${qr.status}</p>
-            <img src="${qr.base64}" alt="QR Code" style="max-width: 400px; border: 2px solid #25D366;">
-            <h3>INSTRUÇÕES:</h3>
-            <ol style="text-align: left; max-width: 400px; margin: 0 auto;">
-              <li>Abra WhatsApp no celular</li>
-              <li>Menu (3 pontos) → Aparelhos conectados</li>
-              <li>Conectar um aparelho → Escanear código QR</li>
-              <li>Escaneie o código acima</li>
-            </ol>
-            <p style="margin-top: 20px;">
-              <button onclick="location.reload()">🔄 Atualizar QR</button>
-            </p>
-          </body>
+        <body style="text-align: center; font-family: Arial;">
+          <h2>📱 WhatsApp QR Code - ContatoSync</h2>
+          <p><strong>Sessão:</strong> ${sessionName}</p>
+          <p><strong>Status:</strong> ${qr.status}</p>
+          <img src="${qr.base64}" alt="QR Code" style="max-width: 400px; border: 2px solid #25D366;">
+          <h3>INSTRUÇÕES:</h3>
+          <ol style="text-align: left; max-width: 400px; margin: 0 auto;">
+            <li>Abra WhatsApp no celular</li>
+            <li>Menu (3 pontos) → Aparelhos conectados</li>
+            <li>Conectar um aparelho → Escanear código QR</li>
+            <li>Escaneie o código acima</li>
+          </ol>
+          <p style="margin-top: 20px;">
+            <button onclick="location.reload()">🔄 Atualizar QR</button>
+          </p>
+        </body>
         </html>
       `);
     } else {
@@ -158,7 +141,6 @@ app.get('/debug/qr/:sessionName?', async (req, res) => {
         message: 'Tente criar sessão primeiro: POST /debug/create-session'
       });
     }
-
   } catch (error) {
     res.json({ error: error.message });
   }
@@ -174,13 +156,9 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Debug endpoint para verificar estado do Baileys
 app.get('/debug/baileys', (req, res) => {
   const baileysService = require('./src/services/baileysService');
-
-  // Verificar status real de todas as sessões
   baileysService.verifyAllSessions();
-
   const sessions = baileysService.getAllSessions();
   const qrCodes = {};
   for (const [name, qr] of baileysService.qrCodes.entries()) {
@@ -196,16 +174,21 @@ app.get('/debug/baileys', (req, res) => {
   });
 });
 
-// Capturar logs em buffer para debug remoto
+// ========================
+// LOG BUFFER (debug remoto)
+// ========================
+
 const logBuffer = [];
 const originalLog = console.log;
 const originalError = console.error;
+
 console.log = (...args) => {
   const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
   logBuffer.push({ t: Date.now(), level: 'log', msg });
   if (logBuffer.length > 200) logBuffer.shift();
   originalLog.apply(console, args);
 };
+
 console.error = (...args) => {
   const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
   logBuffer.push({ t: Date.now(), level: 'error', msg });
@@ -218,11 +201,9 @@ app.get('/debug/logs', (req, res) => {
   res.json(logBuffer.slice(-last));
 });
 
-// Debug endpoint para forçar verificação de sessão específica
 app.get('/debug/ping/:sessionName', async (req, res) => {
   const baileysService = require('./src/services/baileysService');
   const { sessionName } = req.params;
-
   try {
     const result = await baileysService.forceCheckConnection(sessionName);
     res.json({ sessionName, result });
@@ -231,22 +212,19 @@ app.get('/debug/ping/:sessionName', async (req, res) => {
   }
 });
 
-// Endpoint interno para atualizar status no banco
+// ========================
+// ENDPOINTS INTERNOS (sem auth)
+// ========================
+
+// Atualizar status sessão no banco
 app.put('/internal/sessions/:sessionName/status', async (req, res) => {
   const { sessionName } = req.params;
   const { status, reason, timestamp } = req.body;
 
   try {
-    const { executeWithRLS } = require('./src/config/supabase');
-    const { createClient } = require('@supabase/supabase-js');
+    const { supabaseAdmin } = require('./src/config/supabase');
 
-    // Usar service role para acesso interno
-    const supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_ROLE
-    );
-
-    const { error } = await supabase
+    const { error } = await supabaseAdmin
       .from('evolution_sessions')
       .update({
         status: status,
@@ -262,35 +240,24 @@ app.put('/internal/sessions/:sessionName/status', async (req, res) => {
 
     console.log(`✅ Banco atualizado: ${sessionName} → ${status}`);
     res.json({ success: true, sessionName, status });
-
   } catch (error) {
     console.error('Erro endpoint interno:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Rotas públicas
-app.use('/api/auth', authRoutes);
-app.use('/api/webhooks', webhooksRoutes);
-
-// Rotas protegidas (todas com auth)
-app.use('/api/clients', auth, clientsRoutes);
-app.use('/api/contacts', auth, contactsRoutes);
-app.use('/api/conversations', auth, conversationsRoutes);
-app.use('/api/messages', auth, messagesRoutes);
-app.use('/api/ai', auth, aiRoutes);
-app.use('/api/activities', auth, activitiesRoutes);
-app.use('/api/integrations', auth, integrationsRoutes);
-app.use('/api/sessions', auth, sessionsRoutes);
-app.use('/api/whatsapp', auth, whatsappRoutes);
-
-// Endpoints internos (sem auth)
+// ============================================================
+// PROCESSAR MENSAGEM RECEBIDA — CORRIGIDO
+// ============================================================
 app.post('/internal/messages/process', async (req, res) => {
   try {
     const { sessionName, phone, content, messageType, whatsappMessageId, pushName } = req.body;
 
-    // Buscar sessão no banco para obter client_id
     const { supabaseAdmin } = require('./src/config/supabase');
+    const { v4: uuidv4 } = require('uuid');
+    const now = new Date().toISOString();
+
+    // 1. Buscar sessão → client_id
     const { data: session } = await supabaseAdmin
       .from('evolution_sessions')
       .select('*')
@@ -301,7 +268,7 @@ app.post('/internal/messages/process', async (req, res) => {
       return res.status(404).json({ error: 'Sessão não encontrada' });
     }
 
-    // Buscar ou criar contato
+    // 2. Buscar ou criar contato
     let { data: contact } = await supabaseAdmin
       .from('evolution_contacts')
       .select('*')
@@ -310,24 +277,47 @@ app.post('/internal/messages/process', async (req, res) => {
       .single();
 
     if (!contact) {
-      const { v4: uuidv4 } = require('uuid');
-      const { data: newContact } = await supabaseAdmin
+      const { data: newContact, error: contactError } = await supabaseAdmin
         .from('evolution_contacts')
         .insert([{
           id: uuidv4(),
           client_id: session.client_id,
           phone: phone,
           name: pushName || `Contato ${phone}`,
+          source: 'whatsapp',
           status: 'active',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          last_message_at: now,
+          created_at: now,
+          updated_at: now
         }])
         .select('*')
         .single();
+
+      if (contactError) {
+        console.error('❌ Erro criando contato:', contactError);
+        return res.status(500).json({ error: 'Erro criando contato', details: contactError });
+      }
       contact = newContact;
+      console.log(`👤 Novo contato criado: ${contact.name} (${phone})`);
+    } else {
+      // Atualizar nome se pushName veio e contato tinha nome genérico
+      if (pushName && contact.name && contact.name.startsWith('Contato ')) {
+        await supabaseAdmin
+          .from('evolution_contacts')
+          .update({ name: pushName, updated_at: now })
+          .eq('id', contact.id);
+        contact.name = pushName;
+      }
+      // Atualizar last_message_at do contato
+      await supabaseAdmin
+        .from('evolution_contacts')
+        .update({ last_message_at: now, updated_at: now })
+        .eq('id', contact.id);
     }
 
-    // Buscar ou criar conversa
+    // 3. Buscar ou criar conversa — CORRIGIDO: inclui contact_name, phone, jid
+    const jid = `${phone}@s.whatsapp.net`;
+
     let { data: conversation } = await supabaseAdmin
       .from('evolution_conversations')
       .select('*')
@@ -336,26 +326,58 @@ app.post('/internal/messages/process', async (req, res) => {
       .single();
 
     if (!conversation) {
-      const { v4: uuidv4 } = require('uuid');
-      const { data: newConv } = await supabaseAdmin
+      const { data: newConv, error: convError } = await supabaseAdmin
         .from('evolution_conversations')
         .insert([{
           id: uuidv4(),
           client_id: session.client_id,
           contact_id: contact.id,
+          jid: jid,
+          phone: phone,
+          contact_name: contact.name,
           status: 'active',
-          last_message_at: new Date().toISOString(),
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
+          priority: 'normal',
+          lead_stage: 'new',
+          last_message_at: now,
+          unread_count: 1,
+          total_messages: 1,
+          created_at: now,
+          updated_at: now
         }])
         .select('*')
         .single();
+
+      if (convError) {
+        console.error('❌ Erro criando conversa:', convError);
+        return res.status(500).json({ error: 'Erro criando conversa', details: convError });
+      }
       conversation = newConv;
+      console.log(`💬 Nova conversa criada: ${contact.name}`);
+    } else {
+      // CORRIGIDO: incremento manual do unread_count (supabaseAdmin.sql não existe)
+      const newUnread = (conversation.unread_count || 0) + 1;
+      const newTotal = (conversation.total_messages || 0) + 1;
+
+      const { error: updateError } = await supabaseAdmin
+        .from('evolution_conversations')
+        .update({
+          last_message_at: now,
+          unread_count: newUnread,
+          total_messages: newTotal,
+          contact_name: contact.name,
+          phone: phone,
+          jid: jid,
+          updated_at: now
+        })
+        .eq('id', conversation.id);
+
+      if (updateError) {
+        console.error('❌ Erro atualizando conversa:', updateError);
+      }
     }
 
-    // Salvar mensagem
-    const { v4: uuidv4 } = require('uuid');
-    await supabaseAdmin
+    // 4. Salvar mensagem — CORRIGIDO: inclui sent_at
+    const { error: msgError } = await supabaseAdmin
       .from('evolution_messages')
       .insert([{
         id: uuidv4(),
@@ -363,31 +385,67 @@ app.post('/internal/messages/process', async (req, res) => {
         client_id: session.client_id,
         contact_id: contact.id,
         content: content,
-        message_type: messageType,
+        message_type: messageType || 'text',
         direction: 'in',
         status: 'received',
+        is_from_ai: false,
         whatsapp_message_id: whatsappMessageId,
-        created_at: new Date().toISOString()
+        sent_at: now,
+        created_at: now
       }]);
 
-    // Atualizar conversa
-    await supabaseAdmin
-      .from('evolution_conversations')
-      .update({
-        last_message_at: new Date().toISOString(),
-        unread_count: supabaseAdmin.sql`unread_count + 1`,
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', conversation.id);
+    if (msgError) {
+      console.error('❌ Erro salvando mensagem:', msgError);
+      return res.status(500).json({ error: 'Erro salvando mensagem', details: msgError });
+    }
 
-    console.log(`✅ Mensagem processada: ${contact.name} - ${content.substring(0, 30)}`);
-    res.json({ success: true });
+    console.log(`✅ Mensagem processada: ${contact.name} (${phone}) - ${content.substring(0, 50)}`);
+
+    // 5. Emitir evento WebSocket (se io disponível)
+    try {
+      const { getIO } = require('./src/services/socketService');
+      const socketIO = getIO();
+      if (socketIO) {
+        socketIO.to(session.client_id).emit('new_message', {
+          conversation_id: conversation.id,
+          contact_name: contact.name,
+          phone: phone,
+          content: content,
+          message_type: messageType,
+          direction: 'in',
+          timestamp: now
+        });
+      }
+    } catch (socketErr) {
+      // Socket não crítico — ignorar
+    }
+
+    res.json({ success: true, conversation_id: conversation.id, contact_id: contact.id });
 
   } catch (error) {
     console.error('❌ Erro processando mensagem:', error);
     res.status(500).json({ error: error.message });
   }
 });
+
+// ========================
+// ROTAS PÚBLICAS
+// ========================
+app.use('/api/auth', authRoutes);
+app.use('/api/webhooks', webhooksRoutes);
+
+// ========================
+// ROTAS PROTEGIDAS
+// ========================
+app.use('/api/clients', auth, clientsRoutes);
+app.use('/api/contacts', auth, contactsRoutes);
+app.use('/api/conversations', auth, conversationsRoutes);
+app.use('/api/messages', auth, messagesRoutes);
+app.use('/api/ai', auth, aiRoutes);
+app.use('/api/activities', auth, activitiesRoutes);
+app.use('/api/integrations', auth, integrationsRoutes);
+app.use('/api/sessions', auth, sessionsRoutes);
+app.use('/api/whatsapp', auth, whatsappRoutes);
 
 // Socket.IO auth + init
 io.use(socketAuth);

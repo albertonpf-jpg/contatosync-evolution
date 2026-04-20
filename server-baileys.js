@@ -354,8 +354,7 @@ app.post('/internal/messages/process', async (req, res) => {
       conversation = newConv;
       console.log(`💬 Nova conversa criada: ${contact.name}`);
     } else {
-      // CORRIGIDO: incremento manual do unread_count (supabaseAdmin.sql não existe)
-      const newUnread = (conversation.unread_count || 0) + 1;
+            const newUnread = (conversation.unread_count || 0) + 1;
       const newTotal = (conversation.total_messages || 0) + 1;
 
       const { error: updateError } = await supabaseAdmin

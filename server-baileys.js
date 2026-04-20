@@ -32,14 +32,14 @@ const io = socketIo(server, {
   }
 });
 
-// Middleware básico
+// Middleware basico
 app.use(cors({ origin: "*", credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-console.log('🚀 ContatoSync com BAILEYS na porta', PORT);
-console.log('✅ WhatsApp direto, sem Evolution API');
-console.log('📱 QR Codes nativos do Baileys');
+console.log('ContatoSync com BAILEYS na porta ' + PORT);
+console.log('WhatsApp direto, sem Evolution API');
+console.log('QR Codes nativos do Baileys');
 
 // ========================
 // DEBUG ENDPOINTS (sem auth)
@@ -47,33 +47,30 @@ console.log('📱 QR Codes nativos do Baileys');
 
 app.get('/debug/conversations/:email', async (req, res) => {
   try {
-    const email = req.params.email;
-    const { supabaseAdmin } = require('./src/config/supabase');
+    var email = req.params.email;
+    var { supabaseAdmin } = require('./src/config/supabase');
 
-    const { data: client } = await supabaseAdmin
+    var { data: client } = await supabaseAdmin
       .from('evolution_clients')
       .select('id')
       .eq('email', email)
       .single();
 
     if (!client) {
-      return res.json({ error: 'Cliente não encontrado', email });
+      return res.json({ error: 'Cliente nao encontrado', email: email });
     }
 
-    const { data: conversations } = await supabaseAdmin
+    var { data: conversations } = await supabaseAdmin
       .from('evolution_conversations')
-      .select(`
-        *,
-        evolution_contacts!inner(name, phone)
-      `)
+      .select('*, evolution_contacts!inner(name, phone)')
       .eq('client_id', client.id)
       .order('last_message_at', { ascending: false });
 
     res.json({
-      email,
+      email: email,
       client_id: client.id,
       conversations: conversations || [],
-      count: conversations?.length || 0,
+      count: conversations ? conversations.length : 0,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
@@ -81,24 +78,24 @@ app.get('/debug/conversations/:email', async (req, res) => {
   }
 });
 
-app.get('/debug/baileys-sessions', (req, res) => {
+app.get('/debug/baileys-sessions', function(req, res) {
   try {
-    const baileysService = require('./src/services/baileysService');
-    const sessions = baileysService.getAllSessions();
-    res.json({ sessions, count: sessions.length, timestamp: new Date().toISOString() });
+    var baileysService = require('./src/services/baileysService');
+    var sessions = baileysService.getAllSessions();
+    res.json({ sessions: sessions, count: sessions.length, timestamp: new Date().toISOString() });
   } catch (error) {
     res.json({ error: error.message });
   }
 });
 
-app.post('/debug/create-session', async (req, res) => {
+app.post('/debug/create-session', async function(req, res) {
   try {
-    const { sessionName } = req.body;
-    const baileysService = require('./src/services/baileysService');
-    const result = await baileysService.createSession(sessionName || 'whatsapp_alberto_principal');
+    var { sessionName } = req.body;
+    var baileysService = require('./src/services/baileysService');
+    var result = await baileysService.createSession(sessionName || 'whatsapp_alberto_principal');
     res.json({
       success: true,
-      result,
+      result: result,
       message: 'Aguarde 3 segundos e acesse /debug/qr para obter QR Code'
     });
   } catch (error) {
@@ -106,39 +103,35 @@ app.post('/debug/create-session', async (req, res) => {
   }
 });
 
-app.get('/debug/qr/:sessionName?', async (req, res) => {
+app.get('/debug/qr/:sessionName?', async function(req, res) {
   try {
-    const sessionName = req.params.sessionName || 'whatsapp_alberto_principal';
-    const baileysService = require('./src/services/baileysService');
-    const qr = await baileysService.getQRCode(sessionName);
+    var sessionName = req.params.sessionName || 'whatsapp_alberto_principal';
+    var baileysService = require('./src/services/baileysService');
+    var qr = await baileysService.getQRCode(sessionName);
 
     if (qr.base64) {
-      res.send(`
-        <html>
-        <body style="text-align: center; font-family: Arial;">
-          <h2>📱 WhatsApp QR Code - ContatoSync</h2>
-          <p><strong>Sessão:</strong> ${sessionName}</p>
-          <p><strong>Status:</strong> ${qr.status}</p>
-          <img src="${qr.base64}" alt="QR Code" style="max-width: 400px; border: 2px solid #25D366;">
-          <h3>INSTRUÇÕES:</h3>
-          <ol style="text-align: left; max-width: 400px; margin: 0 auto;">
-            <li>Abra WhatsApp no celular</li>
-            <li>Menu (3 pontos) → Aparelhos conectados</li>
-            <li>Conectar um aparelho → Escanear código QR</li>
-            <li>Escaneie o código acima</li>
-          </ol>
-          <p style="margin-top: 20px;">
-            <button onclick="location.reload()">🔄 Atualizar QR</button>
-          </p>
-        </body>
-        </html>
-      `);
+      var html = '<html><body style="text-align: center; font-family: Arial;">';
+      html += '<h2>WhatsApp QR Code - ContatoSync</h2>';
+      html += '<p><strong>Sessao:</strong> ' + sessionName + '</p>';
+      html += '<p><strong>Status:</strong> ' + qr.status + '</p>';
+      html += '<img src="' + qr.base64 + '" alt="QR Code" style="max-width: 400px; border: 2px solid #25D366;">';
+      html += '<h3>INSTRUCOES:</h3>';
+      html += '<ol style="text-align: left; max-width: 400px; margin: 0 auto;">';
+      html += '<li>Abra WhatsApp no celular</li>';
+      html += '<li>Menu (3 pontos) - Aparelhos conectados</li>';
+      html += '<li>Conectar um aparelho - Escanear codigo QR</li>';
+      html += '<li>Escaneie o codigo acima</li>';
+      html += '</ol>';
+      html += '<p style="margin-top: 20px;">';
+      html += '<button onclick="location.reload()">Atualizar QR</button>';
+      html += '</p></body></html>';
+      res.send(html);
     } else {
       res.json({
-        error: 'QR Code não disponível',
+        error: 'QR Code nao disponivel',
         status: qr.status,
-        sessionName,
-        message: 'Tente criar sessão primeiro: POST /debug/create-session'
+        sessionName: sessionName,
+        message: 'Tente criar sessao primeiro: POST /debug/create-session'
       });
     }
   } catch (error) {
@@ -147,7 +140,7 @@ app.get('/debug/qr/:sessionName?', async (req, res) => {
 });
 
 // Health check
-app.get('/health', (req, res) => {
+app.get('/health', function(req, res) {
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
@@ -156,19 +149,19 @@ app.get('/health', (req, res) => {
   });
 });
 
-app.get('/debug/baileys', (req, res) => {
-  const baileysService = require('./src/services/baileysService');
+app.get('/debug/baileys', function(req, res) {
+  var baileysService = require('./src/services/baileysService');
   baileysService.verifyAllSessions();
-  const sessions = baileysService.getAllSessions();
-  const qrCodes = {};
-  for (const [name, qr] of baileysService.qrCodes.entries()) {
-    qrCodes[name] = qr ? `data:image... (${qr.length} chars)` : null;
+  var sessions = baileysService.getAllSessions();
+  var qrCodesInfo = {};
+  for (var entry of baileysService.qrCodes.entries()) {
+    qrCodesInfo[entry[0]] = entry[1] ? 'data:image... (' + entry[1].length + ' chars)' : null;
   }
   res.json({
     totalSessions: sessions.length,
-    sessions,
-    qrCodesAvailable: Object.keys(qrCodes),
-    qrCodesDetail: qrCodes,
+    sessions: sessions,
+    qrCodesAvailable: Object.keys(qrCodesInfo),
+    qrCodesDetail: qrCodesInfo,
     memoryUsage: process.memoryUsage(),
     uptime: process.uptime()
   });
@@ -178,35 +171,37 @@ app.get('/debug/baileys', (req, res) => {
 // LOG BUFFER (debug remoto)
 // ========================
 
-const logBuffer = [];
-const originalLog = console.log;
-const originalError = console.error;
+var logBuffer = [];
+var originalLog = console.log;
+var originalError = console.error;
 
-console.log = (...args) => {
-  const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
-  logBuffer.push({ t: Date.now(), level: 'log', msg });
+console.log = function() {
+  var args = Array.prototype.slice.call(arguments);
+  var msg = args.map(function(a) { return typeof a === 'string' ? a : JSON.stringify(a); }).join(' ');
+  logBuffer.push({ t: Date.now(), level: 'log', msg: msg });
   if (logBuffer.length > 200) logBuffer.shift();
   originalLog.apply(console, args);
 };
 
-console.error = (...args) => {
-  const msg = args.map(a => typeof a === 'string' ? a : JSON.stringify(a)).join(' ');
-  logBuffer.push({ t: Date.now(), level: 'error', msg });
+console.error = function() {
+  var args = Array.prototype.slice.call(arguments);
+  var msg = args.map(function(a) { return typeof a === 'string' ? a : JSON.stringify(a); }).join(' ');
+  logBuffer.push({ t: Date.now(), level: 'error', msg: msg });
   if (logBuffer.length > 200) logBuffer.shift();
   originalError.apply(console, args);
 };
 
-app.get('/debug/logs', (req, res) => {
-  const last = parseInt(req.query.last) || 50;
+app.get('/debug/logs', function(req, res) {
+  var last = parseInt(req.query.last) || 50;
   res.json(logBuffer.slice(-last));
 });
 
-app.get('/debug/ping/:sessionName', async (req, res) => {
-  const baileysService = require('./src/services/baileysService');
-  const { sessionName } = req.params;
+app.get('/debug/ping/:sessionName', async function(req, res) {
+  var baileysService = require('./src/services/baileysService');
+  var sessionName = req.params.sessionName;
   try {
-    const result = await baileysService.forceCheckConnection(sessionName);
-    res.json({ sessionName, result });
+    var result = await baileysService.forceCheckConnection(sessionName);
+    res.json({ sessionName: sessionName, result: result });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -216,15 +211,17 @@ app.get('/debug/ping/:sessionName', async (req, res) => {
 // ENDPOINTS INTERNOS (sem auth)
 // ========================
 
-// Atualizar status sessão no banco
-app.put('/internal/sessions/:sessionName/status', async (req, res) => {
-  const { sessionName } = req.params;
-  const { status, reason, timestamp } = req.body;
+// Atualizar status sessao no banco
+app.put('/internal/sessions/:sessionName/status', async function(req, res) {
+  var sessionName = req.params.sessionName;
+  var status = req.body.status;
+  var reason = req.body.reason;
+  var timestamp = req.body.timestamp;
 
   try {
-    const { supabaseAdmin } = require('./src/config/supabase');
+    var { supabaseAdmin } = require('./src/config/supabase');
 
-    const { error } = await supabaseAdmin
+    var { error } = await supabaseAdmin
       .from('evolution_sessions')
       .update({
         status: status,
@@ -238,8 +235,8 @@ app.put('/internal/sessions/:sessionName/status', async (req, res) => {
       return res.status(500).json({ error: error.message });
     }
 
-    console.log(`✅ Banco atualizado: ${sessionName} → ${status}`);
-    res.json({ success: true, sessionName, status });
+    console.log('Banco atualizado: ' + sessionName + ' -> ' + status);
+    res.json({ success: true, sessionName: sessionName, status: status });
   } catch (error) {
     console.error('Erro endpoint interno:', error);
     res.status(500).json({ error: error.message });
@@ -247,43 +244,66 @@ app.put('/internal/sessions/:sessionName/status', async (req, res) => {
 });
 
 // ============================================================
-// PROCESSAR MENSAGEM RECEBIDA — CORRIGIDO
+// PROCESSAR MENSAGEM RECEBIDA
 // ============================================================
-app.post('/internal/messages/process', async (req, res) => {
+app.post('/internal/messages/process', async function(req, res) {
   try {
-    const { sessionName, phone, content, messageType, whatsappMessageId, pushName } = req.body;
+    var sessionName = req.body.sessionName;
+    var phone = req.body.phone;
+    var content = req.body.content;
+    var messageType = req.body.messageType;
+    var whatsappMessageId = req.body.whatsappMessageId;
+    var pushName = req.body.pushName;
 
-    const { supabaseAdmin } = require('./src/config/supabase');
-    const { v4: uuidv4 } = require('uuid');
-    const now = new Date().toISOString();
+    console.log('=== PROCESSANDO MENSAGEM ===');
+    console.log('Sessao: ' + sessionName);
+    console.log('Phone: ' + phone);
+    console.log('Content: ' + (content || '').substring(0, 50));
+    console.log('PushName: ' + pushName);
 
-    // 1. Buscar sessão → client_id
-    const { data: session } = await supabaseAdmin
+    var { supabaseAdmin } = require('./src/config/supabase');
+    var { v4: uuidv4 } = require('uuid');
+    var now = new Date().toISOString();
+
+    // 1. Buscar sessao -> client_id
+    var { data: session, error: sessionError } = await supabaseAdmin
       .from('evolution_sessions')
       .select('*')
       .eq('session_name', sessionName)
       .single();
 
-    if (!session) {
-      return res.status(404).json({ error: 'Sessão não encontrada' });
+    if (sessionError) {
+      console.error('Erro buscando sessao:', sessionError);
     }
 
+    if (!session) {
+      console.error('Sessao nao encontrada no banco: ' + sessionName);
+      return res.status(404).json({ error: 'Sessao nao encontrada' });
+    }
+
+    console.log('Sessao encontrada, client_id: ' + session.client_id);
+
     // 2. Buscar ou criar contato
-    let { data: contact } = await supabaseAdmin
+    var { data: contact, error: contactFetchError } = await supabaseAdmin
       .from('evolution_contacts')
       .select('*')
       .eq('client_id', session.client_id)
       .eq('phone', phone)
       .single();
 
+    if (contactFetchError && contactFetchError.code !== 'PGRST116') {
+      console.error('Erro buscando contato:', contactFetchError);
+    }
+
     if (!contact) {
-      const { data: newContact, error: contactError } = await supabaseAdmin
+      var newContactId = uuidv4();
+      var { data: newContact, error: contactError } = await supabaseAdmin
         .from('evolution_contacts')
         .insert([{
-          id: uuidv4(),
+          id: newContactId,
           client_id: session.client_id,
           phone: phone,
-          name: pushName || `Contato ${phone}`,
+          name: pushName || ('Contato ' + phone),
           source: 'whatsapp',
           status: 'active',
           last_message_at: now,
@@ -294,13 +314,13 @@ app.post('/internal/messages/process', async (req, res) => {
         .single();
 
       if (contactError) {
-        console.error('❌ Erro criando contato:', contactError);
+        console.error('Erro criando contato:', contactError);
         return res.status(500).json({ error: 'Erro criando contato', details: contactError });
       }
       contact = newContact;
-      console.log(`👤 Novo contato criado: ${contact.name} (${phone})`);
+      console.log('Novo contato criado: ' + contact.name + ' (' + phone + ')');
     } else {
-      // Atualizar nome se pushName veio e contato tinha nome genérico
+      // Atualizar nome se pushName veio e contato tinha nome generico
       if (pushName && contact.name && contact.name.startsWith('Contato ')) {
         await supabaseAdmin
           .from('evolution_contacts')
@@ -315,21 +335,26 @@ app.post('/internal/messages/process', async (req, res) => {
         .eq('id', contact.id);
     }
 
-    // 3. Buscar ou criar conversa — CORRIGIDO: inclui contact_name, phone, jid
-    const jid = `${phone}@s.whatsapp.net`;
+    // 3. Buscar ou criar conversa
+    var jid = phone + '@s.whatsapp.net';
 
-    let { data: conversation } = await supabaseAdmin
+    var { data: conversation, error: convFetchError } = await supabaseAdmin
       .from('evolution_conversations')
       .select('*')
       .eq('client_id', session.client_id)
       .eq('contact_id', contact.id)
       .single();
 
+    if (convFetchError && convFetchError.code !== 'PGRST116') {
+      console.error('Erro buscando conversa:', convFetchError);
+    }
+
     if (!conversation) {
-      const { data: newConv, error: convError } = await supabaseAdmin
+      var newConvId = uuidv4();
+      var { data: newConv, error: convError } = await supabaseAdmin
         .from('evolution_conversations')
         .insert([{
-          id: uuidv4(),
+          id: newConvId,
           client_id: session.client_id,
           contact_id: contact.id,
           jid: jid,
@@ -348,16 +373,16 @@ app.post('/internal/messages/process', async (req, res) => {
         .single();
 
       if (convError) {
-        console.error('❌ Erro criando conversa:', convError);
+        console.error('Erro criando conversa:', convError);
         return res.status(500).json({ error: 'Erro criando conversa', details: convError });
       }
       conversation = newConv;
-      console.log(`💬 Nova conversa criada: ${contact.name}`);
+      console.log('Nova conversa criada: ' + contact.name);
     } else {
-            const newUnread = (conversation.unread_count || 0) + 1;
-      const newTotal = (conversation.total_messages || 0) + 1;
+      var newUnread = (conversation.unread_count || 0) + 1;
+      var newTotal = (conversation.total_messages || 0) + 1;
 
-      const { error: updateError } = await supabaseAdmin
+      var { error: updateError } = await supabaseAdmin
         .from('evolution_conversations')
         .update({
           last_message_at: now,
@@ -371,15 +396,16 @@ app.post('/internal/messages/process', async (req, res) => {
         .eq('id', conversation.id);
 
       if (updateError) {
-        console.error('❌ Erro atualizando conversa:', updateError);
+        console.error('Erro atualizando conversa:', updateError);
       }
     }
 
-    // 4. Salvar mensagem — CORRIGIDO: inclui sent_at
-    const { error: msgError } = await supabaseAdmin
+    // 4. Salvar mensagem
+    var newMsgId = uuidv4();
+    var { error: msgError } = await supabaseAdmin
       .from('evolution_messages')
       .insert([{
-        id: uuidv4(),
+        id: newMsgId,
         conversation_id: conversation.id,
         client_id: session.client_id,
         contact_id: contact.id,
@@ -394,16 +420,16 @@ app.post('/internal/messages/process', async (req, res) => {
       }]);
 
     if (msgError) {
-      console.error('❌ Erro salvando mensagem:', msgError);
+      console.error('Erro salvando mensagem:', msgError);
       return res.status(500).json({ error: 'Erro salvando mensagem', details: msgError });
     }
 
-    console.log(`✅ Mensagem processada: ${contact.name} (${phone}) - ${content.substring(0, 50)}`);
+    console.log('Mensagem processada: ' + contact.name + ' (' + phone + ') - ' + (content || '').substring(0, 50));
 
-    // 5. Emitir evento WebSocket (se io disponível)
+    // 5. Emitir evento WebSocket (se io disponivel)
     try {
-      const { getIO } = require('./src/services/socketService');
-      const socketIO = getIO();
+      var { getIO } = require('./src/services/socketService');
+      var socketIO = getIO();
       if (socketIO) {
         socketIO.to(session.client_id).emit('new_message', {
           conversation_id: conversation.id,
@@ -416,19 +442,20 @@ app.post('/internal/messages/process', async (req, res) => {
         });
       }
     } catch (socketErr) {
-      // Socket não crítico — ignorar
+      // Socket nao critico
     }
 
     res.json({ success: true, conversation_id: conversation.id, contact_id: contact.id });
 
   } catch (error) {
-    console.error('❌ Erro processando mensagem:', error);
+    console.error('Erro processando mensagem:', error);
+    console.error('Stack:', error.stack);
     res.status(500).json({ error: error.message });
   }
 });
 
 // ========================
-// ROTAS PÚBLICAS
+// ROTAS PUBLICAS
 // ========================
 app.use('/api/auth', authRoutes);
 app.use('/api/webhooks', webhooksRoutes);
@@ -451,20 +478,20 @@ io.use(socketAuth);
 initializeSocket(io);
 
 // Error handler
-app.use((err, req, res, next) => {
+app.use(function(err, req, res, next) {
   console.error('Erro:', err);
   res.status(500).json({ error: 'Erro interno do servidor' });
 });
 
 // 404 handler
-app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Endpoint não encontrado' });
+app.use('*', function(req, res) {
+  res.status(404).json({ error: 'Endpoint nao encontrado' });
 });
 
-server.listen(PORT, () => {
-  console.log(`🌟 Servidor Baileys COMPLETO em http://localhost:${PORT}`);
-  console.log('📡 WebSocket ativo');
-  console.log('📱 Baileys ready para WhatsApp!');
+server.listen(PORT, function() {
+  console.log('Servidor Baileys COMPLETO em http://localhost:' + PORT);
+  console.log('WebSocket ativo');
+  console.log('Baileys ready para WhatsApp!');
 });
 
-module.exports = { app, server, io };
+module.exports = { app: app, server: server, io: io };

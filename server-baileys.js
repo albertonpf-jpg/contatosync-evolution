@@ -5,28 +5,34 @@ const socketIo = require('socket.io');
 
 console.log('🚀 Iniciando ContatoSync Evolution...');
 
+// Declarar variáveis fora do try/catch
+let authRoutes, clientsRoutes, contactsRoutes, conversationsRoutes, messagesRoutes;
+let aiRoutes, activitiesRoutes, integrationsRoutes, sessionsRoutes, whatsappRoutes, webhooksRoutes;
+let auth, socketAuth, initializeSocket;
+
 try {
   require('dotenv').config();
   console.log('✅ Dotenv carregado');
 
-  const authRoutes = require('./src/routes/auth');
-  const clientsRoutes = require('./src/routes/clients');
-  const contactsRoutes = require('./src/routes/contacts');
-  const conversationsRoutes = require('./src/routes/conversations');
-  const messagesRoutes = require('./src/routes/messages');
-  const aiRoutes = require('./src/routes/ai');
-  const activitiesRoutes = require('./src/routes/activities');
-  const integrationsRoutes = require('./src/routes/integrations');
-  const sessionsRoutes = require('./src/routes/sessions');
-  const whatsappRoutes = require('./src/routes/whatsapp');
-  const webhooksRoutes = require('./src/routes/webhooks');
-  const { auth } = require('./src/middleware/auth');
-  const socketAuth = require('./src/middleware/socketAuth');
-  const { initializeSocket } = require('./src/services/socketService');
+  authRoutes = require('./src/routes/auth');
+  clientsRoutes = require('./src/routes/clients');
+  contactsRoutes = require('./src/routes/contacts');
+  conversationsRoutes = require('./src/routes/conversations');
+  messagesRoutes = require('./src/routes/messages');
+  aiRoutes = require('./src/routes/ai');
+  activitiesRoutes = require('./src/routes/activities');
+  integrationsRoutes = require('./src/routes/integrations');
+  sessionsRoutes = require('./src/routes/sessions');
+  whatsappRoutes = require('./src/routes/whatsapp');
+  webhooksRoutes = require('./src/routes/webhooks');
+  ({ auth } = require('./src/middleware/auth'));
+  socketAuth = require('./src/middleware/socketAuth');
+  ({ initializeSocket } = require('./src/services/socketService'));
 
   console.log('✅ Todas rotas carregadas');
 } catch (err) {
   console.error('❌ ERRO ao carregar dependências:', err);
+  console.error(err.stack);
   process.exit(1);
 }
 

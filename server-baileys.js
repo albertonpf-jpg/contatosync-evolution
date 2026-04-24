@@ -185,6 +185,29 @@ app.get('/ready', function(req, res) {
   res.status(200).text('READY');
 });
 
+// DEBUG: Teste criação sessão sem auth
+app.post('/debug/create-session', async function(req, res) {
+  try {
+    console.log('🔧 DEBUG - Teste criar sessão sem auth');
+    console.log('Body:', req.body);
+
+    const testSession = {
+      session_name: 'debug_test',
+      display_name: 'debug_test'
+    };
+
+    console.log('✅ Endpoint debug funcionando');
+    res.json({
+      message: 'Debug endpoint OK',
+      received: req.body,
+      test: testSession
+    });
+  } catch (err) {
+    console.error('❌ DEBUG ERROR:', err);
+    res.status(500).json({ error: err.message, stack: err.stack });
+  }
+});
+
 app.get('/debug/baileys', function(req, res) {
   var baileysService = require('./src/services/baileysService');
   baileysService.verifyAllSessions();

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { X, RefreshCw, Smartphone, CheckCircle, AlertTriangle } from 'lucide-react';
 import { apiService } from '@/lib/api';
 import { WhatsAppSession, QRCodeResponse } from '@/types/whatsapp';
@@ -18,15 +18,27 @@ export default function QRCodeModal({ session, onClose, onConnected }: QRCodeMod
   const [status, setStatus] = useState<string>(session.status);
   const [checkingStatus, setCheckingStatus] = useState(false);
 
+  const statusRef = useRef(status);
+  useEffect(() => { statusRef.current = status; }, [status]);
+
   useEffect(() => {
     loadQRCode();
 
-    // Verificar status a cada 1 segundo (mais agressivo)
     const statusInterval = setInterval(() => {
       checkStatus();
     }, 1000);
 
-    return () => clearInterval(statusInterval);
+    // QR code expira em ~60s — recarregar a cada 45s automaticamente
+    const qrRefreshInterval = setInterval(() => {
+      if (statusRef.current !== 'open') {
+        loadQRCode();
+      }
+    }, 45000);
+
+    return () => {
+      clearInterval(statusInterval);
+      clearInterval(qrRefreshInterval);
+    };
   }, []);
 
   const loadQRCode = async () => {

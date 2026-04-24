@@ -24,11 +24,10 @@ class BaileysService {
     this.sessions = new Map();
     this.qrCodes = new Map();
     this.authDir = path.join(__dirname, '../../baileys_sessions');
-    if (fs.existsSync(this.authDir)) {
-      fs.rmSync(this.authDir, { recursive: true, force: true });
+    if (!fs.existsSync(this.authDir)) {
+      fs.mkdirSync(this.authDir, { recursive: true });
     }
-    fs.mkdirSync(this.authDir, { recursive: true });
-    console.log('Baileys sessions dir limpo no startup');
+    console.log('Baileys sessions dir: ' + this.authDir);
     this.startHeartbeat();
   }
 
@@ -73,7 +72,14 @@ class BaileysService {
       const sessionDir = path.join(this.authDir, sessionName);
       if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
       const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-      const { version } = await fetchLatestBaileysVersion();
+      let version;
+      try {
+        const vResult = await fetchLatestBaileysVersion();
+        version = vResult.version;
+      } catch (vErr) {
+        version = [2, 3000, 1015901307];
+        console.log('fetchLatestBaileysVersion falhou, usando fallback: ' + version);
+      }
       console.log('Baileys version: ' + version + ' for: ' + sessionName);
 
       const sock = makeWASocket({
@@ -171,7 +177,7 @@ class BaileysService {
     const session = this.sessions.get(sessionName);
     const qrCode = this.qrCodes.get(sessionName);
     if (!session) throw new Error('Sessao nao encontrada');
-    if (!qrCode && (session.status === 'connecting' || session.status === 'qr_ready') && _retries < 10) {
+    if (!qrCode && (session.status === 'connecting' || session.status === 'qr_ready') && _retries < 20) {
       await new Promise(r => setTimeout(r, 2000));
       return this.getQRCode(sessionName, _retries + 1);
     }

@@ -45,7 +45,7 @@ export default function WhatsAppPage() {
             const statusData = await apiService.getSessionStatus(session.session_name);
             return {
               ...session,
-              evolution_status: statusData?.instance?.state || session.evolution_status || session.status,
+              evolution_status: statusData?.state || statusData?.status || session.evolution_status || session.status,
               last_status_check: new Date().toISOString()
             };
           } catch (error) {

@@ -547,8 +547,39 @@ app.use('*', function(req, res) {
   res.status(404).json({ error: 'Endpoint nao encontrado' });
 });
 
+async function recoverActiveSessions() {
+  try {
+    console.log('🔄 Verificando sessoes no banco para recuperacao...');
+    const { supabaseAdmin } = require('./src/config/supabase');
+    const baileysService = require('./src/services/baileysService');
+    const { data: sessions, error } = await supabaseAdmin
+      .from('evolution_sessions')
+      .select('session_name, webhook_url, status');
+    if (error || !sessions || sessions.length === 0) {
+      console.log('Nenhuma sessao para recuperar');
+      return;
+    }
+    console.log('🔄 Recuperando ' + sessions.length + ' sessao(oes) do banco...');
+    for (const session of sessions) {
+      try {
+        const inMemory = baileysService.sessions.has(session.session_name);
+        if (!inMemory) {
+          await baileysService.createSession(session.session_name, session.webhook_url);
+          console.log('✅ Sessao recuperada: ' + session.session_name);
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      } catch (err) {
+        console.error('❌ Erro recuperando ' + session.session_name + ': ' + err.message);
+      }
+    }
+  } catch (err) {
+    console.error('❌ Erro na recuperacao de sessoes: ' + err.message);
+  }
+}
+
 server.listen(PORT, function() {
   console.log('🚀 Servidor Baileys ONLINE na porta:' + PORT);
+  setTimeout(recoverActiveSessions, 3000);
   console.log('📡 WebSocket ativo');
   console.log('💬 Baileys ready para WhatsApp!');
   console.log('🏥 Health endpoints: /, /health, /healthz, /ready');

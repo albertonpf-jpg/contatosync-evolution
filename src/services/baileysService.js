@@ -89,18 +89,28 @@ class BaileysService {
       if (session) { session.socket = sock; session.saveCreds = saveCreds; }
 
       sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
+        const { connection, lastDisconnect, qr, isNewLogin } = update;
         const s = this.sessions.get(sessionName);
+
+        console.log(`🔄 CONNECTION UPDATE ${sessionName}:`, {
+          connection,
+          isNewLogin,
+          hasQr: !!qr,
+          hasLastDisconnect: !!lastDisconnect,
+          currentStatus: s?.status
+        });
+
         if (qr) {
           const qrBase64 = await QRCode.toDataURL(qr);
           this.qrCodes.set(sessionName, qrBase64);
           if (s) { s.qrCode = qrBase64; s.status = 'qr_ready'; }
-          console.log('QR Code gerado para: ' + sessionName);
+          console.log('✅ QR Code gerado para: ' + sessionName);
         }
+
         if (connection === 'close') {
           const code = lastDisconnect?.error?.output?.statusCode;
           const shouldReconnect = code !== DisconnectReason.loggedOut;
-          console.log('Conexao fechada ' + sessionName + ' code=' + code);
+          console.log('❌ Conexao fechada ' + sessionName + ' code=' + code);
           if (s) { s.status = 'disconnected'; s.qrCode = null; }
           this.qrCodes.delete(sessionName);
           if (shouldReconnect) {
@@ -110,10 +120,17 @@ class BaileysService {
             this._updateDatabaseStatus(sessionName, 'disconnected', 'logout');
           }
         } else if (connection === 'open') {
-          console.log('Sessao ' + sessionName + ' conectada!');
-          if (s) { s.status = 'connected'; s.qrCode = null; s.lastActivity = new Date().toISOString(); }
+          console.log('🎉 SESSAO CONECTADA! ' + sessionName);
+          if (s) {
+            s.status = 'connected';
+            s.qrCode = null;
+            s.lastActivity = new Date().toISOString();
+            console.log('📱 Status sessão atualizado para CONNECTED:', sessionName);
+          }
           this.qrCodes.delete(sessionName);
+          this._updateDatabaseStatus(sessionName, 'connected', 'whatsapp_connected');
         } else if (connection === 'connecting') {
+          console.log('🔄 Conectando... ' + sessionName);
           if (s) s.status = 'connecting';
         }
       });
@@ -151,15 +168,29 @@ class BaileysService {
 
   getSessionStatus(sessionName) {
     const session = this.sessions.get(sessionName);
-    if (!session) return { sessionName, status: 'not_found', state: 'close' };
+    if (!session) {
+      console.log(`❌ Sessão ${sessionName} não encontrada`);
+      return { sessionName, status: 'not_found', state: 'close' };
+    }
+
+    console.log(`🔍 GET STATUS ${sessionName}:`, {
+      currentStatus: session.status,
+      hasSocket: !!session.socket,
+      hasUser: !!session.socket?.user,
+      wsReadyState: session.socket?.ws?.readyState,
+      hasQrCode: !!session.qrCode
+    });
 
     // Verificação em tempo real do status da sessão
     if (session.status === 'connected') {
       try {
         // Verifica se realmente ainda está conectado
-        if (!session.socket?.user?.id || session.socket?.ws?.readyState !== 1) {
+        if (!session.socket?.user?.id) {
           session.status = 'disconnected';
-          console.log(`🔄 Status ${sessionName} atualizado: connected -> disconnected`);
+          console.log(`🔄 Status ${sessionName} atualizado: connected -> disconnected (no user)`);
+        } else if (session.socket?.ws?.readyState !== 1) {
+          session.status = 'disconnected';
+          console.log(`🔄 Status ${sessionName} atualizado: connected -> disconnected (ws=${session.socket.ws.readyState})`);
         }
       } catch (err) {
         session.status = 'disconnected';
@@ -170,7 +201,10 @@ class BaileysService {
     let state = 'close';
     if (session.status === 'connected') state = 'open';
     else if (session.status === 'connecting' || session.status === 'qr_ready') state = 'connecting';
-    return { sessionName, status: session.status, state, hasQR: !!session.qrCode, createdAt: session.createdAt };
+
+    const result = { sessionName, status: session.status, state, hasQR: !!session.qrCode, createdAt: session.createdAt };
+    console.log(`📤 RETORNANDO STATUS ${sessionName}:`, result);
+    return result;
   }
 
   async sendTextMessage(sessionName, phone, message) {

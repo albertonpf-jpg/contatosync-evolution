@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Smartphone, Plus, Trash2, MessageSquare, AlertCircle, Wifi, WifiOff, Clock } from 'lucide-react';
+import { Smartphone, Plus, Trash2, MessageSquare, AlertCircle, Wifi, WifiOff, Clock, RefreshCw } from 'lucide-react';
 import { apiService } from '@/lib/api';
 import { WhatsAppSession } from '@/types/whatsapp';
 import DashboardLayout from '@/components/DashboardLayout';
@@ -21,11 +21,11 @@ export default function WhatsAppPage() {
   useEffect(() => {
     loadSessions();
 
-    // Atualizar status a cada 30 segundos (reduzindo frequência)
+    // Atualizar status a cada 5 segundos para tempo real
     const interval = setInterval(() => {
       console.log('Atualizando sessões...');
       loadSessions();
-    }, 30000);
+    }, 5000);
 
     setRefreshInterval(interval);
 
@@ -38,7 +38,23 @@ export default function WhatsAppPage() {
   const loadSessions = async () => {
     try {
       const data = await apiService.getWhatsAppSessions();
-      setSessions(data || []);
+      const sessionsWithUpdatedStatus = await Promise.all(
+        (data || []).map(async (session) => {
+          try {
+            // Verificar status individual de cada sessão
+            const statusData = await apiService.getSessionStatus(session.session_name);
+            return {
+              ...session,
+              evolution_status: statusData?.instance?.state || session.evolution_status || session.status,
+              last_status_check: new Date().toISOString()
+            };
+          } catch (error) {
+            console.log(`Erro ao verificar status da sessão ${session.session_name}:`, error);
+            return session;
+          }
+        })
+      );
+      setSessions(sessionsWithUpdatedStatus);
     } catch (error: unknown) {
       console.error('Erro ao carregar sessões:', error);
       // Em caso de rate limiting, não mostrar erro para o usuário
@@ -82,6 +98,11 @@ export default function WhatsAppPage() {
     setShowSendMessage(true);
   };
 
+  const getCurrentStatus = (session: WhatsAppSession): string => {
+    // Priorizar evolution_status que vem da API real do WhatsApp
+    return session.evolution_status || session.status || 'disconnected';
+  };
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'connected':
@@ -90,8 +111,11 @@ export default function WhatsAppPage() {
       case 'qr_pending':
       case 'connecting':
         return <Clock className="h-4 w-4 text-yellow-500" />;
-      default:
+      case 'disconnected':
+      case 'close':
         return <WifiOff className="h-4 w-4 text-red-500" />;
+      default:
+        return <WifiOff className="h-4 w-4 text-gray-500" />;
     }
   };
 
@@ -107,7 +131,7 @@ export default function WhatsAppPage() {
       case 'close':
         return 'Desconectado';
       default:
-        return 'Erro';
+        return 'Status desconhecido';
     }
   };
 
@@ -119,8 +143,11 @@ export default function WhatsAppPage() {
       case 'qr_pending':
       case 'connecting':
         return 'bg-yellow-100 text-yellow-800';
-      default:
+      case 'disconnected':
+      case 'close':
         return 'bg-red-100 text-red-800';
+      default:
+        return 'bg-gray-100 text-gray-600';
     }
   };
 
@@ -133,13 +160,26 @@ export default function WhatsAppPage() {
             <h1 className="text-2xl font-bold text-gray-900">WhatsApp</h1>
             <p className="text-gray-600">Gerencie suas conexões WhatsApp</p>
           </div>
-          <button
-            onClick={() => setShowNewSession(true)}
-            className="mt-4 sm:mt-0 inline-flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            Nova Sessão
-          </button>
+          <div className="mt-4 sm:mt-0 flex items-center space-x-3">
+            <button
+              onClick={() => {
+                setLoading(true);
+                loadSessions();
+              }}
+              disabled={loading}
+              className="inline-flex items-center px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+              Atualizar
+            </button>
+            <button
+              onClick={() => setShowNewSession(true)}
+              className="inline-flex items-center px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              Nova Sessão
+            </button>
+          </div>
         </div>
 
         {/* Info Card */}
@@ -194,9 +234,9 @@ export default function WhatsAppPage() {
                           <h4 className="text-lg font-medium text-gray-900">{session.session_name}</h4>
                           <div className="flex items-center mt-1 space-x-4">
                             <div className="flex items-center">
-                              {getStatusIcon(session.evolution_status || session.status)}
-                              <span className={`ml-2 px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(session.evolution_status || session.status)}`}>
-                                {getStatusText(session.evolution_status || session.status)}
+                              {getStatusIcon(getCurrentStatus(session))}
+                              <span className={`ml-2 px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(getCurrentStatus(session))}`}>
+                                {getStatusText(getCurrentStatus(session))}
                               </span>
                             </div>
                             {session.whatsapp_phone && (
@@ -215,7 +255,7 @@ export default function WhatsAppPage() {
                     </div>
 
                     <div className="flex items-center space-x-2 ml-4">
-                      {(session.status === 'qr_pending' || session.evolution_status === 'close') && (
+                      {(['qr_pending', 'connecting', 'disconnected', 'close'].includes(getCurrentStatus(session))) && (
                         <button
                           onClick={() => handleShowQR(session)}
                           className="inline-flex items-center px-3 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700"
@@ -224,7 +264,7 @@ export default function WhatsAppPage() {
                         </button>
                       )}
 
-                      {(session.status === 'connected' || session.evolution_status === 'open') && (
+                      {(['connected', 'open'].includes(getCurrentStatus(session))) && (
                         <button
                           onClick={() => handleSendMessage(session)}
                           className="inline-flex items-center px-3 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700"

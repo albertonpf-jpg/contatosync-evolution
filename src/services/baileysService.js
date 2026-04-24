@@ -40,11 +40,8 @@ class BaileysService {
     for (const [name, session] of this.sessions.entries()) {
       if (session.status === 'connected') {
         try {
-          // Verificações mais rigorosas de conexão
           if (!session.socket?.user?.id) throw new Error('no user');
-          if (!session.socket?.authState?.creds) throw new Error('no auth');
-          if (session.socket?.ws?.readyState !== 1) throw new Error('websocket closed');
-
+          // ws.readyState nao e confiavel no Baileys v6 - nao usar para verificar conexao
           session.lastHeartbeat = new Date().toISOString();
           console.log(`✅ Sessão ${name} heartbeat OK`);
         } catch (err) {
@@ -220,9 +217,6 @@ class BaileysService {
         if (!session.socket?.user?.id) {
           session.status = 'disconnected';
           console.log(`🔄 Status ${sessionName} atualizado: connected -> disconnected (no user)`);
-        } else if (session.socket?.ws?.readyState !== 1) {
-          session.status = 'disconnected';
-          console.log(`🔄 Status ${sessionName} atualizado: connected -> disconnected (ws=${session.socket.ws.readyState})`);
         }
       } catch (err) {
         session.status = 'disconnected';
@@ -231,8 +225,8 @@ class BaileysService {
     } else if (session.status === 'connecting' || session.status === 'qr_ready') {
       // Verificação EXTRA: Se tem user.id mas status não é connected
       try {
-        if (session.socket?.user?.id && session.socket?.ws?.readyState === 1) {
-          console.log(`🔥 FORÇANDO conexão detectada para ${sessionName}!`);
+        if (session.socket?.user?.id) {
+          console.log(`🔥 Conexao detectada para ${sessionName}!`);
           session.status = 'connected';
           session.connectedAt = new Date().toISOString();
           this._updateDatabaseStatus(sessionName, 'connected', 'force_detected');

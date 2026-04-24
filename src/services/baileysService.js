@@ -133,8 +133,15 @@ class BaileysService {
           if (shouldReconnect) {
             setTimeout(() => this._connectSession(sessionName, webhookUrl), 3000);
           } else {
-            this.sessions.delete(sessionName);
-            this._updateDatabaseStatus(sessionName, 'disconnected', 'logout');
+            // Logged out: delete stale credentials so next connect generates fresh QR
+            const sessionDir = path.join(this.authDir, sessionName);
+            try {
+              if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
+              console.log('Credenciais removidas (logout): ' + sessionName);
+            } catch (e) { console.error('Erro ao limpar credenciais:', e.message); }
+            // Reconnect with fresh state to generate new QR
+            if (s) s.status = 'connecting';
+            setTimeout(() => this._connectSession(sessionName, webhookUrl), 3000);
           }
         } else if (connection === 'open') {
           console.log('🎉 SESSAO CONECTADA! ' + sessionName);
@@ -176,7 +183,14 @@ class BaileysService {
   async getQRCode(sessionName, _retries = 0) {
     const session = this.sessions.get(sessionName);
     const qrCode = this.qrCodes.get(sessionName);
-    if (!session) throw new Error('Sessao nao encontrada');
+    if (!session) {
+      if (_retries > 0) {
+        // Session foi removida durante o retry (ex: logout durante espera)
+        // Retorna null para que a rota tente novamente em vez de crashar com 500
+        return { base64: null, qr: null, qrcode: null, status: 'disconnected', sessionName };
+      }
+      throw new Error('Sessao nao encontrada');
+    }
     if (!qrCode && (session.status === 'connecting' || session.status === 'qr_ready') && _retries < 20) {
       await new Promise(r => setTimeout(r, 2000));
       return this.getQRCode(sessionName, _retries + 1);

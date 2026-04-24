@@ -136,7 +136,9 @@ class ApiService {
   }
 
   async getQRCode(sessionName: string) {
-    const response = await this.api.get(`/whatsapp/sessions/${sessionName}/qrcode`);
+    const response = await this.api.get(`/whatsapp/sessions/${sessionName}/qrcode`, {
+      timeout: 60000, // QR code pode levar ate 40s para gerar
+    });
     return response.data.data;
   }
 

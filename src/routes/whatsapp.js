@@ -153,7 +153,18 @@ router.get('/sessions/:sessionName/qrcode', asyncHandler(async (req, res) => {
       console.log('Sessao nao esta em memoria, reiniciando: ' + evolutionSessionName);
       await baileysService.createSession(evolutionSessionName, session.webhook_url);
     }
-    const qrCodeData = await baileysService.getQRCode(evolutionSessionName);
+    let qrCodeData = await baileysService.getQRCode(evolutionSessionName);
+
+    // Se QR nao foi gerado (sessao em estado invalido), reiniciar e aguardar
+    if (!qrCodeData.base64) {
+      const currentStatus = qrCodeData?.status;
+      if (currentStatus === 'disconnected' || currentStatus === 'error' || currentStatus === 'not_found') {
+        console.log('Sessao em estado ' + currentStatus + ', reiniciando: ' + evolutionSessionName);
+        await baileysService.createSession(evolutionSessionName, session.webhook_url);
+        qrCodeData = await baileysService.getQRCode(evolutionSessionName);
+      }
+    }
+
     if (!qrCodeData.base64) {
       return error(res, 'QR Code ainda nao foi gerado. Aguarde alguns segundos e tente novamente.', 202);
     }

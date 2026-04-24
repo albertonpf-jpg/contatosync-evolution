@@ -43,18 +43,13 @@ export default function WhatsAppPage() {
           try {
             // Verificar status individual de cada sessão
             const statusData = await apiService.getSessionStatus(session.session_name);
-            console.log(`🔍 DEBUG - Sessão: ${session.session_name}`);
-            console.log('📋 Status original:', session.status, session.evolution_status);
-            console.log('🆕 Status API response:', statusData);
-            console.log('🎯 Status final:', statusData?.instance?.state || session.evolution_status || session.status);
-
             return {
               ...session,
               evolution_status: statusData?.instance?.state || session.evolution_status || session.status,
               last_status_check: new Date().toISOString()
             };
           } catch (error) {
-            console.log(`❌ Erro ao verificar status da sessão ${session.session_name}:`, error);
+            console.error(`Erro ao verificar status da sessão ${session.session_name}:`, error);
             return session;
           }
         })
@@ -255,10 +250,6 @@ export default function WhatsAppPage() {
                               👤 {session.device_info.profileName}
                             </p>
                           )}
-                          {/* DEBUG INFO VISUAL */}
-                          <p className="text-xs text-red-600 mt-1 font-mono">
-                            DEBUG: orig={session.status} evo={session.evolution_status} final={getCurrentStatus(session)}
-                          </p>
                         </div>
                       </div>
                     </div>

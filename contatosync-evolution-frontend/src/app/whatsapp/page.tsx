@@ -69,11 +69,15 @@ export default function WhatsAppPage() {
 
   const handleCreateSession = async (sessionName: string) => {
     try {
-      await apiService.createWhatsAppSession(sessionName);
+      console.log(`🔄 Criando sessão: ${sessionName}`);
+      const result = await apiService.createWhatsAppSession(sessionName);
+      console.log('✅ Sessão criada:', result);
       setShowNewSession(false);
       loadSessions();
     } catch (error: unknown) {
-      console.error('Erro ao criar sessão:', error);
+      console.error('❌ Erro ao criar sessão:', error);
+      // Re-throw para o modal mostrar o erro
+      throw error;
     }
   };
 

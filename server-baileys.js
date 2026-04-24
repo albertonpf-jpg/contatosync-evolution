@@ -2,22 +2,33 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const socketIo = require('socket.io');
-require('dotenv').config();
 
-const authRoutes = require('./src/routes/auth');
-const clientsRoutes = require('./src/routes/clients');
-const contactsRoutes = require('./src/routes/contacts');
-const conversationsRoutes = require('./src/routes/conversations');
-const messagesRoutes = require('./src/routes/messages');
-const aiRoutes = require('./src/routes/ai');
-const activitiesRoutes = require('./src/routes/activities');
-const integrationsRoutes = require('./src/routes/integrations');
-const sessionsRoutes = require('./src/routes/sessions');
-const whatsappRoutes = require('./src/routes/whatsapp');
-const webhooksRoutes = require('./src/routes/webhooks');
-const { auth } = require('./src/middleware/auth');
-const socketAuth = require('./src/middleware/socketAuth');
-const { initializeSocket } = require('./src/services/socketService');
+console.log('🚀 Iniciando ContatoSync Evolution...');
+
+try {
+  require('dotenv').config();
+  console.log('✅ Dotenv carregado');
+
+  const authRoutes = require('./src/routes/auth');
+  const clientsRoutes = require('./src/routes/clients');
+  const contactsRoutes = require('./src/routes/contacts');
+  const conversationsRoutes = require('./src/routes/conversations');
+  const messagesRoutes = require('./src/routes/messages');
+  const aiRoutes = require('./src/routes/ai');
+  const activitiesRoutes = require('./src/routes/activities');
+  const integrationsRoutes = require('./src/routes/integrations');
+  const sessionsRoutes = require('./src/routes/sessions');
+  const whatsappRoutes = require('./src/routes/whatsapp');
+  const webhooksRoutes = require('./src/routes/webhooks');
+  const { auth } = require('./src/middleware/auth');
+  const socketAuth = require('./src/middleware/socketAuth');
+  const { initializeSocket } = require('./src/services/socketService');
+
+  console.log('✅ Todas rotas carregadas');
+} catch (err) {
+  console.error('❌ ERRO ao carregar dependências:', err);
+  process.exit(1);
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -492,6 +503,22 @@ server.listen(PORT, function() {
   console.log('Servidor Baileys COMPLETO em http://localhost:' + PORT);
   console.log('WebSocket ativo');
   console.log('Baileys ready para WhatsApp!');
+}).on('error', (err) => {
+  console.error('❌ ERRO CRÍTICO servidor:', err);
+  process.exit(1);
+});
+
+// Captura erros não tratados
+process.on('uncaughtException', (err) => {
+  console.error('❌ UNCAUGHT EXCEPTION:', err);
+  console.error(err.stack);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ UNHANDLED REJECTION:', reason);
+  console.error('Promise:', promise);
+  process.exit(1);
 });
 
 module.exports = { app: app, server: server, io: io };

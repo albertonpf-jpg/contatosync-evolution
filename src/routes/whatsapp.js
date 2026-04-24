@@ -7,6 +7,10 @@ const { formatActivity } = require('../utils/helpers');
 
 const router = express.Router();
 
+// Helper para converter nome display para nome interno
+const getEvolutionSessionName = (displayName) => `evo_${displayName}`;
+const getDisplayName = (evolutionSessionName) => evolutionSessionName.replace(/^evo_/, '');
+
 /**
  * GET /api/whatsapp/sessions
  * Listar sessões WhatsApp do cliente
@@ -28,9 +32,17 @@ router.get('/sessions', asyncHandler(async (req, res) => {
     sessions.map(async (session) => {
       try {
         const status = baileysService.getSessionStatus(session.session_name);
-        return { ...session, baileys_status: status?.state || 'disconnected' };
+        return {
+          ...session,
+          session_name: session.display_name || getDisplayName(session.session_name), // Retorna nome display
+          baileys_status: status?.state || 'disconnected'
+        };
       } catch (err) {
-        return { ...session, baileys_status: 'error' };
+        return {
+          ...session,
+          session_name: session.display_name || getDisplayName(session.session_name),
+          baileys_status: 'error'
+        };
       }
     })
   );
@@ -49,12 +61,15 @@ router.post('/sessions', asyncHandler(async (req, res) => {
     return error(res, 'Nome da sessão é obrigatório', 400);
   }
 
+  // Adicionar prefixo para evitar conflito com ContatoSync antigo
+  const evolutionSessionName = `evo_${session_name}`;
+
   const { data: existingSession } = await executeWithRLS(req.user.id, (client) =>
     client
       .from('evolution_sessions')
       .select('id')
       .eq('client_id', req.user.id)
-      .eq('session_name', session_name)
+      .eq('session_name', evolutionSessionName)
       .single()
   );
 
@@ -67,7 +82,8 @@ router.post('/sessions', asyncHandler(async (req, res) => {
   const sessionData = {
     id: uuidv4(),
     client_id: req.user.id,
-    session_name,
+    session_name: evolutionSessionName,
+    display_name: session_name, // Nome original para display
     status: 'qr_pending',
     webhook_url: webhookUrl,
     created_at: new Date().toISOString(),
@@ -88,7 +104,7 @@ router.post('/sessions', asyncHandler(async (req, res) => {
 
   let baileysResponse = null;
   try {
-    baileysResponse = await baileysService.createSession(session_name, webhookUrl);
+    baileysResponse = await baileysService.createSession(evolutionSessionName, webhookUrl);
     console.log('✅ Baileys sessão criada:', baileysResponse);
   } catch (baileysError) {
     console.error('❌ Erro ao criar sessão Baileys:', baileysError);
@@ -116,13 +132,14 @@ router.post('/sessions', asyncHandler(async (req, res) => {
  */
 router.get('/sessions/:sessionName/qrcode', asyncHandler(async (req, res) => {
   const { sessionName } = req.params;
+  const evolutionSessionName = getEvolutionSessionName(sessionName);
 
   const { data: session } = await executeWithRLS(req.user.id, (client) =>
     client
       .from('evolution_sessions')
       .select('*')
       .eq('client_id', req.user.id)
-      .eq('session_name', sessionName)
+      .eq('session_name', evolutionSessionName)
       .single()
   );
 
@@ -131,7 +148,7 @@ router.get('/sessions/:sessionName/qrcode', asyncHandler(async (req, res) => {
   }
 
   try {
-    const qrCodeData = await baileysService.getQRCode(sessionName);
+    const qrCodeData = await baileysService.getQRCode(evolutionSessionName);
     if (!qrCodeData.base64) {
       return error(res, 'QR Code ainda não foi gerado. Aguarde alguns segundos e tente novamente.', 202);
     }
@@ -147,13 +164,14 @@ router.get('/sessions/:sessionName/qrcode', asyncHandler(async (req, res) => {
  */
 router.get('/sessions/:sessionName/status', asyncHandler(async (req, res) => {
   const { sessionName } = req.params;
+  const evolutionSessionName = getEvolutionSessionName(sessionName);
 
   const { data: session } = await executeWithRLS(req.user.id, (client) =>
     client
       .from('evolution_sessions')
       .select('*')
       .eq('client_id', req.user.id)
-      .eq('session_name', sessionName)
+      .eq('session_name', evolutionSessionName)
       .single()
   );
 
@@ -162,7 +180,7 @@ router.get('/sessions/:sessionName/status', asyncHandler(async (req, res) => {
   }
 
   try {
-    const status = baileysService.getSessionStatus(sessionName);
+    const status = baileysService.getSessionStatus(evolutionSessionName);
     const newStatus = status?.state || 'disconnected';
 
     if (session.status !== newStatus) {
@@ -189,13 +207,14 @@ router.get('/sessions/:sessionName/status', asyncHandler(async (req, res) => {
  */
 router.delete('/sessions/:sessionName', asyncHandler(async (req, res) => {
   const { sessionName } = req.params;
+  const evolutionSessionName = getEvolutionSessionName(sessionName);
 
   const { data: session } = await executeWithRLS(req.user.id, (client) =>
     client
       .from('evolution_sessions')
       .select('*')
       .eq('client_id', req.user.id)
-      .eq('session_name', sessionName)
+      .eq('session_name', evolutionSessionName)
       .single()
   );
 
@@ -204,7 +223,7 @@ router.delete('/sessions/:sessionName', asyncHandler(async (req, res) => {
   }
 
   try {
-    await baileysService.deleteSession(sessionName);
+    await baileysService.deleteSession(evolutionSessionName);
 
     await executeWithRLS(req.user.id, (client) =>
       client
@@ -240,12 +259,14 @@ router.post('/send-message', asyncHandler(async (req, res) => {
     return error(res, 'Session, telefone e mensagem são obrigatórios', 400);
   }
 
+  const evolutionSessionName = getEvolutionSessionName(session_name);
+
   const { data: session } = await executeWithRLS(req.user.id, (client) =>
     client
       .from('evolution_sessions')
       .select('*')
       .eq('client_id', req.user.id)
-      .eq('session_name', session_name)
+      .eq('session_name', evolutionSessionName)
       .single()
   );
 
@@ -254,7 +275,7 @@ router.post('/send-message', asyncHandler(async (req, res) => {
   }
 
   try {
-    const sendResult = await baileysService.sendTextMessage(session_name, phone, message);
+    const sendResult = await baileysService.sendTextMessage(evolutionSessionName, phone, message);
     const now = new Date().toISOString();
     const jid = `${phone.replace(/\D/g, '')}@s.whatsapp.net`;
 

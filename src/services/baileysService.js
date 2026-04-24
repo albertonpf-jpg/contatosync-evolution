@@ -81,8 +81,19 @@ class BaileysService {
         logger: makeSilentLogger(),
         auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, makeSilentLogger()) },
         printQRInTerminal: false,
-        browser: ['ContatoSync', 'Chrome', '120.0.0'],
-        connectTimeoutMs: 60000
+        browser: ['ContatoSync Evolution', 'Desktop', '1.0.0'],
+        connectTimeoutMs: 120000, // 2 minutos
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 10000,
+        markOnlineOnConnect: false,
+        syncFullHistory: false,
+        shouldSyncHistoryMessage: () => false,
+        maxMsgRetryCount: 3,
+        msgRetryCounterCache: undefined,
+        retryRequestDelayMs: 250,
+        shouldIgnoreJid: () => false,
+        linkPreviewImageThumbnailWidth: 192,
+        transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 }
       });
 
       const session = this.sessions.get(sessionName);

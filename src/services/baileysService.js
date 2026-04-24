@@ -125,6 +125,7 @@ class BaileysService {
             s.status = 'connected';
             s.qrCode = null;
             s.lastActivity = new Date().toISOString();
+            s.connectedAt = new Date().toISOString();
             console.log('📱 Status sessão atualizado para CONNECTED:', sessionName);
           }
           this.qrCodes.delete(sessionName);
@@ -195,6 +196,18 @@ class BaileysService {
       } catch (err) {
         session.status = 'disconnected';
         console.log(`🔄 Status ${sessionName} erro: ${err.message}`);
+      }
+    } else if (session.status === 'connecting' || session.status === 'qr_ready') {
+      // Verificação EXTRA: Se tem user.id mas status não é connected
+      try {
+        if (session.socket?.user?.id && session.socket?.ws?.readyState === 1) {
+          console.log(`🔥 FORÇANDO conexão detectada para ${sessionName}!`);
+          session.status = 'connected';
+          session.connectedAt = new Date().toISOString();
+          this._updateDatabaseStatus(sessionName, 'connected', 'force_detected');
+        }
+      } catch (err) {
+        console.log(`Error force check ${sessionName}:`, err.message);
       }
     }
 

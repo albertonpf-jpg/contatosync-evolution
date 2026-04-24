@@ -11,9 +11,9 @@ class ApiService {
         return process.env.NEXT_PUBLIC_API_URL;
       }
 
-      // Em produção, usar Vercel API do Evolution
+      // Em produção, usar Railway URL do Evolution
       if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {
-        return 'https://contatosync-evolution.vercel.app/api';
+        return 'https://web-production-50297.up.railway.app/api';
       }
 
       // Local development

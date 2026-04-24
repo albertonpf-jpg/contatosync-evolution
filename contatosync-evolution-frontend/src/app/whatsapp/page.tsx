@@ -255,6 +255,10 @@ export default function WhatsAppPage() {
                               👤 {session.device_info.profileName}
                             </p>
                           )}
+                          {/* DEBUG INFO VISUAL */}
+                          <p className="text-xs text-red-600 mt-1 font-mono">
+                            DEBUG: orig={session.status} evo={session.evolution_status} final={getCurrentStatus(session)}
+                          </p>
                         </div>
                       </div>
                     </div>

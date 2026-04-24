@@ -86,10 +86,20 @@ export default function ConversationsPage() {
     if (!newMessage.trim() || !selectedConversation || sending) return;
     setSending(true);
     try {
-      await apiService.sendMessage({ conversation_id: selectedConversation.id, content: newMessage.trim(), message_type: 'text' });
+      await apiService.sendMessage({
+        conversation_id: selectedConversation.id,
+        content: newMessage.trim(),
+        message_type: 'text'
+      });
       setNewMessage('');
-      await openConversation(selectedConversation);
-    } catch {} finally { setSending(false); }
+      // Aguardar um pouco antes de recarregar mensagens
+      setTimeout(() => openConversation(selectedConversation), 1000);
+    } catch (err: any) {
+      console.error('Erro ao enviar mensagem:', err);
+      alert('Erro ao enviar mensagem. Verifique se o WhatsApp está conectado.');
+    } finally {
+      setSending(false);
+    }
   };
 
   const getName = (c: Conversation) => c.contact_name || c.evolution_contacts?.name || c.phone || 'Sem nome';

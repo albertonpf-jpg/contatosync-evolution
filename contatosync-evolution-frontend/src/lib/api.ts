@@ -13,7 +13,7 @@ class ApiService {
 
       // Em produção, usar Railway URL
       if (typeof window !== 'undefined' && window.location.hostname !== 'localhost') {
-        return 'https://web-production-50297.up.railway.app/api';
+        return 'https://web-production-a17bb.up.railway.app/api';
       }
 
       // Local development
@@ -181,7 +181,12 @@ class ApiService {
     content: string;
     message_type?: string;
   }) {
-    const response = await this.api.post('/messages', data);
+    // Enviar via webhook de conversas diretamente
+    const response = await this.api.post('/messages/send', {
+      conversation_id: data.conversation_id,
+      content: data.content,
+      message_type: data.message_type || 'text'
+    });
     return response.data.data;
   }
 

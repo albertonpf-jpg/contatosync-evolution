@@ -156,14 +156,33 @@ app.get('/debug/qr/:sessionName?', async function(req, res) {
   }
 });
 
-// Health check
+// Health checks - múltiplas rotas para Railway
+const healthResponse = {
+  status: 'OK',
+  timestamp: new Date().toISOString(),
+  message: 'ContatoSync Evolution - Baileys',
+  service: 'WhatsApp Baileys',
+  port: PORT
+};
+
+app.get('/', function(req, res) {
+  console.log('🏥 Health check: /');
+  res.status(200).json(healthResponse);
+});
+
 app.get('/health', function(req, res) {
-  res.json({
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    message: 'ContatoSync com Baileys - Completo',
-    service: 'Baileys WhatsApp'
-  });
+  console.log('🏥 Health check: /health');
+  res.status(200).json(healthResponse);
+});
+
+app.get('/healthz', function(req, res) {
+  console.log('🏥 Health check: /healthz');
+  res.status(200).text('OK');
+});
+
+app.get('/ready', function(req, res) {
+  console.log('🏥 Health check: /ready');
+  res.status(200).text('READY');
 });
 
 app.get('/debug/baileys', function(req, res) {
@@ -506,9 +525,10 @@ app.use('*', function(req, res) {
 });
 
 server.listen(PORT, function() {
-  console.log('Servidor Baileys COMPLETO em http://localhost:' + PORT);
-  console.log('WebSocket ativo');
-  console.log('Baileys ready para WhatsApp!');
+  console.log('🚀 Servidor Baileys ONLINE na porta:' + PORT);
+  console.log('📡 WebSocket ativo');
+  console.log('💬 Baileys ready para WhatsApp!');
+  console.log('🏥 Health endpoints: /, /health, /healthz, /ready');
 }).on('error', (err) => {
   console.error('❌ ERRO CRÍTICO servidor:', err);
   process.exit(1);

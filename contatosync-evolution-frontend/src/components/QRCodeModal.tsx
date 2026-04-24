@@ -51,6 +51,8 @@ export default function QRCodeModal({ session, onClose, onConnected }: QRCodeMod
       setCheckingStatus(true);
       const statusData = await apiService.getSessionStatus(session.session_name);
 
+      console.log(`🔍 QR Modal - Check status ${session.session_name}:`, statusData);
+
       // Verificar se está conectado - múltiplas possibilidades
       const isConnected =
         statusData?.state === 'open' ||
@@ -59,19 +61,21 @@ export default function QRCodeModal({ session, onClose, onConnected }: QRCodeMod
 
       const newStatus = isConnected ? 'open' : (statusData?.state || statusData?.status || 'close');
 
+      console.log(`📊 Status atual: ${status} → novo: ${newStatus}, conectado: ${isConnected}`);
+
       if (newStatus !== status) {
         setStatus(newStatus);
+        console.log(`🔄 Status atualizado para: ${newStatus}`);
 
         if (newStatus === 'open' || isConnected) {
           console.log('✅ WhatsApp conectado! Fechando modal...');
-          // Conectado com sucesso!
           setTimeout(() => {
             onConnected();
           }, 1000);
         }
       }
     } catch (err) {
-      console.error('Erro ao verificar status:', err);
+      console.error('❌ Erro ao verificar status:', err);
     } finally {
       setCheckingStatus(false);
     }

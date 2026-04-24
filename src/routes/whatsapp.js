@@ -34,13 +34,13 @@ router.get('/sessions', asyncHandler(async (req, res) => {
         const status = baileysService.getSessionStatus(session.session_name);
         return {
           ...session,
-          session_name: session.display_name || getDisplayName(session.session_name), // Retorna nome display
+          session_name: getDisplayName(session.session_name), // Retorna nome display
           baileys_status: status?.state || 'disconnected'
         };
       } catch (err) {
         return {
           ...session,
-          session_name: session.display_name || getDisplayName(session.session_name),
+          session_name: getDisplayName(session.session_name),
           baileys_status: 'error'
         };
       }
@@ -83,7 +83,6 @@ router.post('/sessions', asyncHandler(async (req, res) => {
     id: uuidv4(),
     client_id: req.user.id,
     session_name: evolutionSessionName,
-    display_name: session_name, // Nome original para display
     status: 'qr_pending',
     webhook_url: webhookUrl,
     created_at: new Date().toISOString(),

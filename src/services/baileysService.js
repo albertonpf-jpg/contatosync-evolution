@@ -33,18 +33,25 @@ class BaileysService {
   }
 
   startHeartbeat() {
-    setInterval(() => { this.checkAllConnections(); }, 60000);
-    console.log('Heartbeat iniciado - 60s');
+    setInterval(() => { this.checkAllConnections(); }, 10000);
+    console.log('Heartbeat iniciado - 10s');
   }
 
   async checkAllConnections() {
     for (const [name, session] of this.sessions.entries()) {
       if (session.status === 'connected') {
         try {
+          // Verificações mais rigorosas de conexão
           if (!session.socket?.user?.id) throw new Error('no user');
+          if (!session.socket?.authState?.creds) throw new Error('no auth');
+          if (session.socket?.ws?.readyState !== 1) throw new Error('websocket closed');
+
           session.lastHeartbeat = new Date().toISOString();
-        } catch {
+          console.log(`✅ Sessão ${name} heartbeat OK`);
+        } catch (err) {
+          console.log(`❌ Sessão ${name} perdeu conexão: ${err.message}`);
           session.status = 'disconnected';
+          this._updateDatabaseStatus(name, 'disconnected', 'heartbeat_failed');
         }
       }
     }
@@ -145,6 +152,21 @@ class BaileysService {
   getSessionStatus(sessionName) {
     const session = this.sessions.get(sessionName);
     if (!session) return { sessionName, status: 'not_found', state: 'close' };
+
+    // Verificação em tempo real do status da sessão
+    if (session.status === 'connected') {
+      try {
+        // Verifica se realmente ainda está conectado
+        if (!session.socket?.user?.id || session.socket?.ws?.readyState !== 1) {
+          session.status = 'disconnected';
+          console.log(`🔄 Status ${sessionName} atualizado: connected -> disconnected`);
+        }
+      } catch (err) {
+        session.status = 'disconnected';
+        console.log(`🔄 Status ${sessionName} erro: ${err.message}`);
+      }
+    }
+
     let state = 'close';
     if (session.status === 'connected') state = 'open';
     else if (session.status === 'connecting' || session.status === 'qr_ready') state = 'connecting';

@@ -209,7 +209,12 @@ router.delete('/sessions/:sessionName', asyncHandler(async (req, res) => {
   const { sessionName } = req.params;
   const evolutionSessionName = getEvolutionSessionName(sessionName);
 
-  const { data: session } = await executeWithRLS(req.user.id, (client) =>
+  // Tentar encontrar sessão com prefixo (nova) ou sem prefixo (antiga)
+  let session = null;
+  let sessionNameToDelete = null;
+
+  // Primeiro: tentar com prefixo (novo padrão)
+  const { data: newSession } = await executeWithRLS(req.user.id, (client) =>
     client
       .from('evolution_sessions')
       .select('*')
@@ -218,12 +223,34 @@ router.delete('/sessions/:sessionName', asyncHandler(async (req, res) => {
       .single()
   );
 
-  if (!session) {
-    return notFound(res, 'Sessão não encontrada');
+  if (newSession) {
+    session = newSession;
+    sessionNameToDelete = evolutionSessionName;
+  } else {
+    // Segundo: tentar sem prefixo (sessão antiga)
+    const { data: oldSession } = await executeWithRLS(req.user.id, (client) =>
+      client
+        .from('evolution_sessions')
+        .select('*')
+        .eq('client_id', req.user.id)
+        .eq('session_name', sessionName)
+        .single()
+    );
+
+    if (oldSession) {
+      session = oldSession;
+      sessionNameToDelete = sessionName;
+    }
   }
 
+  if (!session) {
+    return notFound(res, `Sessão '${sessionName}' não encontrada (tentou: '${evolutionSessionName}' e '${sessionName}')`);
+  }
+
+  console.log(`🗑️ Deletando sessão: ${sessionNameToDelete} (original: ${sessionName})`);
+
   try {
-    await baileysService.deleteSession(evolutionSessionName);
+    await baileysService.deleteSession(sessionNameToDelete);
 
     await executeWithRLS(req.user.id, (client) =>
       client

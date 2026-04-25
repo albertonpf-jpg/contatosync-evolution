@@ -47,9 +47,49 @@ export default function ConversationsPage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const prevMsgCount = useRef(0);
 
   useEffect(() => { loadConversations(); }, []);
-  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
+
+  // Scroll apenas quando chegar mensagem nova
+  useEffect(() => {
+    if (messages.length > prevMsgCount.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+    prevMsgCount.current = messages.length;
+  }, [messages]);
+
+  // Auto-refresh conversas a cada 8s (sem mostrar loading)
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const response = await apiService.getConversations(1, 50);
+        let list: Conversation[] = [];
+        if (response?.items && Array.isArray(response.items)) list = response.items;
+        else if (Array.isArray(response)) list = response;
+        else if (response?.data && Array.isArray(response.data)) list = response.data;
+        setConversations(list);
+      } catch {}
+    }, 8000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Auto-refresh mensagens a cada 5s quando conversa aberta
+  useEffect(() => {
+    if (!selectedConversation) return;
+    const convId = selectedConversation.id;
+    const interval = setInterval(async () => {
+      try {
+        const response = await apiService.getMessages(convId);
+        let msgs: Message[] = [];
+        if (response?.messages && Array.isArray(response.messages)) msgs = response.messages;
+        else if (response?.items && Array.isArray(response.items)) msgs = response.items;
+        else if (Array.isArray(response)) msgs = response;
+        setMessages(msgs);
+      } catch {}
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [selectedConversation?.id]);
 
   const loadConversations = async () => {
     try {
@@ -92,7 +132,6 @@ export default function ConversationsPage() {
         message_type: 'text'
       });
       setNewMessage('');
-      // Aguardar um pouco antes de recarregar mensagens
       setTimeout(() => openConversation(selectedConversation), 1000);
     } catch (err: any) {
       console.error('Erro ao enviar mensagem:', err);

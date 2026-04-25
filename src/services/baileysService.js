@@ -54,7 +54,14 @@ class BaileysService {
 
   async createSession(sessionName, webhookUrl = null) {
     console.log('Criando sessao Baileys: ' + sessionName);
-    this.sessions.set(sessionName, { socket: null, saveCreds: null, status: 'connecting', qrCode: null, createdAt: new Date() });
+    this.sessions.set(sessionName, {
+      socket: null,
+      saveCreds: null,
+      status: 'connecting',
+      qrCode: null,
+      createdAt: new Date(),
+      lidToPhone: new Map()
+    });
     this._connectSession(sessionName, webhookUrl).catch(err => {
       console.error('Erro background ' + sessionName + ':', err.message);
       const s = this.sessions.get(sessionName);
@@ -103,6 +110,34 @@ class BaileysService {
 
       const session = this.sessions.get(sessionName);
       if (session) { session.socket = sock; session.saveCreds = saveCreds; }
+
+      // Sincronizar contatos para resolver LID -> numero real
+      sock.ev.on('contacts.upsert', (contacts) => {
+        const s = this.sessions.get(sessionName);
+        if (!s || !s.lidToPhone) return;
+        for (const contact of contacts) {
+          // Formato: contact.id = "55xxx@s.whatsapp.net", contact.lid = "123@lid"
+          if (contact.id && contact.id.endsWith('@s.whatsapp.net') && contact.lid) {
+            const ph = contact.id.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+            if (ph) {
+              s.lidToPhone.set(contact.lid, ph);
+              console.log('LID mapeado: ' + contact.lid + ' -> ' + ph);
+            }
+          }
+        }
+        console.log('Total LID mappings: ' + s.lidToPhone.size);
+      });
+
+      sock.ev.on('contacts.update', (updates) => {
+        const s = this.sessions.get(sessionName);
+        if (!s || !s.lidToPhone) return;
+        for (const contact of updates) {
+          if (contact.id && contact.id.endsWith('@s.whatsapp.net') && contact.lid) {
+            const ph = contact.id.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+            if (ph) s.lidToPhone.set(contact.lid, ph);
+          }
+        }
+      });
 
       sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr, isNewLogin } = update;
@@ -159,7 +194,7 @@ class BaileysService {
 
       sock.ev.on('creds.update', saveCreds);
 
-      // HANDLER MENSAGENS - apenas novas mensagens (type=notify)
+      // HANDLER MENSAGENS - apenas novas (type=notify)
       sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
         const messages = m.messages || [];
@@ -280,7 +315,6 @@ class BaileysService {
     return this.getSessionStatus(sessionName);
   }
 
-  // FIX LID: usa senderPn quando remoteJid eh @lid
   async _processIncomingMessage(sessionName, message) {
     try {
       const remoteJid = message.key?.remoteJid || '';
@@ -289,18 +323,37 @@ class BaileysService {
       if (remoteJid.endsWith('@g.us')) return;
 
       let phone = '';
+
       if (remoteJid.endsWith('@lid')) {
-        // LID: numero real esta em senderPn
+        // Tentativa 1: senderPn (campo direto da mensagem)
         phone = message.key?.senderPn || '';
-        if (!phone) phone = message.key?.participant?.replace('@s.whatsapp.net', '') || '';
-        console.log('LID detectado: ' + remoteJid + ' -> senderPn: ' + phone);
+
+        // Tentativa 2: mapa LID->phone construido via contacts.upsert
+        if (!phone) {
+          const sessionObj = this.sessions.get(sessionName);
+          phone = sessionObj?.lidToPhone?.get(remoteJid) || '';
+          if (phone) console.log('LID resolvido via mapa: ' + remoteJid + ' -> ' + phone);
+        }
+
+        // Tentativa 3: participant (em grupos nao se aplica, mas por seguranca)
+        if (!phone) {
+          phone = message.key?.participant?.replace('@s.whatsapp.net', '') || '';
+        }
+
+        // Fallback: usar o numero numerico do LID como identificador unico
+        if (!phone) {
+          phone = remoteJid.replace('@lid', '').replace(/\D/g, '');
+          console.log('LID sem resolucao, usando ID como identificador: ' + phone);
+        }
+
+        console.log('LID detectado: ' + remoteJid + ' -> phone final: ' + phone);
       } else {
         phone = remoteJid.replace('@s.whatsapp.net', '');
       }
 
       phone = phone.replace(/\D/g, '');
       if (!phone) {
-        console.log('Phone vazio, ignorando. remoteJid: ' + remoteJid);
+        console.log('Phone vazio apos extracao, ignorando. remoteJid: ' + remoteJid);
         return;
       }
 

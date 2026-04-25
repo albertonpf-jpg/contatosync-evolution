@@ -276,10 +276,22 @@ class BaileysService {
     return result;
   }
 
-  async sendTextMessage(sessionName, phone, message) {
+  async sendTextMessage(sessionName, jidOrPhone, message) {
     const session = this.sessions.get(sessionName);
-    if (!session || session.status !== 'connected') throw new Error('Sessao nao conectada');
-    const jid = phone.includes('@') ? phone : phone.replace(/\D/g, '') + '@s.whatsapp.net';
+    if (!session) throw new Error('Sessao nao encontrada: ' + sessionName);
+
+    // Aceitar qr_ready quando socket ja tem user (status desatualizado)
+    if (session.status !== 'connected') {
+      if (session.socket?.user?.id) {
+        session.status = 'connected';
+        console.log('Status corrigido para connected antes de enviar: ' + sessionName);
+      } else {
+        throw new Error('Sessao nao conectada. Status: ' + session.status);
+      }
+    }
+
+    const jid = jidOrPhone.includes('@') ? jidOrPhone : jidOrPhone.replace(/\D/g, '') + '@s.whatsapp.net';
+    console.log('Enviando para JID: ' + jid);
     const result = await session.socket.sendMessage(jid, { text: message });
     return { success: true, messageId: result.key.id, to: jid, message, timestamp: new Date() };
   }
@@ -369,6 +381,7 @@ class BaileysService {
       await axios.post('http://localhost:' + PORT + '/internal/messages/process', {
         sessionName,
         phone,
+        remoteJid,
         content,
         messageType: this._getMessageType(message),
         whatsappMessageId: message.key.id,

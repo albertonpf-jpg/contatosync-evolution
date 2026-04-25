@@ -1,10 +1,16 @@
-﻿﻿﻿'use client';
+﻿﻿﻿﻿'use client';
 
 import { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Search, Send, ArrowLeft, RefreshCw, Check, CheckCheck } from 'lucide-react';
 import { io } from 'socket.io-client';
+import { createClient } from '@supabase/supabase-js';
 import DashboardLayout from '@/components/DashboardLayout';
 import { apiService } from '@/lib/api';
+
+const supabase = createClient(
+  'https://uznrpziouttnncozxpvf.supabase.co',
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6bnJwemlvdXR0bm5jb3p4cHZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NTc1OTQsImV4cCI6MjA5MDEzMzU5NH0.o3DH-R2JsI68BhECBAx-s5pEL6qXqNAgQpPpUq0rzZk'
+);
 
 interface Contact {
   name: string;
@@ -94,7 +100,7 @@ export default function ConversationsPage() {
     return () => clearInterval(id);
   }, []);
 
-  // Socket.io para atualizacoes instantaneas
+  // Socket.io como canal adicional
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : null;
     if (!token) return;
@@ -103,8 +109,25 @@ export default function ConversationsPage() {
       : 'http://localhost:3003';
     const socket = io(socketUrl, { auth: { token }, transports: ['websocket', 'polling'] });
     socket.on('new_message', () => refreshRef.current());
-    socket.on('conversation_updated', () => refreshRef.current());
     return () => { socket.disconnect(); };
+  }, []);
+
+  // Supabase Realtime - notificacao instantanea quando mensagem chega no banco
+  useEffect(() => {
+    const channel = supabase
+      .channel('evolution-messages-changes')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'evolution_messages' },
+        () => { refreshRef.current(); }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'evolution_conversations' },
+        () => { refreshRef.current(); }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   const loadConversations = async () => {

@@ -1,4 +1,4 @@
-﻿﻿'use client';
+﻿﻿﻿'use client';
 
 import { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Search, Send, ArrowLeft, RefreshCw, Check, CheckCheck } from 'lucide-react';
@@ -76,8 +76,12 @@ export default function ConversationsPage() {
     if (currentConvRef.current) {
       try {
         const r2 = await apiService.getMessages(currentConvRef.current);
-        const msgs: Message[] = r2?.items ?? [];
-        setMessages(msgs);
+        // Mesma deteccao de formato que openConversation + guarda contra lista vazia
+        let msgs: Message[] = [];
+        if (r2?.messages && Array.isArray(r2.messages)) msgs = r2.messages;
+        else if (r2?.items && Array.isArray(r2.items)) msgs = r2.items;
+        else if (Array.isArray(r2)) msgs = r2;
+        if (msgs.length > 0) setMessages(msgs);
       } catch {}
     }
   };

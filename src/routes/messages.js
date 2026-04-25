@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { executeWithRLS } = require('../config/supabase');
 const { messageSchemas, validate } = require('../utils/validation');
@@ -233,6 +233,110 @@ router.post('/',
     emitNewMessage(req.user.id, newMessage);
 
     success(res, newMessage, 'Mensagem criada com sucesso', 201);
+  })
+);
+
+/**
+ * POST /api/messages/send
+ * Enviar mensagem via WhatsApp
+ */
+router.post('/send',
+  asyncHandler(async (req, res) => {
+    const { conversation_id, content, message_type } = req.body;
+
+    if (!conversation_id || !content) {
+      return error(res, 'conversation_id e content são obrigatórios', 400);
+    }
+
+    // 1. Buscar conversa
+    const { data: conversation, error: convErr } = await executeWithRLS(req.user.id, (client) =>
+      client
+        .from('evolution_conversations')
+        .select('*')
+        .eq('id', conversation_id)
+        .eq('client_id', req.user.id)
+        .single()
+    );
+
+    if (convErr || !conversation) {
+      return notFound(res, 'Conversa não encontrada');
+    }
+
+    // 2. Encontrar sessão conectada do cliente
+    const baileysService = require('../services/baileysService');
+
+    const { data: dbSessions } = await executeWithRLS(req.user.id, (client) =>
+      client
+        .from('evolution_sessions')
+        .select('session_name')
+        .eq('client_id', req.user.id)
+    );
+
+    if (!dbSessions || dbSessions.length === 0) {
+      return error(res, 'Nenhuma sessão WhatsApp configurada. Conecte o WhatsApp primeiro.', 404);
+    }
+
+    // Preferir sessão com estado open/connected
+    let activeSessionName = null;
+    for (const dbSess of dbSessions) {
+      const status = baileysService.getSessionStatus(dbSess.session_name);
+      if (status.state === 'open' || status.status === 'connected') {
+        activeSessionName = dbSess.session_name;
+        break;
+      }
+    }
+    if (!activeSessionName) activeSessionName = dbSessions[0].session_name;
+
+    // 3. JID da conversa (preserva @lid para contatos LID)
+    const jidToSend = conversation.jid || (conversation.phone + '@s.whatsapp.net');
+
+    try {
+      const sendResult = await baileysService.sendTextMessage(activeSessionName, jidToSend, content);
+      const now = new Date().toISOString();
+
+      // 4. Salvar mensagem
+      const { data: newMessage, error: msgError } = await executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_messages')
+          .insert([{
+            id: uuidv4(),
+            conversation_id: conversation.id,
+            client_id: req.user.id,
+            contact_id: conversation.contact_id,
+            content,
+            message_type: message_type || 'text',
+            direction: 'out',
+            status: 'sent',
+            is_from_ai: false,
+            whatsapp_message_id: sendResult?.messageId || null,
+            sent_at: now,
+            created_at: now
+          }])
+          .select('*')
+          .single()
+      );
+
+      if (msgError) console.error('Erro salvando mensagem enviada:', msgError);
+
+      // 5. Atualizar conversa
+      await executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_conversations')
+          .update({
+            last_message_at: now,
+            total_messages: (conversation.total_messages || 0) + 1,
+            updated_at: now
+          })
+          .eq('id', conversation.id)
+      );
+
+      if (newMessage) emitNewMessage(req.user.id, newMessage);
+
+      success(res, newMessage || { content, direction: 'out', sent_at: now }, 'Mensagem enviada com sucesso');
+    } catch (baileysError) {
+      console.error('Erro ao enviar via Baileys:', baileysError.message);
+      return error(res, 'Erro ao enviar: ' + baileysError.message, 500);
+    }
   })
 );
 

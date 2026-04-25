@@ -1,7 +1,8 @@
-﻿'use client';
+﻿﻿'use client';
 
 import { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Search, Send, ArrowLeft, RefreshCw, Check, CheckCheck } from 'lucide-react';
+import { io } from 'socket.io-client';
 import DashboardLayout from '@/components/DashboardLayout';
 import { apiService } from '@/lib/api';
 
@@ -59,37 +60,48 @@ export default function ConversationsPage() {
     prevMsgCount.current = messages.length;
   }, [messages]);
 
-  // Auto-refresh conversas a cada 3s (sem mostrar loading)
+  // Ref para conversa atual (evita stale closure nos intervals)
+  const currentConvRef = useRef<string | null>(null);
   useEffect(() => {
-    const interval = setInterval(async () => {
-      try {
-        const response = await apiService.getConversations(1, 50);
-        let list: Conversation[] = [];
-        if (response?.items && Array.isArray(response.items)) list = response.items;
-        else if (Array.isArray(response)) list = response;
-        else if (response?.data && Array.isArray(response.data)) list = response.data;
-        if (list.length > 0) setConversations(list);
-      } catch {}
-    }, 3000);
-    return () => clearInterval(interval);
-  }, []);
+    currentConvRef.current = selectedConversation?.id ?? null;
+  }, [selectedConversation?.id]);
 
-  // Auto-refresh mensagens a cada 3s quando conversa aberta
-  useEffect(() => {
-    if (!selectedConversation) return;
-    const convId = selectedConversation.id;
-    const interval = setInterval(async () => {
+  // Funcao de refresh (usa refs - sem stale closure)
+  const refresh = async () => {
+    try {
+      const r = await apiService.getConversations(1, 50);
+      const list: Conversation[] = r?.items ?? [];
+      if (list.length > 0) setConversations(list);
+    } catch {}
+    if (currentConvRef.current) {
       try {
-        const response = await apiService.getMessages(convId);
-        let msgs: Message[] = [];
-        if (response?.messages && Array.isArray(response.messages)) msgs = response.messages;
-        else if (response?.items && Array.isArray(response.items)) msgs = response.items;
-        else if (Array.isArray(response)) msgs = response;
+        const r2 = await apiService.getMessages(currentConvRef.current);
+        const msgs: Message[] = r2?.items ?? [];
         setMessages(msgs);
       } catch {}
-    }, 3000);
-    return () => clearInterval(interval);
-  }, [selectedConversation?.id]);
+    }
+  };
+  const refreshRef = useRef(refresh);
+  useEffect(() => { refreshRef.current = refresh; });
+
+  // Polling a cada 5s como fallback
+  useEffect(() => {
+    const id = setInterval(() => refreshRef.current(), 5000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Socket.io para atualizacoes instantaneas
+  useEffect(() => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : null;
+    if (!token) return;
+    const socketUrl = typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+      ? 'https://web-production-50297.up.railway.app'
+      : 'http://localhost:3003';
+    const socket = io(socketUrl, { auth: { token }, transports: ['websocket', 'polling'] });
+    socket.on('new_message', () => refreshRef.current());
+    socket.on('conversation_updated', () => refreshRef.current());
+    return () => { socket.disconnect(); };
+  }, []);
 
   const loadConversations = async () => {
     try {

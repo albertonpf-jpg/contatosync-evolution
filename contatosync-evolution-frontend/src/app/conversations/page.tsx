@@ -59,7 +59,7 @@ export default function ConversationsPage() {
     prevMsgCount.current = messages.length;
   }, [messages]);
 
-  // Auto-refresh conversas a cada 8s (sem mostrar loading)
+  // Auto-refresh conversas a cada 3s (sem mostrar loading)
   useEffect(() => {
     const interval = setInterval(async () => {
       try {
@@ -68,13 +68,13 @@ export default function ConversationsPage() {
         if (response?.items && Array.isArray(response.items)) list = response.items;
         else if (Array.isArray(response)) list = response;
         else if (response?.data && Array.isArray(response.data)) list = response.data;
-        setConversations(list);
+        if (list.length > 0) setConversations(list);
       } catch {}
-    }, 8000);
+    }, 3000);
     return () => clearInterval(interval);
   }, []);
 
-  // Auto-refresh mensagens a cada 5s quando conversa aberta
+  // Auto-refresh mensagens a cada 3s quando conversa aberta
   useEffect(() => {
     if (!selectedConversation) return;
     const convId = selectedConversation.id;
@@ -87,7 +87,7 @@ export default function ConversationsPage() {
         else if (Array.isArray(response)) msgs = response;
         setMessages(msgs);
       } catch {}
-    }, 5000);
+    }, 3000);
     return () => clearInterval(interval);
   }, [selectedConversation?.id]);
 

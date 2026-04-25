@@ -1,4 +1,4 @@
-const QRCode = require('qrcode');
+﻿const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 
@@ -111,17 +111,32 @@ class BaileysService {
       const session = this.sessions.get(sessionName);
       if (session) { session.socket = sock; session.saveCreds = saveCreds; }
 
-      // Sincronizar contatos para resolver LID -> numero real
-      sock.ev.on('contacts.upsert', (contacts) => {
+      // Sincronizar contatos para resolver LID -> numero real e persistir no banco
+      sock.ev.on('contacts.upsert', async (contacts) => {
         const s = this.sessions.get(sessionName);
         if (!s || !s.lidToPhone) return;
         for (const contact of contacts) {
           // Formato: contact.id = "55xxx@s.whatsapp.net", contact.lid = "123@lid"
           if (contact.id && contact.id.endsWith('@s.whatsapp.net') && contact.lid) {
             const ph = contact.id.replace('@s.whatsapp.net', '').replace(/\D/g, '');
-            if (ph) {
+            if (ph && ph.length <= 15) {
+              const lidNum = contact.lid.replace('@lid', '').replace(/\D/g, '');
               s.lidToPhone.set(contact.lid, ph);
               console.log('LID mapeado: ' + contact.lid + ' -> ' + ph);
+              // Persistir telefone real no banco substituindo o codigo LID
+              try {
+                const { supabaseAdmin } = require('../config/supabase');
+                const now = new Date().toISOString();
+                await supabaseAdmin.from('evolution_contacts')
+                  .update({ phone: ph, updated_at: now })
+                  .eq('phone', lidNum);
+                await supabaseAdmin.from('evolution_conversations')
+                  .update({ phone: ph, updated_at: now })
+                  .eq('phone', lidNum);
+                console.log('DB atualizado com telefone real: ' + lidNum + ' -> ' + ph);
+              } catch (dbErr) {
+                console.error('Erro persistindo resolucao LID:', dbErr.message);
+              }
             }
           }
         }

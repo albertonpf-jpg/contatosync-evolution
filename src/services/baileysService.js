@@ -41,7 +41,6 @@ class BaileysService {
       if (session.status === 'connected') {
         try {
           if (!session.socket?.user?.id) throw new Error('no user');
-          // ws.readyState nao e confiavel no Baileys v6 - nao usar para verificar conexao
           session.lastHeartbeat = new Date().toISOString();
           console.log(`✅ Sessão ${name} heartbeat OK`);
         } catch (err) {
@@ -85,7 +84,7 @@ class BaileysService {
         auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, makeSilentLogger()) },
         printQRInTerminal: false,
         browser: ['ContatoSync Evolution', 'Desktop', '1.0.0'],
-        connectTimeoutMs: 120000, // 2 minutos
+        connectTimeoutMs: 120000,
         defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000,
         markOnlineOnConnect: false,
@@ -96,7 +95,10 @@ class BaileysService {
         retryRequestDelayMs: 250,
         shouldIgnoreJid: () => false,
         linkPreviewImageThumbnailWidth: 192,
-        transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 }
+        transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
+        getMessage: async (key) => {
+          return { conversation: 'hello' };
+        }
       });
 
       const session = this.sessions.get(sessionName);
@@ -130,13 +132,11 @@ class BaileysService {
           if (shouldReconnect) {
             setTimeout(() => this._connectSession(sessionName, webhookUrl), 3000);
           } else {
-            // Logged out: delete stale credentials so next connect generates fresh QR
             const sessionDir = path.join(this.authDir, sessionName);
             try {
               if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
               console.log('Credenciais removidas (logout): ' + sessionName);
             } catch (e) { console.error('Erro ao limpar credenciais:', e.message); }
-            // Reconnect with fresh state to generate new QR
             if (s) s.status = 'connecting';
             setTimeout(() => this._connectSession(sessionName, webhookUrl), 3000);
           }
@@ -159,8 +159,9 @@ class BaileysService {
 
       sock.ev.on('creds.update', saveCreds);
 
-      // HANDLER MENSAGENS - FIX LID
+      // HANDLER MENSAGENS - apenas novas mensagens (type=notify)
       sock.ev.on('messages.upsert', async (m) => {
+        if (m.type !== 'notify') return;
         const messages = m.messages || [];
         for (const msg of messages) {
           if (!msg.key.fromMe && msg.message) {
@@ -182,8 +183,6 @@ class BaileysService {
     const qrCode = this.qrCodes.get(sessionName);
     if (!session) {
       if (_retries > 0) {
-        // Session foi removida durante o retry (ex: logout durante espera)
-        // Retorna null para que a rota tente novamente em vez de crashar com 500
         return { base64: null, qr: null, qrcode: null, status: 'disconnected', sessionName };
       }
       throw new Error('Sessao nao encontrada');
@@ -210,10 +209,8 @@ class BaileysService {
       hasQrCode: !!session.qrCode
     });
 
-    // Verificação em tempo real do status da sessão
     if (session.status === 'connected') {
       try {
-        // Verifica se realmente ainda está conectado
         if (!session.socket?.user?.id) {
           session.status = 'disconnected';
           console.log(`🔄 Status ${sessionName} atualizado: connected -> disconnected (no user)`);
@@ -223,7 +220,6 @@ class BaileysService {
         console.log(`🔄 Status ${sessionName} erro: ${err.message}`);
       }
     } else if (session.status === 'connecting' || session.status === 'qr_ready') {
-      // Verificação EXTRA: Se tem user.id mas status não é connected
       try {
         if (session.socket?.user?.id) {
           console.log(`🔥 Conexao detectada para ${sessionName}!`);

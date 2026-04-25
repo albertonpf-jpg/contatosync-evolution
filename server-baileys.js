@@ -1,4 +1,4 @@
-﻿const express = require('express');
+﻿﻿const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -443,17 +443,18 @@ app.post('/internal/messages/process', async function(req, res) {
       var newUnread = (conversation.unread_count || 0) + 1;
       var newTotal = (conversation.total_messages || 0) + 1;
 
+      // Nao sobrescrever phone real com codigo LID (>13 digitos)
+      var phoneUpdate = (phone && phone.replace(/\D/g, '').length <= 13) ? { phone: phone } : {};
       var { error: updateError } = await supabaseAdmin
         .from('evolution_conversations')
-        .update({
+        .update(Object.assign({
           last_message_at: now,
           unread_count: newUnread,
           total_messages: newTotal,
           contact_name: contact.name,
-          phone: phone,
           jid: jid,
           updated_at: now
-        })
+        }, phoneUpdate))
         .eq('id', conversation.id);
 
       if (updateError) {

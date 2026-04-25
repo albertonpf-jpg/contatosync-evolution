@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Search, Send, ArrowLeft, RefreshCw, Check, CheckCheck } from 'lucide-react';
@@ -142,7 +142,11 @@ export default function ConversationsPage() {
   };
 
   const getName = (c: Conversation) => c.contact_name || c.evolution_contacts?.name || c.phone || 'Sem nome';
-  const getPhone = (c: Conversation) => c.phone || c.evolution_contacts?.phone || '';
+  const getPhone = (c: Conversation) => {
+    const p = c.phone || c.evolution_contacts?.phone || '';
+    if (!p || p.includes('@') || p.replace(/\D/g, '').length > 13) return '';
+    return p;
+  };
   const getInitials = (n: string) => n.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
 
   const formatTime = (d: string) => {

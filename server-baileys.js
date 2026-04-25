@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -309,6 +309,7 @@ app.post('/internal/messages/process', async function(req, res) {
   try {
     var sessionName = req.body.sessionName;
     var phone = req.body.phone;
+    var remoteJid = req.body.remoteJid;
     var content = req.body.content;
     var messageType = req.body.messageType;
     var whatsappMessageId = req.body.whatsappMessageId;
@@ -395,7 +396,8 @@ app.post('/internal/messages/process', async function(req, res) {
     }
 
     // 3. Buscar ou criar conversa
-    var jid = phone + '@s.whatsapp.net';
+    // Usar remoteJid original (preserva @lid para contatos LID)
+    var jid = remoteJid || (phone + '@s.whatsapp.net');
 
     var { data: conversation, error: convFetchError } = await supabaseAdmin
       .from('evolution_conversations')

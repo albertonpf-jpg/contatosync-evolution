@@ -48,8 +48,10 @@ export default function ConversationsPage() {
   const [newMessage, setNewMessage] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [socketOk, setSocketOk] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevMsgCount = useRef(0);
+  const pollCountRef = useRef(0);
 
   useEffect(() => { loadConversations(); }, []);
 
@@ -69,11 +71,13 @@ export default function ConversationsPage() {
 
   // Funcao de refresh (usa refs - sem stale closure)
   const refresh = async () => {
+    pollCountRef.current += 1;
+    const n = pollCountRef.current;
     try {
       const r = await apiService.getConversations(1, 50);
       const list: Conversation[] = r?.items ?? [];
       if (list.length > 0) setConversations(list);
-    } catch (err: any) { console.error("[Refresh] Erro ao buscar conversas:", err?.message); }
+    } catch (err: any) { console.error("[Poll#" + n + "] Erro conversas:", err?.message); }
     if (currentConvRef.current) {
       try {
         const r2 = await apiService.getMessages(currentConvRef.current);
@@ -81,8 +85,11 @@ export default function ConversationsPage() {
         if (r2?.messages && Array.isArray(r2.messages)) msgs = r2.messages;
         else if (r2?.items && Array.isArray(r2.items)) msgs = r2.items;
         else if (Array.isArray(r2)) msgs = r2;
+        console.log("[Poll#" + n + "] Mensagens:", msgs.length, "conv:", currentConvRef.current?.substring(0,8));
         setMessages(msgs);
-      } catch (err: any) { console.error("[Refresh] Erro ao buscar mensagens:", err?.message); }
+      } catch (err: any) { console.error("[Poll#" + n + "] Erro mensagens:", err?.message); }
+    } else {
+      console.log("[Poll#" + n + "] Nenhuma conversa aberta");
     }
   };
   const refreshRef = useRef(refresh);
@@ -90,7 +97,7 @@ export default function ConversationsPage() {
 
   // Polling a cada 5s como fallback
   useEffect(() => {
-    const id = setInterval(() => refreshRef.current(), 3000);
+    const id = setInterval(() => refreshRef.current(), 1500);
     return () => clearInterval(id);
   }, []);
 
@@ -104,8 +111,8 @@ export default function ConversationsPage() {
     const socket = io(socketUrl, { auth: { token }, transports: ['websocket', 'polling'] });
     socket.on('new_message', () => refreshRef.current());
     socket.on('conversation_updated', () => refreshRef.current());
-    socket.on('connect', () => console.log('[Socket] Conectado ao backend'));
-    socket.on('connect_error', (err) => console.warn('[Socket] Erro de conexao:', err.message));
+    socket.on('connect', () => { console.log('[Socket] Conectado!'); setSocketOk(true); });
+    socket.on('connect_error', (err) => { console.warn('[Socket] Erro:', err.message); setSocketOk(false); });
     return () => { socket.disconnect(); };
   }, []);
 
@@ -206,7 +213,13 @@ export default function ConversationsPage() {
         <div className={`${selectedConversation ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-96 bg-white border-r border-gray-200`}>
           <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
             <div className="flex items-center justify-between mb-3">
-              <h1 className="text-lg font-bold text-gray-900">Conversas</h1>
+               <div className="flex items-center gap-2">
+                 <h1 className="text-lg font-bold text-gray-900">Conversas</h1>
+                 <span className={`text-xs px-1.5 py-0.5 rounded-full flex items-center gap-1 ${socketOk ? "bg-green-100 text-green-700" : "bg-yellow-100 text-yellow-700"}`}>
+                   <span className={`w-1.5 h-1.5 rounded-full ${socketOk ? "bg-green-500 animate-pulse" : "bg-yellow-500"}`}></span>
+                   {socketOk ? "Live" : "Polling"}
+                 </span>
+               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-500 bg-gray-200 px-2 py-1 rounded-full">{filtered.length}</span>
                 <button onClick={loadConversations} className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-full">

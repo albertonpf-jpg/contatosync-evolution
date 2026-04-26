@@ -493,7 +493,7 @@ app.post('/internal/messages/process', async function(req, res) {
       var { getIO } = require('./src/services/socketService');
       var socketIO = getIO();
       if (socketIO) {
-        socketIO.to(session.client_id).emit('new_message', {
+        socketIO.to('client_' + session.client_id).emit('new_message', {
           conversation_id: conversation.id,
           contact_name: contact.name,
           phone: phone,

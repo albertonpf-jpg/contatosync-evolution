@@ -93,7 +93,7 @@ export default function ConversationsPage() {
 
   // Polling a cada 5s como fallback
   useEffect(() => {
-    const id = setInterval(() => refreshRef.current(), 5000);
+    const id = setInterval(() => refreshRef.current(), 3000);
     return () => clearInterval(id);
   }, []);
 
@@ -106,6 +106,9 @@ export default function ConversationsPage() {
       : 'http://localhost:3003';
     const socket = io(socketUrl, { auth: { token }, transports: ['websocket', 'polling'] });
     socket.on('new_message', () => refreshRef.current());
+    socket.on('conversation_updated', () => refreshRef.current());
+    socket.on('connect', () => console.log('[Socket] Conectado ao backend'));
+    socket.on('connect_error', (err) => console.warn('[Socket] Erro de conexao:', err.message));
     return () => { socket.disconnect(); };
   }, []);
 

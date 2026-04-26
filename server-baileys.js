@@ -43,9 +43,8 @@ const PORT = process.env.PORT || 3003;
 // Socket.IO com CORS
 const io = socketIo(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || "*",
-    methods: ["GET", "POST"],
-    credentials: true
+    origin: "*",
+    methods: ["GET", "POST"]
   }
 });
 

@@ -6,8 +6,6 @@ import { io } from 'socket.io-client';
 import DashboardLayout from '@/components/DashboardLayout';
 import { apiService } from '@/lib/api';
 
-const SUPABASE_WS = 'wss://uznrpziouttnncozxpvf.supabase.co/realtime/v1/websocket';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InV6bnJwemlvdXR0bm5jb3p4cHZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ1NTc1OTQsImV4cCI6MjA5MDEzMzU5NH0.o3DH-R2JsI68BhECBAx-s5pEL6qXqNAgQpPpUq0rzZk';
 
 interface Contact {
   name: string;
@@ -75,17 +73,16 @@ export default function ConversationsPage() {
       const r = await apiService.getConversations(1, 50);
       const list: Conversation[] = r?.items ?? [];
       if (list.length > 0) setConversations(list);
-    } catch {}
+    } catch (err: any) { console.error("[Refresh] Erro ao buscar conversas:", err?.message); }
     if (currentConvRef.current) {
       try {
         const r2 = await apiService.getMessages(currentConvRef.current);
-        // Mesma deteccao de formato que openConversation + guarda contra lista vazia
         let msgs: Message[] = [];
         if (r2?.messages && Array.isArray(r2.messages)) msgs = r2.messages;
         else if (r2?.items && Array.isArray(r2.items)) msgs = r2.items;
         else if (Array.isArray(r2)) msgs = r2;
-        if (msgs.length > 0) setMessages(msgs);
-      } catch {}
+        setMessages(msgs);
+      } catch (err: any) { console.error("[Refresh] Erro ao buscar mensagens:", err?.message); }
     }
   };
   const refreshRef = useRef(refresh);
@@ -112,65 +109,6 @@ export default function ConversationsPage() {
     return () => { socket.disconnect(); };
   }, []);
 
-  // Supabase Realtime via WebSocket nativo - sem dependencia extra
-  useEffect(() => {
-    let ws: WebSocket | null = null;
-    let heartbeatId: ReturnType<typeof setInterval> | null = null;
-    let reconnectId: ReturnType<typeof setTimeout> | null = null;
-
-    const connect = () => {
-      try {
-        ws = new WebSocket(`${SUPABASE_WS}?apikey=${SUPABASE_KEY}&vsn=1.0.0`);
-
-        ws.onopen = () => {
-          // Inscrever em mudancas da tabela evolution_messages
-          ws!.send(JSON.stringify({
-            topic: 'realtime:schema-db-changes',
-            event: 'phx_join',
-            payload: {
-              config: {
-                broadcast: { self: false },
-                presence: { key: '' },
-                postgres_changes: [
-                  { event: 'INSERT', schema: 'public', table: 'evolution_messages' },
-                  { event: 'UPDATE', schema: 'public', table: 'evolution_conversations' }
-                ]
-              }
-            },
-            ref: '1'
-          }));
-          // Heartbeat a cada 25s para manter conexao
-          heartbeatId = setInterval(() => {
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ topic: 'phoenix', event: 'heartbeat', payload: {}, ref: '2' }));
-            }
-          }, 25000);
-        };
-
-        ws.onmessage = (e) => {
-          try {
-            const msg = JSON.parse(e.data);
-            if (msg.event === 'postgres_changes' || msg.payload?.data?.type === 'INSERT') {
-              refreshRef.current();
-            }
-          } catch {}
-        };
-
-        ws.onclose = () => {
-          if (heartbeatId) clearInterval(heartbeatId);
-          // Reconectar apos 3s
-          reconnectId = setTimeout(connect, 3000);
-        };
-      } catch {}
-    };
-
-    connect();
-    return () => {
-      if (heartbeatId) clearInterval(heartbeatId);
-      if (reconnectId) clearTimeout(reconnectId);
-      ws?.close();
-    };
-  }, []);
 
   const loadConversations = async () => {
     try {

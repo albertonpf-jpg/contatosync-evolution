@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Search, Send, ArrowLeft, RefreshCw, Check, CheckCheck } from 'lucide-react';
 import { io } from 'socket.io-client';
 import DashboardLayout from '@/components/DashboardLayout';
@@ -42,29 +42,45 @@ const SOCKET_URL =
     ? 'https://web-production-50297.up.railway.app'
     : 'http://localhost:3003';
 
+// Valida se é um telefone brasileiro real (não LID)
+function isBrazilianPhone(digits: string): boolean {
+  if (!digits.startsWith('55')) return false;
+  if (digits.length !== 12 && digits.length !== 13) return false;
+  const ddd = parseInt(digits.substring(2, 4), 10);
+  if (ddd < 11 || ddd > 99) return false;
+  const local = digits.substring(4);
+  // celular: 9 dígitos começando com 9; fixo: 8 dígitos
+  return local.length === 9 || local.length === 8;
+}
+
+function formatPhone(digits: string): string {
+  const ddd = digits.substring(2, 4);
+  const rest = digits.substring(4);
+  if (rest.length === 9) return `+55 (${ddd}) ${rest.slice(0, 5)}-${rest.slice(5)}`;
+  return `+55 (${ddd}) ${rest.slice(0, 4)}-${rest.slice(4)}`;
+}
+
 export default function ConversationsPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
+  const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [loadingConvs, setLoadingConvs] = useState(true);
+  const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [newMessage, setNewMessage] = useState('');
+  const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [socketOk, setSocketOk] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevMsgCount = useRef(0);
   const currentConvRef = useRef<string | null>(null);
-  const isFetchingMessages = useRef(false);
 
-  // Manter ref da conversa aberta sempre atualizado
+  // Manter ref sincronizada com a conversa aberta
   useEffect(() => {
-    currentConvRef.current = selectedConversation?.id ?? null;
-  }, [selectedConversation?.id]);
+    currentConvRef.current = selectedConv?.id ?? null;
+  }, [selectedConv?.id]);
 
-  // Scroll automático só em mensagem nova
+  // Scroll só quando mensagem nova chega
   useEffect(() => {
     if (messages.length > prevMsgCount.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -72,48 +88,44 @@ export default function ConversationsPage() {
     prevMsgCount.current = messages.length;
   }, [messages]);
 
-  // ── FETCH CONVERSAS ──────────────────────────────────────────
-  const fetchConversations = useCallback(async () => {
+  // ── FUNÇÕES DE FETCH ─────────────────────────────────────────
+  // Armazenadas em refs para que o setInterval sempre chame a versão mais recente
+  // sem precisar ser recriado (evita stale closure definitivamente)
+
+  const doFetchConvs = async () => {
     try {
-      const response = await apiService.getConversations(1, 50);
-      let list: Conversation[] = [];
-      if (response?.items && Array.isArray(response.items)) list = response.items;
-      else if (Array.isArray(response)) list = response;
-      else if (response?.data && Array.isArray(response.data)) list = response.data;
+      const r = await apiService.getConversations(1, 50);
+      const list: Conversation[] = r?.items ?? (Array.isArray(r) ? r : []);
       setConversations(list);
-      setError(null);
-    } catch (err: any) {
-      setError(err.message || 'Erro ao carregar conversas');
+    } catch (e: any) {
+      console.error('[fetchConvs]', e?.message);
     } finally {
-      setLoading(false);
+      setLoadingConvs(false);
     }
-  }, []);
+  };
 
-  // ── FETCH MENSAGENS ──────────────────────────────────────────
-  const fetchMessages = useCallback(async (conversationId: string) => {
-    if (isFetchingMessages.current) return;
-    isFetchingMessages.current = true;
+  const doFetchMsgs = async (id: string) => {
     try {
-      const response = await apiService.getMessages(conversationId);
-      let msgs: Message[] = [];
-      if (response?.messages && Array.isArray(response.messages)) msgs = response.messages;
-      else if (response?.items && Array.isArray(response.items)) msgs = response.items;
-      else if (Array.isArray(response)) msgs = response;
+      const r = await apiService.getMessages(id);
+      const msgs: Message[] = r?.items ?? (Array.isArray(r) ? r : []);
       setMessages(msgs);
-    } catch (err: any) {
-      console.error('Erro ao buscar mensagens:', err?.message);
-    } finally {
-      isFetchingMessages.current = false;
+    } catch (e: any) {
+      console.error('[fetchMsgs]', e?.message);
     }
-  }, []);
+  };
 
-  // Carga inicial
+  // Refs que apontam sempre para as funções acima (atualizadas a cada render)
+  const fetchConvsRef = useRef(doFetchConvs);
+  const fetchMsgsRef = useRef(doFetchMsgs);
+  fetchConvsRef.current = doFetchConvs;
+  fetchMsgsRef.current = doFetchMsgs;
+
+  // ── CARGA INICIAL ────────────────────────────────────────────
   useEffect(() => {
-    fetchConversations();
-  }, [fetchConversations]);
+    fetchConvsRef.current();
+  }, []);
 
   // ── SOCKET.IO ─────────────────────────────────────────────────
-  // Padrão WhatsApp Web: socket event → chama API → atualiza estado
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : null;
     if (!token) return;
@@ -127,119 +139,80 @@ export default function ConversationsPage() {
       reconnectionDelayMax: 5000,
     });
 
-    socket.on('connect', () => {
-      console.log('[Socket] Conectado:', socket.id);
-      setSocketOk(true);
-    });
+    socket.on('connect', () => { console.log('[Socket] conectado'); setSocketOk(true); });
+    socket.on('disconnect', () => { setSocketOk(false); });
+    socket.on('connect_error', () => { setSocketOk(false); });
 
-    socket.on('disconnect', (reason) => {
-      console.warn('[Socket] Desconectado:', reason);
-      setSocketOk(false);
-    });
-
-    socket.on('connect_error', (err) => {
-      console.warn('[Socket] Erro de conexão:', err.message);
-      setSocketOk(false);
-    });
-
-    // Mensagem nova → refetch imediato (igual WhatsApp Web)
+    // Nova mensagem → refetch imediato via refs (sem stale closure)
     socket.on('new_message', (data: any) => {
-      console.log('[Socket] new_message recebida, conv:', data?.conversation_id);
-      fetchConversations();
-      if (currentConvRef.current) {
-        fetchMessages(currentConvRef.current);
-      }
+      console.log('[Socket] new_message conv:', data?.conversation_id);
+      fetchConvsRef.current();
+      if (currentConvRef.current) fetchMsgsRef.current(currentConvRef.current);
     });
 
-    socket.on('conversation_updated', () => {
-      fetchConversations();
-    });
+    socket.on('conversation_updated', () => { fetchConvsRef.current(); });
 
-    return () => {
-      socket.disconnect();
-    };
-  }, [fetchConversations, fetchMessages]);
+    return () => { socket.disconnect(); };
+  }, []); // roda uma vez, refs garantem acesso às funções atuais
 
   // ── POLLING ───────────────────────────────────────────────────
-  // Fallback sempre ativo: garante atualização mesmo se socket falhar
+  // Roda sempre a 3s como fallback garantido — refs evitam stale closure
   useEffect(() => {
-    const tick = () => {
-      fetchConversations();
-      if (currentConvRef.current) {
-        fetchMessages(currentConvRef.current);
-      }
-    };
-
-    const interval = setInterval(tick, 5000);
+    const interval = setInterval(() => {
+      fetchConvsRef.current();
+      if (currentConvRef.current) fetchMsgsRef.current(currentConvRef.current);
+    }, 3000);
     return () => clearInterval(interval);
-  }, [fetchConversations, fetchMessages]);
+  }, []); // roda uma vez, sem dependências
 
   // ── ABRIR CONVERSA ───────────────────────────────────────────
-  const openConversation = async (conv: Conversation) => {
-    setSelectedConversation(conv);
-    setLoadingMessages(true);
+  const openConv = async (conv: Conversation) => {
+    setSelectedConv(conv);
     setMessages([]);
-
-    setConversations(prev =>
-      prev.map(c => c.id === conv.id ? { ...c, unread_count: 0 } : c)
-    );
-
-    try {
-      await fetchMessages(conv.id);
-    } finally {
-      setLoadingMessages(false);
-    }
+    setLoadingMsgs(true);
+    setConversations(prev => prev.map(c => c.id === conv.id ? { ...c, unread_count: 0 } : c));
+    await doFetchMsgs(conv.id);
+    setLoadingMsgs(false);
   };
 
   // ── ENVIAR MENSAGEM ──────────────────────────────────────────
   const handleSend = async () => {
-    if (!newMessage.trim() || !selectedConversation || sending) return;
+    if (!draft.trim() || !selectedConv || sending) return;
     setSending(true);
-    const content = newMessage.trim();
-    setNewMessage('');
+    const content = draft.trim();
+    setDraft('');
     try {
-      await apiService.sendMessage({
-        conversation_id: selectedConversation.id,
-        content,
-        message_type: 'text',
-      });
+      await apiService.sendMessage({ conversation_id: selectedConv.id, content, message_type: 'text' });
       setTimeout(() => {
-        if (currentConvRef.current) fetchMessages(currentConvRef.current);
-        fetchConversations();
+        if (currentConvRef.current) fetchMsgsRef.current(currentConvRef.current);
+        fetchConvsRef.current();
       }, 600);
-    } catch (err: any) {
-      console.error('Erro ao enviar:', err);
-      setNewMessage(content);
-      alert('Erro ao enviar mensagem. Verifique se o WhatsApp está conectado.');
+    } catch (e: any) {
+      console.error('Erro ao enviar:', e);
+      setDraft(content);
+      alert('Erro ao enviar. Verifique se o WhatsApp está conectado.');
     } finally {
       setSending(false);
     }
   };
 
-  // ── HELPERS DE EXIBIÇÃO ──────────────────────────────────────
+  // ── HELPERS ──────────────────────────────────────────────────
   const getName = (c: Conversation) =>
-    c.contact_name || c.evolution_contacts?.name || c.phone || 'Sem nome';
+    c.contact_name || c.evolution_contacts?.name || 'Sem nome';
 
-  const getPhone = (c: Conversation) => {
-    const candidates = [c.evolution_contacts?.phone || '', c.phone || ''].filter(Boolean);
+  const getPhone = (c: Conversation): string => {
+    const candidates = [
+      c.evolution_contacts?.phone ?? '',
+      c.phone ?? '',
+    ].filter(Boolean);
+
     for (const p of candidates) {
+      // Ignorar qualquer coisa com @ (JIDs)
+      if (p.includes('@')) continue;
       const digits = p.replace(/\D/g, '');
-      if (digits.length >= 10 && digits.length <= 13 && !p.includes('@')) {
-        return formatPhone(digits);
-      }
+      if (isBrazilianPhone(digits)) return formatPhone(digits);
     }
-    return '';
-  };
-
-  const formatPhone = (d: string) => {
-    if (d.startsWith('55') && d.length >= 12) {
-      const ddd = d.substring(2, 4);
-      const rest = d.substring(4);
-      if (rest.length === 9) return `+55 (${ddd}) ${rest.slice(0, 5)}-${rest.slice(5)}`;
-      if (rest.length === 8) return `+55 (${ddd}) ${rest.slice(0, 4)}-${rest.slice(4)}`;
-      return `+55 (${ddd}) ${rest}`;
-    }
-    return `+${d}`;
+    return ''; // sem telefone válido: mostra "WhatsApp"
   };
 
   const getInitials = (n: string) =>
@@ -262,29 +235,12 @@ export default function ConversationsPage() {
   });
 
   // ── RENDER ────────────────────────────────────────────────────
-  if (error && conversations.length === 0) {
-    return (
-      <DashboardLayout>
-        <div className="flex items-center justify-center h-full p-6">
-          <div className="bg-red-50 border border-red-200 rounded-lg p-6 max-w-md w-full text-center">
-            <MessageSquare className="h-12 w-12 text-red-400 mx-auto mb-3" />
-            <h2 className="text-red-800 font-semibold text-lg mb-2">Erro ao carregar</h2>
-            <p className="text-red-600 text-sm mb-4">{error}</p>
-            <button onClick={fetchConversations} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 text-sm">
-              Tentar novamente
-            </button>
-          </div>
-        </div>
-      </DashboardLayout>
-    );
-  }
-
   return (
     <DashboardLayout>
       <div className="flex h-[calc(100vh-64px)] bg-gray-100">
 
-        {/* ── LISTA DE CONVERSAS ── */}
-        <div className={`${selectedConversation ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-96 bg-white border-r border-gray-200`}>
+        {/* LISTA */}
+        <div className={`${selectedConv ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-96 bg-white border-r border-gray-200`}>
           <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
@@ -296,8 +252,8 @@ export default function ConversationsPage() {
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-500 bg-gray-200 px-2 py-1 rounded-full">{filtered.length}</span>
-                <button onClick={fetchConversations} className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-full">
-                  <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                <button onClick={() => fetchConvsRef.current()} className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-full">
+                  <RefreshCw className={`h-4 w-4 ${loadingConvs ? 'animate-spin' : ''}`} />
                 </button>
               </div>
             </div>
@@ -314,10 +270,10 @@ export default function ConversationsPage() {
           </div>
 
           <div className="flex-1 overflow-y-auto">
-            {loading && conversations.length === 0 ? (
+            {loadingConvs && conversations.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-64">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mb-3" />
-                <p className="text-gray-500 text-sm">Carregando conversas...</p>
+                <p className="text-gray-500 text-sm">Carregando...</p>
               </div>
             ) : filtered.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-64 px-6">
@@ -325,16 +281,13 @@ export default function ConversationsPage() {
                 <p className="text-gray-500 text-sm text-center">
                   {searchTerm ? 'Nenhuma conversa encontrada' : 'Nenhuma conversa ainda'}
                 </p>
-                <p className="text-gray-400 text-xs text-center mt-1">
-                  {searchTerm ? 'Tente outro termo' : 'Conversas aparecem quando receber mensagens no WhatsApp'}
-                </p>
               </div>
             ) : (
               filtered.map(conv => (
                 <button
                   key={conv.id}
-                  onClick={() => openConversation(conv)}
-                  className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 border-b border-gray-100 text-left transition-colors ${selectedConversation?.id === conv.id ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''}`}
+                  onClick={() => openConv(conv)}
+                  className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 border-b border-gray-100 text-left transition-colors ${selectedConv?.id === conv.id ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''}`}
                 >
                   <div className="flex-shrink-0 w-12 h-12 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-semibold text-sm">
                     {getInitials(getName(conv))}
@@ -359,30 +312,28 @@ export default function ConversationsPage() {
           </div>
         </div>
 
-        {/* ── ÁREA DO CHAT ── */}
-        <div className={`${selectedConversation ? 'flex' : 'hidden md:flex'} flex-col flex-1 bg-gray-50`}>
-          {selectedConversation ? (
+        {/* CHAT */}
+        <div className={`${selectedConv ? 'flex' : 'hidden md:flex'} flex-col flex-1 bg-gray-50`}>
+          {selectedConv ? (
             <>
-              {/* Header */}
               <div className="flex items-center gap-3 px-4 py-3 bg-white border-b border-gray-200 shadow-sm">
-                <button onClick={() => setSelectedConversation(null)} className="md:hidden p-1 text-gray-500 hover:text-gray-700">
+                <button onClick={() => setSelectedConv(null)} className="md:hidden p-1 text-gray-500 hover:text-gray-700">
                   <ArrowLeft className="h-5 w-5" />
                 </button>
                 <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-semibold text-sm">
-                  {getInitials(getName(selectedConversation))}
+                  {getInitials(getName(selectedConv))}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h2 className="font-semibold text-gray-900 text-sm truncate">{getName(selectedConversation)}</h2>
-                  <p className="text-xs text-gray-500 truncate">{getPhone(selectedConversation) || 'WhatsApp'}</p>
+                  <h2 className="font-semibold text-gray-900 text-sm truncate">{getName(selectedConv)}</h2>
+                  <p className="text-xs text-gray-500 truncate">{getPhone(selectedConv) || 'WhatsApp'}</p>
                 </div>
-                <span className={`text-xs px-2 py-0.5 rounded-full ${selectedConversation.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
-                  {selectedConversation.status === 'active' ? 'Ativa' : selectedConversation.status}
+                <span className={`text-xs px-2 py-0.5 rounded-full ${selectedConv.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
+                  {selectedConv.status === 'active' ? 'Ativa' : selectedConv.status}
                 </span>
               </div>
 
-              {/* Mensagens */}
               <div className="flex-1 overflow-y-auto px-4 py-4">
-                {loadingMessages ? (
+                {loadingMsgs ? (
                   <div className="flex items-center justify-center h-full">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500" />
                   </div>
@@ -414,12 +365,11 @@ export default function ConversationsPage() {
                 )}
               </div>
 
-              {/* Input */}
               <div className="px-4 py-3 bg-white border-t border-gray-200">
                 <div className="flex items-end gap-2">
                   <textarea
-                    value={newMessage}
-                    onChange={e => setNewMessage(e.target.value)}
+                    value={draft}
+                    onChange={e => setDraft(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                     placeholder="Digite uma mensagem..."
                     rows={1}
@@ -428,7 +378,7 @@ export default function ConversationsPage() {
                   />
                   <button
                     onClick={handleSend}
-                    disabled={!newMessage.trim() || sending}
+                    disabled={!draft.trim() || sending}
                     className="flex-shrink-0 p-2.5 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Send className="h-5 w-5" />

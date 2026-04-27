@@ -1,8 +1,8 @@
-﻿﻿﻿﻿﻿'use client';
+'use client';
 
 import { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Search, Send, ArrowLeft, RefreshCw, Check, CheckCheck } from 'lucide-react';
-import { io } from 'socket.io-client';
+import { io, Socket } from 'socket.io-client';
 import DashboardLayout from '@/components/DashboardLayout';
 import { apiService } from '@/lib/api';
 
@@ -51,7 +51,7 @@ export default function ConversationsPage() {
   const [socketOk, setSocketOk] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevMsgCount = useRef(0);
-  const pollCountRef = useRef(0);
+  const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => { loadConversations(); }, []);
 
@@ -63,63 +63,138 @@ export default function ConversationsPage() {
     prevMsgCount.current = messages.length;
   }, [messages]);
 
-  // Ref para conversa atual (evita stale closure nos intervals)
+  // Ref para conversa atual (evita stale closure)
   const currentConvRef = useRef<string | null>(null);
   useEffect(() => {
     currentConvRef.current = selectedConversation?.id ?? null;
   }, [selectedConversation?.id]);
 
-  // Funcao de refresh (usa refs - sem stale closure)
-  const refresh = async () => {
-    pollCountRef.current += 1;
-    const n = pollCountRef.current;
-    try {
-      const r = await apiService.getConversations(1, 50);
-      const list: Conversation[] = r?.items ?? [];
-      if (list.length > 0) setConversations(list);
-    } catch (err: any) { console.error("[Poll#" + n + "] Erro conversas:", err?.message); }
-    if (currentConvRef.current) {
-      try {
-        const r2 = await apiService.getMessages(currentConvRef.current);
-        let msgs: Message[] = [];
-        if (r2?.messages && Array.isArray(r2.messages)) msgs = r2.messages;
-        else if (r2?.items && Array.isArray(r2.items)) msgs = r2.items;
-        else if (Array.isArray(r2)) msgs = r2;
-        console.log("[Poll#" + n + "] Mensagens:", msgs.length, "conv:", currentConvRef.current?.substring(0,8));
-        setMessages(msgs);
-      } catch (err: any) { console.error("[Poll#" + n + "] Erro mensagens:", err?.message); }
-    } else {
-      console.log("[Poll#" + n + "] Nenhuma conversa aberta");
-    }
-  };
-  const refreshRef = useRef(refresh);
-  useEffect(() => { refreshRef.current = refresh; });
-
-  // Polling a cada 5s como fallback
-  useEffect(() => {
-    const id = setInterval(() => refreshRef.current(), 1500);
-    return () => clearInterval(id);
-  }, []);
-
-  // Socket.io como canal adicional
+  // ============================================================
+  // SOCKET.IO — TEMPO REAL
+  // ============================================================
   useEffect(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : null;
     if (!token) return;
+
     const socketUrl = typeof window !== 'undefined' && window.location.hostname !== 'localhost'
       ? 'https://web-production-50297.up.railway.app'
       : 'http://localhost:3003';
-    const socket = io(socketUrl, { auth: { token }, transports: ['websocket', 'polling'] });
-    socket.on('new_message', () => refreshRef.current());
-    socket.on('conversation_updated', () => refreshRef.current());
-    socket.on('connect', () => { console.log('[Socket] Conectado!'); setSocketOk(true); });
-    socket.on('connect_error', (err) => { console.warn('[Socket] Erro:', err.message); setSocketOk(false); });
-    return () => { socket.disconnect(); };
+
+    const socket = io(socketUrl, {
+      auth: { token },
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+    });
+
+    socketRef.current = socket;
+
+    // ---- Nova mensagem recebida via socket ----
+    socket.on('new_message', (data: any) => {
+      console.log('[Socket] new_message recebida:', data);
+
+      // 1) Atualizar lista de conversas (mover a conversa pro topo, incrementar unread)
+      setConversations(prev => {
+        const convId = data.conversation_id;
+        const existingIdx = prev.findIndex(c => c.id === convId);
+
+        if (existingIdx >= 0) {
+          // Conversa existente — atualizar e mover pro topo
+          const updated = [...prev];
+          const conv = { ...updated[existingIdx] };
+          conv.last_message_at = data.timestamp || new Date().toISOString();
+
+          // Atualizar nome e telefone se vieram no socket
+          if (data.contact_name) conv.contact_name = data.contact_name;
+          if (data.phone) conv.phone = data.phone;
+
+          // Incrementar unread apenas se NAO e a conversa aberta
+          if (currentConvRef.current !== convId) {
+            conv.unread_count = (conv.unread_count || 0) + 1;
+          }
+
+          updated.splice(existingIdx, 1);
+          updated.unshift(conv);
+          return updated;
+        } else {
+          // Conversa nova — buscar do servidor
+          loadConversations();
+          return prev;
+        }
+      });
+
+      // 2) Se a conversa aberta e a mesma, adicionar a mensagem na lista
+      if (currentConvRef.current === data.conversation_id && data.direction === 'in') {
+        const newMsg: Message = {
+          id: data.id || ('socket_' + Date.now()),
+          conversation_id: data.conversation_id,
+          content: data.content || '',
+          message_type: data.message_type || 'text',
+          direction: 'in',
+          status: 'received',
+          is_from_ai: false,
+          created_at: data.timestamp || new Date().toISOString(),
+          sent_at: data.timestamp || new Date().toISOString(),
+        };
+
+        setMessages(prev => {
+          // Evitar duplicatas
+          const isDuplicate = prev.some(m =>
+            (m.id === newMsg.id) ||
+            (m.content === newMsg.content && m.direction === 'in' &&
+              Math.abs(new Date(m.sent_at || m.created_at).getTime() - new Date(newMsg.sent_at || newMsg.created_at).getTime()) < 3000)
+          );
+          if (isDuplicate) return prev;
+          return [...prev, newMsg];
+        });
+      }
+    });
+
+    // ---- Conversa atualizada ----
+    socket.on('conversation_updated', () => {
+      loadConversations();
+    });
+
+    socket.on('connect', () => {
+      console.log('[Socket] Conectado!');
+      setSocketOk(true);
+    });
+
+    socket.on('disconnect', (reason) => {
+      console.warn('[Socket] Desconectado:', reason);
+      setSocketOk(false);
+    });
+
+    socket.on('connect_error', (err) => {
+      console.warn('[Socket] Erro conexao:', err.message);
+      setSocketOk(false);
+    });
+
+    return () => {
+      socket.disconnect();
+      socketRef.current = null;
+    };
   }, []);
+
+  // ============================================================
+  // POLLING como fallback (intervalo maior se socket conectado)
+  // ============================================================
+  useEffect(() => {
+    const interval = setInterval(() => {
+      loadConversations();
+      if (currentConvRef.current) {
+        loadMessagesForConversation(currentConvRef.current);
+      }
+    }, socketOk ? 10000 : 3000);
+
+    return () => clearInterval(interval);
+  }, [socketOk]);
 
 
   const loadConversations = async () => {
     try {
-      setLoading(true);
       setError(null);
       const response = await apiService.getConversations(1, 50);
       let list: Conversation[] = [];
@@ -128,15 +203,34 @@ export default function ConversationsPage() {
       else if (response?.data && Array.isArray(response.data)) list = response.data;
       setConversations(list);
     } catch (err: any) {
-      setError(err.message || 'Erro ao carregar conversas');
+      if (conversations.length === 0) setError(err.message || 'Erro ao carregar conversas');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadMessagesForConversation = async (conversationId: string) => {
+    try {
+      const response = await apiService.getMessages(conversationId);
+      let msgs: Message[] = [];
+      if (response?.messages && Array.isArray(response.messages)) msgs = response.messages;
+      else if (response?.items && Array.isArray(response.items)) msgs = response.items;
+      else if (Array.isArray(response)) msgs = response;
+      setMessages(msgs);
+    } catch (err: any) {
+      console.error('Erro carregando mensagens:', err?.message);
     }
   };
 
   const openConversation = async (conv: Conversation) => {
     setSelectedConversation(conv);
     setLoadingMessages(true);
+
+    // Zerar unread localmente
+    setConversations(prev => prev.map(c =>
+      c.id === conv.id ? { ...c, unread_count: 0 } : c
+    ));
+
     try {
       const response = await apiService.getMessages(conv.id);
       let msgs: Message[] = [];
@@ -158,21 +252,60 @@ export default function ConversationsPage() {
         message_type: 'text'
       });
       setNewMessage('');
-      setTimeout(() => openConversation(selectedConversation), 1000);
+      setTimeout(() => {
+        if (currentConvRef.current) {
+          loadMessagesForConversation(currentConvRef.current);
+        }
+        loadConversations();
+      }, 800);
     } catch (err: any) {
       console.error('Erro ao enviar mensagem:', err);
-      alert('Erro ao enviar mensagem. Verifique se o WhatsApp está conectado.');
+      alert('Erro ao enviar mensagem. Verifique se o WhatsApp esta conectado.');
     } finally {
       setSending(false);
     }
   };
 
+  // ============================================================
+  // FUNCOES DE EXIBICAO
+  // ============================================================
+
   const getName = (c: Conversation) => c.contact_name || c.evolution_contacts?.name || c.phone || 'Sem nome';
+
   const getPhone = (c: Conversation) => {
-    const p = c.phone || c.evolution_contacts?.phone || '';
-    if (!p || p.includes('@') || p.replace(/\D/g, '').length > 13) return '';
-    return p;
+    // Prioridade: evolution_contacts.phone > conversation.phone
+    const contactPhone = c.evolution_contacts?.phone || '';
+    const convPhone = c.phone || '';
+
+    // Escolher o telefone real (nao LID)
+    const candidates = [contactPhone, convPhone].filter(Boolean);
+
+    for (const p of candidates) {
+      const digits = p.replace(/\D/g, '');
+      // Telefone real brasileiro: 10-13 digitos (ex: 5511999999999)
+      if (digits.length >= 10 && digits.length <= 13 && !p.includes('@')) {
+        return formatPhoneNumber(digits);
+      }
+    }
+
+    // Se nenhum telefone real encontrado, nao mostrar codigo LID
+    return '';
   };
+
+  const formatPhoneNumber = (digits: string): string => {
+    if (digits.startsWith('55') && digits.length >= 12) {
+      const ddd = digits.substring(2, 4);
+      const rest = digits.substring(4);
+      if (rest.length === 9) {
+        return `+55 (${ddd}) ${rest.substring(0, 5)}-${rest.substring(5)}`;
+      } else if (rest.length === 8) {
+        return `+55 (${ddd}) ${rest.substring(0, 4)}-${rest.substring(4)}`;
+      }
+      return `+55 (${ddd}) ${rest}`;
+    }
+    return `+${digits}`;
+  };
+
   const getInitials = (n: string) => n.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
 
   const formatTime = (d: string) => {
@@ -188,7 +321,7 @@ export default function ConversationsPage() {
   const filtered = conversations.filter(c => {
     if (!searchTerm) return true;
     const s = searchTerm.toLowerCase();
-    return getName(c).toLowerCase().includes(s) || getPhone(c).includes(s);
+    return getName(c).toLowerCase().includes(s) || getPhone(c).toLowerCase().includes(s);
   });
 
   if (error && conversations.length === 0) {
@@ -234,7 +367,7 @@ export default function ConversationsPage() {
             </div>
           </div>
           <div className="flex-1 overflow-y-auto">
-            {loading ? (
+            {loading && conversations.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-64">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mb-3"></div>
                 <p className="text-gray-500 text-sm">Carregando conversas...</p>
@@ -258,7 +391,7 @@ export default function ConversationsPage() {
                       <span className="text-xs text-gray-400 ml-2">{formatTime(conv.last_message_at)}</span>
                     </div>
                     <div className="flex items-center justify-between mt-0.5">
-                      <span className="text-xs text-gray-500 truncate">{getPhone(conv)}</span>
+                      <span className="text-xs text-gray-500 truncate">{getPhone(conv) || 'WhatsApp'}</span>
                       {conv.unread_count > 0 && (
                         <span className="ml-2 bg-green-500 text-white text-xs font-bold rounded-full h-5 min-w-[20px] flex items-center justify-center px-1.5">{conv.unread_count}</span>
                       )}
@@ -283,7 +416,7 @@ export default function ConversationsPage() {
                 </div>
                 <div className="flex-1 min-w-0">
                   <h2 className="font-semibold text-gray-900 text-sm truncate">{getName(selectedConversation)}</h2>
-                  <p className="text-xs text-gray-500 truncate">{getPhone(selectedConversation)}</p>
+                  <p className="text-xs text-gray-500 truncate">{getPhone(selectedConversation) || 'WhatsApp'}</p>
                 </div>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${selectedConversation.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>
                   {selectedConversation.status === 'active' ? 'Ativa' : selectedConversation.status}

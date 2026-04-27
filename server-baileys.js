@@ -1,4 +1,4 @@
-﻿﻿const express = require('express');
+const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -492,18 +492,34 @@ app.post('/internal/messages/process', async function(req, res) {
       var { getIO } = require('./src/services/socketService');
       var socketIO = getIO();
       if (socketIO) {
+        // Determinar telefone real para exibicao (nao enviar codigo LID)
+        var displayPhone = phone;
+        if (phone && phone.replace(/\D/g, '').length > 13) {
+          // E um codigo LID, nao enviar como phone
+          displayPhone = '';
+        }
+
         socketIO.to('client_' + session.client_id).emit('new_message', {
+          id: newMsgId,
           conversation_id: conversation.id,
+          contact_id: contact.id,
           contact_name: contact.name,
-          phone: phone,
+          phone: displayPhone,
           content: content,
-          message_type: messageType,
+          message_type: messageType || 'text',
           direction: 'in',
+          status: 'received',
+          is_from_ai: false,
+          sent_at: now,
+          created_at: now,
           timestamp: now
         });
+        console.log('WebSocket emitido: new_message para client_' + session.client_id);
+      } else {
+        console.log('WebSocket nao disponivel para emit');
       }
     } catch (socketErr) {
-      // Socket nao critico
+      console.error('Erro emitindo WebSocket:', socketErr.message);
     }
 
     res.json({ success: true, conversation_id: conversation.id, contact_id: contact.id });

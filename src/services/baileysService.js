@@ -1,4 +1,4 @@
-﻿const QRCode = require('qrcode');
+const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 
@@ -350,26 +350,59 @@ class BaileysService {
       if (remoteJid.endsWith('@g.us')) return;
 
       let phone = '';
+      let isLid = false;
 
       if (remoteJid.endsWith('@lid')) {
-        // Tentativa 1: senderPn (campo direto da mensagem)
-        phone = message.key?.senderPn || '';
+        isLid = true;
+        const lidNum = remoteJid.replace('@lid', '').replace(/\D/g, '');
 
-        // Tentativa 2: mapa LID->phone construido via contacts.upsert
+        // Tentativa 1: senderPn (campo direto da mensagem - Baileys 6+)
+        phone = message.key?.senderPn || '';
+        if (phone) {
+          phone = phone.replace(/\D/g, '');
+          console.log('LID resolvido via senderPn: ' + remoteJid + ' -> ' + phone);
+        }
+
+        // Tentativa 2: mapa LID->phone em memoria (construido via contacts.upsert)
         if (!phone) {
           const sessionObj = this.sessions.get(sessionName);
           phone = sessionObj?.lidToPhone?.get(remoteJid) || '';
           if (phone) console.log('LID resolvido via mapa: ' + remoteJid + ' -> ' + phone);
         }
 
-        // Tentativa 3: participant (em grupos nao se aplica, mas por seguranca)
+        // Tentativa 3: participant
         if (!phone) {
-          phone = message.key?.participant?.replace('@s.whatsapp.net', '') || '';
+          phone = (message.key?.participant || '').replace('@s.whatsapp.net', '').replace(/\D/g, '');
+        }
+
+        // Tentativa 4: buscar no banco se esse LID ja foi resolvido antes
+        if (!phone && lidNum) {
+          try {
+            const { supabaseAdmin } = require('../config/supabase');
+            // Buscar conversa com esse JID que ja tenha phone real
+            const { data: existingConv } = await supabaseAdmin
+              .from('evolution_conversations')
+              .select('phone')
+              .eq('jid', remoteJid)
+              .not('phone', 'is', null)
+              .limit(1)
+              .single();
+
+            if (existingConv?.phone) {
+              const existingDigits = existingConv.phone.replace(/\D/g, '');
+              if (existingDigits.length >= 10 && existingDigits.length <= 13) {
+                phone = existingDigits;
+                console.log('LID resolvido via banco (conversa existente): ' + remoteJid + ' -> ' + phone);
+              }
+            }
+          } catch (dbErr) {
+            // Nao critico
+          }
         }
 
         // Fallback: usar o numero numerico do LID como identificador unico
         if (!phone) {
-          phone = remoteJid.replace('@lid', '').replace(/\D/g, '');
+          phone = lidNum;
           console.log('LID sem resolucao, usando ID como identificador: ' + phone);
         }
 

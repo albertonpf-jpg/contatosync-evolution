@@ -61,6 +61,54 @@ console.log('QR Codes nativos do Baileys');
 // DEBUG ENDPOINTS (sem auth)
 // ========================
 
+// Mostra todos os sessions no banco (sem filtro de client_id)
+app.get('/debug/all-sessions', async function(req, res) {
+  try {
+    var { supabaseAdmin } = require('./src/config/supabase');
+    var { data: sessions } = await supabaseAdmin
+      .from('evolution_sessions')
+      .select('session_name, client_id, status, created_at');
+    var inMemory = require('./src/services/baileysService').getAllSessions();
+    res.json({ db_sessions: sessions || [], memory_sessions: inMemory, timestamp: new Date().toISOString() });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
+// Corrige o client_id de uma session no banco
+// POST /debug/fix-session-client  body: { session_name, email }
+app.post('/debug/fix-session-client', async function(req, res) {
+  try {
+    var { supabaseAdmin } = require('./src/config/supabase');
+    var { v4: uuidv4 } = require('uuid');
+    var sessionName = req.body.session_name;
+    var email = req.body.email;
+    if (!sessionName || !email) return res.json({ error: 'session_name e email obrigatorios' });
+
+    var { data: client } = await supabaseAdmin
+      .from('evolution_clients').select('id').eq('email', email).single();
+    if (!client) return res.json({ error: 'Cliente nao encontrado: ' + email });
+
+    var now = new Date().toISOString();
+    var { data: existing } = await supabaseAdmin
+      .from('evolution_sessions').select('id').eq('session_name', sessionName).single();
+
+    var result;
+    if (existing) {
+      result = await supabaseAdmin
+        .from('evolution_sessions')
+        .update({ client_id: client.id, updated_at: now })
+        .eq('session_name', sessionName)
+        .select();
+    } else {
+      result = await supabaseAdmin
+        .from('evolution_sessions')
+        .insert([{ id: uuidv4(), session_name: sessionName, client_id: client.id,
+                   status: 'connected', created_at: now, updated_at: now }])
+        .select();
+    }
+    res.json({ ok: true, email, client_id: client.id, sessionName, result: result.data });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
 app.get('/debug/conversations/:email', async (req, res) => {
   try {
     var email = req.params.email;

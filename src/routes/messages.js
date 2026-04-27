@@ -33,7 +33,7 @@ router.get('/',
         .from('evolution_messages')
         .select(`
           *,
-          evolution_conversations!inner(contact_name, phone)
+          evolution_conversations(contact_name, phone)
         `, { count: 'exact' })
         .eq('client_id', req.user.id)
         .order('sent_at', { ascending: false });
@@ -95,7 +95,7 @@ router.get('/:id',
         .from('evolution_messages')
         .select(`
           *,
-          evolution_conversations!inner(contact_name, phone, status)
+          evolution_conversations(contact_name, phone, status)
         `)
         .eq('client_id', req.user.id)
         .eq('id', id)

@@ -4,62 +4,69 @@ import { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Search, Send, ArrowLeft, RefreshCw, Check, CheckCheck } from 'lucide-react';
 import { io } from 'socket.io-client';
 import DashboardLayout from '@/components/DashboardLayout';
-import { apiService } from '@/lib/api';
 
-interface Contact {
-  name: string;
-  phone: string;
-}
+// ── CONSTANTES ──────────────────────────────────────────────────
+const API =
+  process.env.NEXT_PUBLIC_API_URL ||
+  'https://web-production-50297.up.railway.app/api';
 
+const SOCKET_URL = 'https://web-production-50297.up.railway.app';
+
+// ── TYPES ────────────────────────────────────────────────────────
+interface Contact { name: string; phone: string; }
 interface Conversation {
-  id: string;
-  client_id: string;
-  contact_id: string;
-  contact_name?: string;
-  phone?: string;
-  status: string;
-  last_message_at: string;
-  unread_count: number;
-  created_at: string;
-  updated_at: string;
+  id: string; client_id: string; contact_id: string;
+  contact_name?: string; phone?: string; status: string;
+  last_message_at: string; unread_count: number;
+  created_at: string; updated_at: string;
   evolution_contacts?: Contact;
 }
-
 interface Message {
-  id: string;
-  conversation_id: string;
-  content: string;
-  message_type: string;
-  direction: 'in' | 'out';
-  status: string;
-  is_from_ai: boolean;
-  created_at: string;
-  sent_at?: string;
+  id: string; conversation_id: string; content: string;
+  message_type: string; direction: 'in' | 'out';
+  status: string; is_from_ai: boolean;
+  created_at: string; sent_at?: string;
 }
 
-const SOCKET_URL =
-  typeof window !== 'undefined' && window.location.hostname !== 'localhost'
-    ? 'https://web-production-50297.up.railway.app'
-    : 'http://localhost:3003';
-
-// Valida se é um telefone brasileiro real (não LID)
-function isBrazilianPhone(digits: string): boolean {
-  if (!digits.startsWith('55')) return false;
-  if (digits.length !== 12 && digits.length !== 13) return false;
-  const ddd = parseInt(digits.substring(2, 4), 10);
-  if (ddd < 11 || ddd > 99) return false;
-  const local = digits.substring(4);
-  // celular: 9 dígitos começando com 9; fixo: 8 dígitos
-  return local.length === 9 || local.length === 8;
+// ── FETCH HELPERS ────────────────────────────────────────────────
+// Usa fetch nativo com cache desabilitado — sem dependência de Axios ou estado React
+async function apiFetch(path: string, token: string) {
+  const url = `${API}${path}&_t=${Date.now()}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const json = await res.json();
+  return json?.data;          // { items: [...], pagination: {...} }
 }
 
-function formatPhone(digits: string): string {
-  const ddd = digits.substring(2, 4);
-  const rest = digits.substring(4);
-  if (rest.length === 9) return `+55 (${ddd}) ${rest.slice(0, 5)}-${rest.slice(5)}`;
-  return `+55 (${ddd}) ${rest.slice(0, 4)}-${rest.slice(4)}`;
+// ── VALIDAÇÃO DE TELEFONE BRASILEIRO ────────────────────────────
+function parseBRPhone(raw: string): string {
+  if (!raw || raw.includes('@')) return '';
+  const d = raw.replace(/\D/g, '');
+  if (!d.startsWith('55')) return '';
+  if (d.length !== 12 && d.length !== 13) return '';
+  const ddd = parseInt(d.substring(2, 4), 10);
+  if (ddd < 11 || ddd > 99) return '';
+  const local = d.substring(4);
+  // celular: 9 dígitos, começa com 9
+  if (local.length === 9) {
+    if (!local.startsWith('9')) return '';
+    return `+55 (${ddd}) ${local.slice(0, 5)}-${local.slice(5)}`;
+  }
+  // fixo: 8 dígitos, começa com 2-5
+  if (local.length === 8) {
+    if (!/^[2-5]/.test(local)) return '';
+    return `+55 (${ddd}) ${local.slice(0, 4)}-${local.slice(4)}`;
+  }
+  return '';
 }
 
+// ── COMPONENTE PRINCIPAL ─────────────────────────────────────────
 export default function ConversationsPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
@@ -73,14 +80,10 @@ export default function ConversationsPage() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevMsgCount = useRef(0);
-  const currentConvRef = useRef<string | null>(null);
+  const currentConvId = useRef<string | null>(null);
+  const tokenRef = useRef<string>('');
 
-  // Manter ref sincronizada com a conversa aberta
-  useEffect(() => {
-    currentConvRef.current = selectedConv?.id ?? null;
-  }, [selectedConv?.id]);
-
-  // Scroll só quando mensagem nova chega
+  // Scroll só em mensagem nova
   useEffect(() => {
     if (messages.length > prevMsgCount.current) {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -88,46 +91,69 @@ export default function ConversationsPage() {
     prevMsgCount.current = messages.length;
   }, [messages]);
 
-  // ── FUNÇÕES DE FETCH ─────────────────────────────────────────
-  // Armazenadas em refs para que o setInterval sempre chame a versão mais recente
-  // sem precisar ser recriado (evita stale closure definitivamente)
+  // Atualizar ref da conversa aberta
+  useEffect(() => {
+    currentConvId.current = selectedConv?.id ?? null;
+  }, [selectedConv?.id]);
 
-  const doFetchConvs = async () => {
+  // ── FUNÇÕES DE FETCH (direto, sem closure de estado) ─────────
+  function getToken() {
+    if (!tokenRef.current) {
+      tokenRef.current = localStorage.getItem('contatosync_token') ?? '';
+    }
+    return tokenRef.current;
+  }
+
+  async function fetchConvs() {
+    const token = getToken();
+    if (!token) return;
     try {
-      const r = await apiService.getConversations(1, 50);
-      const list: Conversation[] = r?.items ?? (Array.isArray(r) ? r : []);
+      const data = await apiFetch('/conversations?page=1&limit=50&status=active', token);
+      const list: Conversation[] = data?.items ?? [];
       setConversations(list);
+      setLoadingConvs(false);
     } catch (e: any) {
-      console.error('[fetchConvs]', e?.message);
-    } finally {
+      console.error('[fetchConvs]', e.message);
       setLoadingConvs(false);
     }
-  };
+  }
 
-  const doFetchMsgs = async (id: string) => {
+  async function fetchMsgs(id: string) {
+    const token = getToken();
+    if (!token || !id) return;
     try {
-      const r = await apiService.getMessages(id);
-      const msgs: Message[] = r?.items ?? (Array.isArray(r) ? r : []);
+      const data = await apiFetch(`/messages/conversation/${id}?page=1&limit=50`, token);
+      const msgs: Message[] = data?.items ?? [];
       setMessages(msgs);
     } catch (e: any) {
-      console.error('[fetchMsgs]', e?.message);
+      console.error('[fetchMsgs]', e.message);
     }
-  };
+  }
 
-  // Refs que apontam sempre para as funções acima (atualizadas a cada render)
-  const fetchConvsRef = useRef(doFetchConvs);
-  const fetchMsgsRef = useRef(doFetchMsgs);
-  fetchConvsRef.current = doFetchConvs;
-  fetchMsgsRef.current = doFetchMsgs;
+  // Refs sempre atualizadas (evita stale closure nos timers)
+  const fetchConvsRef = useRef(fetchConvs);
+  const fetchMsgsRef = useRef(fetchMsgs);
+  fetchConvsRef.current = fetchConvs;
+  fetchMsgsRef.current = fetchMsgs;
 
   // ── CARGA INICIAL ────────────────────────────────────────────
   useEffect(() => {
+    tokenRef.current = localStorage.getItem('contatosync_token') ?? '';
     fetchConvsRef.current();
   }, []);
 
-  // ── SOCKET.IO ─────────────────────────────────────────────────
+  // ── POLLING 3s ───────────────────────────────────────────────
   useEffect(() => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : null;
+    const id = setInterval(() => {
+      fetchConvsRef.current();
+      if (currentConvId.current) fetchMsgsRef.current(currentConvId.current);
+    }, 3000);
+    return () => clearInterval(id);
+  }, []);
+
+  // ── SOCKET ───────────────────────────────────────────────────
+  useEffect(() => {
+    const token = localStorage.getItem('contatosync_token');
     if (!token) return;
 
     const socket = io(SOCKET_URL, {
@@ -139,39 +165,30 @@ export default function ConversationsPage() {
       reconnectionDelayMax: 5000,
     });
 
-    socket.on('connect', () => { console.log('[Socket] conectado'); setSocketOk(true); });
-    socket.on('disconnect', () => { setSocketOk(false); });
-    socket.on('connect_error', () => { setSocketOk(false); });
+    socket.on('connect', () => { console.log('[Socket] ok'); setSocketOk(true); });
+    socket.on('disconnect', () => setSocketOk(false));
+    socket.on('connect_error', () => setSocketOk(false));
 
-    // Nova mensagem → refetch imediato via refs (sem stale closure)
-    socket.on('new_message', (data: any) => {
-      console.log('[Socket] new_message conv:', data?.conversation_id);
+    socket.on('new_message', (d: any) => {
+      console.log('[Socket] new_message', d?.conversation_id);
       fetchConvsRef.current();
-      if (currentConvRef.current) fetchMsgsRef.current(currentConvRef.current);
+      if (currentConvId.current) fetchMsgsRef.current(currentConvId.current);
     });
 
-    socket.on('conversation_updated', () => { fetchConvsRef.current(); });
+    socket.on('conversation_updated', () => fetchConvsRef.current());
 
     return () => { socket.disconnect(); };
-  }, []); // roda uma vez, refs garantem acesso às funções atuais
-
-  // ── POLLING ───────────────────────────────────────────────────
-  // Roda sempre a 3s como fallback garantido — refs evitam stale closure
-  useEffect(() => {
-    const interval = setInterval(() => {
-      fetchConvsRef.current();
-      if (currentConvRef.current) fetchMsgsRef.current(currentConvRef.current);
-    }, 3000);
-    return () => clearInterval(interval);
-  }, []); // roda uma vez, sem dependências
+  }, []);
 
   // ── ABRIR CONVERSA ───────────────────────────────────────────
   const openConv = async (conv: Conversation) => {
     setSelectedConv(conv);
     setMessages([]);
     setLoadingMsgs(true);
-    setConversations(prev => prev.map(c => c.id === conv.id ? { ...c, unread_count: 0 } : c));
-    await doFetchMsgs(conv.id);
+    setConversations(prev => prev.map(c =>
+      c.id === conv.id ? { ...c, unread_count: 0 } : c
+    ));
+    await fetchMsgsRef.current(conv.id);
     setLoadingMsgs(false);
   };
 
@@ -182,9 +199,22 @@ export default function ConversationsPage() {
     const content = draft.trim();
     setDraft('');
     try {
-      await apiService.sendMessage({ conversation_id: selectedConv.id, content, message_type: 'text' });
+      const token = getToken();
+      const res = await fetch(`${API}/messages/send`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          conversation_id: selectedConv.id,
+          content,
+          message_type: 'text',
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setTimeout(() => {
-        if (currentConvRef.current) fetchMsgsRef.current(currentConvRef.current);
+        if (currentConvId.current) fetchMsgsRef.current(currentConvId.current);
         fetchConvsRef.current();
       }, 600);
     } catch (e: any) {
@@ -200,20 +230,9 @@ export default function ConversationsPage() {
   const getName = (c: Conversation) =>
     c.contact_name || c.evolution_contacts?.name || 'Sem nome';
 
-  const getPhone = (c: Conversation): string => {
-    const candidates = [
-      c.evolution_contacts?.phone ?? '',
-      c.phone ?? '',
-    ].filter(Boolean);
-
-    for (const p of candidates) {
-      // Ignorar qualquer coisa com @ (JIDs)
-      if (p.includes('@')) continue;
-      const digits = p.replace(/\D/g, '');
-      if (isBrazilianPhone(digits)) return formatPhone(digits);
-    }
-    return ''; // sem telefone válido: mostra "WhatsApp"
-  };
+  const getPhone = (c: Conversation): string =>
+    parseBRPhone(c.evolution_contacts?.phone ?? '') ||
+    parseBRPhone(c.phone ?? '');
 
   const getInitials = (n: string) =>
     n.split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
@@ -393,7 +412,7 @@ export default function ConversationsPage() {
                   <MessageSquare className="h-10 w-10 text-blue-500" />
                 </div>
                 <h2 className="text-xl font-bold text-gray-900 mb-2">ContatoSync Evolution</h2>
-                <p className="text-gray-500 text-sm">Selecione uma conversa para visualizar mensagens</p>
+                <p className="text-gray-500 text-sm">Selecione uma conversa para ver as mensagens</p>
               </div>
             </div>
           )}

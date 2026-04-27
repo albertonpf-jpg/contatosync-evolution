@@ -78,15 +78,28 @@ app.get('/debug/conversations/:email', async (req, res) => {
 
     var { data: conversations } = await supabaseAdmin
       .from('evolution_conversations')
-      .select('*, evolution_contacts!inner(name, phone)')
+      .select('id, contact_name, phone, jid, status, last_message_at, unread_count, contact_id')
       .eq('client_id', client.id)
       .order('last_message_at', { ascending: false });
+
+    var { data: sessions } = await supabaseAdmin
+      .from('evolution_sessions')
+      .select('session_name, client_id, status')
+      .eq('client_id', client.id);
+
+    var { data: contacts } = await supabaseAdmin
+      .from('evolution_contacts')
+      .select('id, name, phone')
+      .eq('client_id', client.id)
+      .limit(5);
 
     res.json({
       email: email,
       client_id: client.id,
       conversations: conversations || [],
-      count: conversations ? conversations.length : 0,
+      convCount: conversations ? conversations.length : 0,
+      sessions: sessions || [],
+      contacts_sample: contacts || [],
       timestamp: new Date().toISOString()
     });
   } catch (error) {

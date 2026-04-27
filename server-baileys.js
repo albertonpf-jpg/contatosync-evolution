@@ -61,6 +61,39 @@ console.log('QR Codes nativos do Baileys');
 // DEBUG ENDPOINTS (sem auth)
 // ========================
 
+// Mostra detalhes de um client_id (email do dono)
+app.get('/debug/client-info/:clientId', async function(req, res) {
+  try {
+    var { supabaseAdmin } = require('./src/config/supabase');
+    var cid = req.params.clientId;
+    var { data: client } = await supabaseAdmin.from('evolution_clients').select('id,email,name').eq('id', cid).single();
+    var { data: convs } = await supabaseAdmin.from('evolution_conversations').select('id,contact_name,phone,last_message_at').eq('client_id', cid).order('last_message_at', { ascending: false }).limit(10);
+    var { data: contacts } = await supabaseAdmin.from('evolution_contacts').select('id,name,phone').eq('client_id', cid).limit(5);
+    res.json({ client, convCount: convs ? convs.length : 0, convs: convs || [], contacts: contacts || [] });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
+// Migra todos os dados de um client_id para outro
+// POST /debug/migrate-client  body: { from_client_id, to_email }
+app.post('/debug/migrate-client', async function(req, res) {
+  try {
+    var { supabaseAdmin } = require('./src/config/supabase');
+    var fromId = req.body.from_client_id;
+    var toEmail = req.body.to_email;
+    if (!fromId || !toEmail) return res.json({ error: 'from_client_id e to_email obrigatorios' });
+    var { data: toClient } = await supabaseAdmin.from('evolution_clients').select('id').eq('email', toEmail).single();
+    if (!toClient) return res.json({ error: 'Cliente destino nao encontrado: ' + toEmail });
+    var toId = toClient.id;
+    var now = new Date().toISOString();
+    var r1 = await supabaseAdmin.from('evolution_conversations').update({ client_id: toId, updated_at: now }).eq('client_id', fromId);
+    var r2 = await supabaseAdmin.from('evolution_contacts').update({ client_id: toId, updated_at: now }).eq('client_id', fromId);
+    var r3 = await supabaseAdmin.from('evolution_messages').update({ client_id: toId }).eq('client_id', fromId);
+    res.json({ ok: true, from: fromId, to: toId, toEmail,
+      convs_migrated: !r1.error, contacts_migrated: !r2.error, messages_migrated: !r3.error,
+      errors: [r1.error?.message, r2.error?.message, r3.error?.message].filter(Boolean) });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
 // Mostra todos os sessions no banco (sem filtro de client_id)
 app.get('/debug/all-sessions', async function(req, res) {
   try {

@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Search, Send, ArrowLeft, RefreshCw, Check, CheckCheck } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
-import { useSocket } from '@/hooks/useSocket';
+import { useSocketContext } from '@/contexts/SocketContext';
 
 // ── CONFIG ────────────────────────────────────────────────────────
 const API =
@@ -122,17 +122,27 @@ export default function ConversationsPage() {
   fetchConvsRef.current = fetchConvs;
   fetchMsgsRef.current  = fetchMsgs;
 
-  // ── SOCKET ────────────────────────────────────────────────────
-  // Callbacks via refs → sem stale closure, sem recriar socket
-  const { connected: socketOk } = useSocket({
-    onNewMessage: () => {
+  // ── SOCKET via Context global ────────────────────────────────
+  // SocketProvider vive no layout.tsx — sempre conectado independente da rota
+  const { connected: socketOk, on, off } = useSocketContext();
+
+  useEffect(() => {
+    const handleNewMessage = () => {
       fetchConvsRef.current();
       if (currentConvId.current) fetchMsgsRef.current(currentConvId.current);
-    },
-    onConversationUpdated: () => {
+    };
+    const handleConvUpdated = () => {
       fetchConvsRef.current();
-    },
-  });
+    };
+
+    on('new_message', handleNewMessage);
+    on('conversation_updated', handleConvUpdated);
+
+    return () => {
+      off('new_message', handleNewMessage);
+      off('conversation_updated', handleConvUpdated);
+    };
+  }, [on, off]);
 
   // ── CARGA INICIAL ─────────────────────────────────────────────
   useEffect(() => {

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AuthProvider } from '@/contexts/AuthContext';
+import { SocketProvider } from '@/contexts/SocketContext';
 import ClientOnly from '@/components/ClientOnly';
 import "./globals.css";
 
@@ -20,7 +21,9 @@ export default function RootLayout({
       <body suppressHydrationWarning={true}>
         <ClientOnly>
           <AuthProvider>
-            {children}
+            <SocketProvider>
+              {children}
+            </SocketProvider>
           </AuthProvider>
         </ClientOnly>
       </body>

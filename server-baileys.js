@@ -691,6 +691,7 @@ app.post('/internal/messages/process', async function(req, res) {
       console.error('Erro buscando conversa:', convFetchError);
     }
 
+    var conversationCreated = false;
     if (!conversation) {
       var newConvId = uuidv4();
       var { data: newConv, error: convError } = await supabaseAdmin
@@ -719,6 +720,7 @@ app.post('/internal/messages/process', async function(req, res) {
         return res.status(500).json({ error: 'Erro criando conversa', details: convError });
       }
       conversation = newConv;
+      conversationCreated = true;
       console.log('Nova conversa criada: ' + contact.name);
     } else {
       var newUnread = (conversation.unread_count || 0) + 1;
@@ -800,7 +802,26 @@ app.post('/internal/messages/process', async function(req, res) {
         is_from_ai: false,
         sent_at: now,
         created_at: now,
-        timestamp: now
+        timestamp: now,
+        // Dados completos da conversa para front criar localmente sem refetch
+        conversation: {
+          id: conversation.id,
+          client_id: session.client_id,
+          contact_id: contact.id,
+          contact_name: contact.name,
+          phone: displayPhone,
+          jid: jid,
+          status: conversation.status || 'active',
+          priority: conversation.priority || 'normal',
+          lead_stage: conversation.lead_stage || 'new',
+          unread_count: conversation.unread_count || 1,
+          total_messages: conversation.total_messages || 1,
+          last_message_at: now,
+          created_at: conversation.created_at || now,
+          updated_at: now,
+          evolution_contacts: { name: contact.name, phone: displayPhone }
+        },
+        conversation_created: conversationCreated
       };
       var conversationPayload = {
         id: conversation.id,
@@ -808,18 +829,24 @@ app.post('/internal/messages/process', async function(req, res) {
         contact_id: contact.id,
         contact_name: contact.name,
         phone: displayPhone,
-        status: 'active',
+        jid: jid,
+        status: conversation.status || 'active',
+        priority: conversation.priority || 'normal',
+        lead_stage: conversation.lead_stage || 'new',
         unread_count: conversation.unread_count || 1,
         total_messages: conversation.total_messages || 1,
         last_message_at: now,
+        created_at: conversation.created_at || now,
         updated_at: now,
+        evolution_contacts: { name: contact.name, phone: displayPhone },
+        created: conversationCreated,
         timestamp: now
       };
 
       if (socketIO) {
         socketIO.to(targetRoom).emit('new_message', payload);
         socketIO.to(targetRoom).emit('conversation_updated', conversationPayload);
-        console.log('[SOCKET] new_message emitido → room: ' + targetRoom + ' | session: ' + sessionName + ' | conv: ' + conversation.id);
+        console.log('[SOCKET] new_message emitido → room: ' + targetRoom + ' | session: ' + sessionName + ' | conv: ' + conversation.id + ' | created: ' + conversationCreated);
       } else {
         console.warn('[SOCKET] io nao disponivel — evento nao emitido');
       }

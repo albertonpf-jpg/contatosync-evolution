@@ -123,33 +123,24 @@ class BaileysService {
               const lidNum = contact.lid.replace('@lid', '').replace(/\D/g, '');
               s.lidToPhone.set(contact.lid, ph);
               console.log('LID mapeado: ' + contact.lid + ' -> ' + ph);
-              // Persistir telefone real no banco substituindo o codigo LID
-              try {
-                const { supabaseAdmin } = require('../config/supabase');
-                const now = new Date().toISOString();
-                await supabaseAdmin.from('evolution_contacts')
-                  .update({ phone: ph, updated_at: now })
-                  .eq('phone', lidNum);
-                await supabaseAdmin.from('evolution_conversations')
-                  .update({ phone: ph, updated_at: now })
-                  .eq('phone', lidNum);
-                console.log('DB atualizado com telefone real: ' + lidNum + ' -> ' + ph);
-              } catch (dbErr) {
-                console.error('Erro persistindo resolucao LID:', dbErr.message);
-              }
+              await this._persistResolvedLidPhone(sessionName, contact.lid, lidNum, ph);
             }
           }
         }
         console.log('Total LID mappings: ' + s.lidToPhone.size);
       });
 
-      sock.ev.on('contacts.update', (updates) => {
+      sock.ev.on('contacts.update', async (updates) => {
         const s = this.sessions.get(sessionName);
         if (!s || !s.lidToPhone) return;
         for (const contact of updates) {
           if (contact.id && contact.id.endsWith('@s.whatsapp.net') && contact.lid) {
             const ph = contact.id.replace('@s.whatsapp.net', '').replace(/\D/g, '');
-            if (ph) s.lidToPhone.set(contact.lid, ph);
+            if (ph) {
+              const lidNum = contact.lid.replace('@lid', '').replace(/\D/g, '');
+              s.lidToPhone.set(contact.lid, ph);
+              await this._persistResolvedLidPhone(sessionName, contact.lid, lidNum, ph);
+            }
           }
         }
       });
@@ -340,6 +331,63 @@ class BaileysService {
     await this.checkAllConnections();
     await new Promise(r => setTimeout(r, 1000));
     return this.getSessionStatus(sessionName);
+  }
+
+  async _persistResolvedLidPhone(sessionName, lidJid, lidNum, realPhone) {
+    try {
+      const { supabaseAdmin } = require('../config/supabase');
+      const { emitConversationUpdate } = require('./socketService');
+      const now = new Date().toISOString();
+
+      const { data: sessionRow } = await supabaseAdmin
+        .from('evolution_sessions')
+        .select('client_id')
+        .eq('session_name', sessionName)
+        .single();
+
+      await supabaseAdmin.from('evolution_contacts')
+        .update({ phone: realPhone, updated_at: now })
+        .eq('phone', lidNum);
+
+      let conversationsQuery = supabaseAdmin
+        .from('evolution_conversations')
+        .update({ phone: realPhone, updated_at: now })
+        .eq('phone', lidNum)
+        .select('*');
+
+      if (sessionRow?.client_id) {
+        conversationsQuery = conversationsQuery.eq('client_id', sessionRow.client_id);
+      }
+
+      const { data: updatedConversations, error: convErr } = await conversationsQuery;
+
+      if (convErr) {
+        throw convErr;
+      }
+
+      if (lidJid && sessionRow?.client_id) {
+        const { data: jidConversations } = await supabaseAdmin
+          .from('evolution_conversations')
+          .select('*')
+          .eq('client_id', sessionRow.client_id)
+          .eq('jid', lidJid)
+          .eq('phone', realPhone);
+
+        for (const conv of (jidConversations || [])) {
+          emitConversationUpdate(sessionRow.client_id, conv);
+        }
+      }
+
+      for (const conv of (updatedConversations || [])) {
+        if (sessionRow?.client_id) {
+          emitConversationUpdate(sessionRow.client_id, conv);
+        }
+      }
+
+      console.log('DB atualizado com telefone real: ' + lidNum + ' -> ' + realPhone);
+    } catch (dbErr) {
+      console.error('Erro persistindo resolucao LID:', dbErr.message);
+    }
   }
 
   async _processIncomingMessage(sessionName, message) {

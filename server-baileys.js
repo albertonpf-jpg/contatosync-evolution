@@ -543,6 +543,9 @@ app.post('/internal/messages/process', async function(req, res) {
     var { supabaseAdmin } = require('./src/config/supabase');
     var { v4: uuidv4 } = require('uuid');
     var now = new Date().toISOString();
+    var digitsOnlyPhone = (phone || '').replace(/\D/g, '');
+    var hasRealPhone = digitsOnlyPhone.startsWith('55') && digitsOnlyPhone.length >= 12 && digitsOnlyPhone.length <= 13;
+    var storedPhone = hasRealPhone ? digitsOnlyPhone : '';
 
     // 1. Buscar sessao -> client_id
     var { data: session, error: sessionError } = await supabaseAdmin
@@ -575,13 +578,42 @@ app.post('/internal/messages/process', async function(req, res) {
 
     console.log('[MSG] Sessao validada: ' + sessionName + ' → client: ' + clientOwner.email + ' (' + session.client_id + ')');
 
-    // 2. Buscar ou criar contato
-    var { data: contact, error: contactFetchError } = await supabaseAdmin
-      .from('evolution_contacts')
-      .select('*')
-      .eq('client_id', session.client_id)
-      .eq('phone', phone)
-      .single();
+    // 2. Buscar por JID primeiro para preservar o mesmo contato em conversas @lid
+    var { data: existingConversationByJid } = remoteJid
+      ? await supabaseAdmin
+          .from('evolution_conversations')
+          .select('*')
+          .eq('client_id', session.client_id)
+          .eq('jid', remoteJid)
+          .single()
+      : { data: null };
+
+    var contact = null;
+    var contactFetchError = null;
+
+    if (existingConversationByJid && existingConversationByJid.contact_id) {
+      var existingContactResult = await supabaseAdmin
+        .from('evolution_contacts')
+        .select('*')
+        .eq('client_id', session.client_id)
+        .eq('id', existingConversationByJid.contact_id)
+        .single();
+
+      contact = existingContactResult.data;
+      contactFetchError = existingContactResult.error;
+    }
+
+    if (!contact) {
+      var contactResult = await supabaseAdmin
+        .from('evolution_contacts')
+        .select('*')
+        .eq('client_id', session.client_id)
+        .eq('phone', digitsOnlyPhone)
+        .single();
+
+      contact = contactResult.data;
+      contactFetchError = contactResult.error;
+    }
 
     if (contactFetchError && contactFetchError.code !== 'PGRST116') {
       console.error('Erro buscando contato:', contactFetchError);
@@ -594,8 +626,8 @@ app.post('/internal/messages/process', async function(req, res) {
         .insert([{
           id: newContactId,
           client_id: session.client_id,
-          phone: phone,
-          name: pushName || ('Contato ' + phone),
+          phone: storedPhone || digitsOnlyPhone,
+          name: pushName || (storedPhone ? ('Contato ' + storedPhone) : 'Contato WhatsApp'),
           source: 'whatsapp',
           status: 'active',
           last_message_at: now,
@@ -614,11 +646,20 @@ app.post('/internal/messages/process', async function(req, res) {
     } else {
       // Atualizar nome se pushName veio e contato tinha nome generico
       if (pushName && contact.name && contact.name.startsWith('Contato ')) {
+        var nextContactUpdate = { name: pushName, updated_at: now };
+        if (storedPhone && contact.phone !== storedPhone) nextContactUpdate.phone = storedPhone;
         await supabaseAdmin
           .from('evolution_contacts')
-          .update({ name: pushName, updated_at: now })
+          .update(nextContactUpdate)
           .eq('id', contact.id);
         contact.name = pushName;
+        if (storedPhone) contact.phone = storedPhone;
+      } else if (storedPhone && contact.phone !== storedPhone) {
+        await supabaseAdmin
+          .from('evolution_contacts')
+          .update({ phone: storedPhone, updated_at: now })
+          .eq('id', contact.id);
+        contact.phone = storedPhone;
       }
       // Atualizar last_message_at do contato
       await supabaseAdmin
@@ -631,12 +672,20 @@ app.post('/internal/messages/process', async function(req, res) {
     // Usar remoteJid original (preserva @lid para contatos LID)
     var jid = remoteJid || (phone + '@s.whatsapp.net');
 
-    var { data: conversation, error: convFetchError } = await supabaseAdmin
-      .from('evolution_conversations')
-      .select('*')
-      .eq('client_id', session.client_id)
-      .eq('contact_id', contact.id)
-      .single();
+    var conversation = existingConversationByJid || null;
+    var convFetchError = null;
+
+    if (!conversation) {
+      var conversationResult = await supabaseAdmin
+        .from('evolution_conversations')
+        .select('*')
+        .eq('client_id', session.client_id)
+        .eq('contact_id', contact.id)
+        .single();
+
+      conversation = conversationResult.data;
+      convFetchError = conversationResult.error;
+    }
 
     if (convFetchError && convFetchError.code !== 'PGRST116') {
       console.error('Erro buscando conversa:', convFetchError);
@@ -651,7 +700,7 @@ app.post('/internal/messages/process', async function(req, res) {
           client_id: session.client_id,
           contact_id: contact.id,
           jid: jid,
-          phone: phone,
+          phone: storedPhone || digitsOnlyPhone,
           contact_name: contact.name,
           status: 'active',
           priority: 'normal',
@@ -675,22 +724,29 @@ app.post('/internal/messages/process', async function(req, res) {
       var newUnread = (conversation.unread_count || 0) + 1;
       var newTotal = (conversation.total_messages || 0) + 1;
 
-      // Nao sobrescrever phone real com codigo LID (>13 digitos)
-      var phoneUpdate = (phone && phone.replace(/\D/g, '').length <= 13) ? { phone: phone } : {};
+      var nextConversationPhone = storedPhone || conversation.phone || '';
       var { error: updateError } = await supabaseAdmin
         .from('evolution_conversations')
-        .update(Object.assign({
+        .update({
           last_message_at: now,
           unread_count: newUnread,
           total_messages: newTotal,
           contact_name: contact.name,
           jid: jid,
+          phone: nextConversationPhone,
           updated_at: now
-        }, phoneUpdate))
+        })
         .eq('id', conversation.id);
 
       if (updateError) {
         console.error('Erro atualizando conversa:', updateError);
+      } else {
+        conversation.phone = nextConversationPhone;
+        conversation.contact_name = contact.name;
+        conversation.unread_count = newUnread;
+        conversation.total_messages = newTotal;
+        conversation.last_message_at = now;
+        conversation.updated_at = now;
       }
     }
 
@@ -728,7 +784,7 @@ app.post('/internal/messages/process', async function(req, res) {
       // Filtrar LID: telefone real tem prefixo 55 + 10-11 dígitos (12-13 total)
       var rawDigits = (phone || '').replace(/\D/g, '');
       var displayPhone = (rawDigits.startsWith('55') && rawDigits.length >= 12 && rawDigits.length <= 13)
-        ? rawDigits : '';
+        ? rawDigits : (storedPhone || '');
 
       var targetRoom = 'client_' + session.client_id;
       var payload = {
@@ -746,9 +802,23 @@ app.post('/internal/messages/process', async function(req, res) {
         created_at: now,
         timestamp: now
       };
+      var conversationPayload = {
+        id: conversation.id,
+        conversation_id: conversation.id,
+        contact_id: contact.id,
+        contact_name: contact.name,
+        phone: displayPhone,
+        status: 'active',
+        unread_count: conversation.unread_count || 1,
+        total_messages: conversation.total_messages || 1,
+        last_message_at: now,
+        updated_at: now,
+        timestamp: now
+      };
 
       if (socketIO) {
         socketIO.to(targetRoom).emit('new_message', payload);
+        socketIO.to(targetRoom).emit('conversation_updated', conversationPayload);
         console.log('[SOCKET] new_message emitido → room: ' + targetRoom + ' | session: ' + sessionName + ' | conv: ' + conversation.id);
       } else {
         console.warn('[SOCKET] io nao disponivel — evento nao emitido');

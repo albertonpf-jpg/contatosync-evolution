@@ -17,8 +17,9 @@ import React, {
   useCallback,
 } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { getSocketUrl } from '@/lib/runtime-config';
 
-const SOCKET_URL = 'https://web-production-50297.up.railway.app';
+const SOCKET_URL = getSocketUrl();
 const TOKEN_KEY  = 'contatosync_token';
 
 // ── Tipos ────────────────────────────────────────────────────────

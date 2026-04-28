@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Check, CheckCheck, MessageSquare, RefreshCw, Search, Send } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ArrowLeft, Check, CheckCheck, MessageSquare, Search, Send } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { useSocketContext } from '@/contexts/SocketContext';
 import { getApiUrl } from '@/lib/runtime-config';
@@ -75,9 +75,9 @@ async function apiFetch(path: string, token: string) {
 }
 
 function parseBRPhone(raw: string): string {
-  if (!raw || raw.includes('@')) return '';
+  if (!raw) return '';
 
-  const digits = raw.replace(/\D/g, '');
+  const digits = raw.split('@')[0].replace(/\D/g, '');
   if (!digits.startsWith('55') || (digits.length !== 12 && digits.length !== 13)) {
     return '';
   }
@@ -100,8 +100,15 @@ function parseBRPhone(raw: string): string {
 }
 
 function isRealPhone(raw?: string): boolean {
-  const digits = (raw || '').replace(/\D/g, '');
+  const digits = (raw || '').split('@')[0].replace(/\D/g, '');
   return digits.startsWith('55') && digits.length >= 12 && digits.length <= 13;
+}
+
+function normalizePhone(raw?: string): string {
+  const base = (raw || '').split('@')[0];
+  const digits = base.replace(/\D/g, '');
+  if (!digits) return base;
+  return `+${digits}`;
 }
 
 export default function ConversationsPage() {
@@ -130,11 +137,11 @@ export default function ConversationsPage() {
     prevMsgCount.current = messages.length;
   }, [messages]);
 
-  function getToken(): string {
+  const getToken = useCallback((): string => {
     return (typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : '') ?? '';
-  }
+  }, []);
 
-  async function fetchConvs() {
+  const fetchConvs = useCallback(async () => {
     const token = getToken();
     if (!token) return;
 
@@ -146,9 +153,9 @@ export default function ConversationsPage() {
     } finally {
       setLoadingConvs(false);
     }
-  }
+  }, [getToken]);
 
-  async function fetchMsgs(id: string) {
+  const fetchMsgs = useCallback(async (id: string) => {
     const token = getToken();
     if (!token || !id) return;
 
@@ -158,7 +165,7 @@ export default function ConversationsPage() {
     } catch (error: unknown) {
       console.error('[fetchMsgs]', getErrorMessage(error));
     }
-  }
+  }, [getToken]);
 
   const { connected: socketOk, on, off } = useSocketContext();
 
@@ -176,22 +183,22 @@ export default function ConversationsPage() {
           client_id: '',
           contact_id: payload?.contact_id || '',
           contact_name: payload?.contact_name || 'Sem nome',
-          phone: payload?.phone || '',
+          phone: normalizePhone(payload?.phone),
           status: payload?.status || 'active',
           last_message_at: payload?.last_message_at || new Date().toISOString(),
           unread_count: payload?.unread_count ?? 1,
           created_at: payload?.last_message_at || new Date().toISOString(),
           updated_at: payload?.updated_at || new Date().toISOString(),
           evolution_contacts: payload?.contact_name
-            ? { name: payload.contact_name, phone: payload?.phone || '' }
+            ? { name: payload.contact_name, phone: normalizePhone(payload?.phone) }
             : undefined,
         };
         return [newConv, ...prev];
       }
 
       const nextPhone = isRealPhone(payload?.phone)
-        ? payload.phone
-        : (isRealPhone(existing.phone) ? existing.phone : payload?.phone || existing.phone);
+        ? normalizePhone(payload.phone)
+        : (isRealPhone(existing.phone) ? normalizePhone(existing.phone) : normalizePhone(payload?.phone || existing.phone));
 
       const updatedConversation: Conversation = {
         ...existing,
@@ -272,21 +279,39 @@ export default function ConversationsPage() {
     };
   }, [off, on, selectedConv?.id]);
 
+  // Atualização automática da inbox/mensagens (com cadência diferente conforme socket).
   useEffect(() => {
-    fetchConvs();
-  }, []);
-
-  // Fallback polling — só quando socket cair. Intervalo longo para nao sobrecarregar.
-  useEffect(() => {
-    if (socketOk) return; // socket vivo, sem polling
-    const intervalId = setInterval(() => {
-      fetchConvs();
+    const runRefresh = () => {
+      void fetchConvs();
       if (currentConvId.current) {
-        fetchMsgs(currentConvId.current);
+        void fetchMsgs(currentConvId.current);
       }
-    }, 15000);
-    return () => clearInterval(intervalId);
-  }, [socketOk, selectedConv?.id]);
+    };
+
+    const firstRunId = window.setTimeout(runRefresh, 0);
+    const intervalId = setInterval(() => {
+      runRefresh();
+    }, socketOk ? 10000 : 5000);
+
+    return () => {
+      clearTimeout(firstRunId);
+      clearInterval(intervalId);
+    };
+  }, [fetchConvs, fetchMsgs, socketOk]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') {
+        void fetchConvs();
+        if (currentConvId.current) {
+          void fetchMsgs(currentConvId.current);
+        }
+      }
+    };
+
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [fetchConvs, fetchMsgs]);
 
   const openConv = async (conv: Conversation) => {
     const normalizedConv = { ...conv, unread_count: 0 };
@@ -347,14 +372,14 @@ export default function ConversationsPage() {
   // Retorna telefone formatado BR se possivel; senao retorna numero cru se parecer telefone real;
   // senao retorna string vazia (LID nao resolvido)
   const getPhone = (conversation: Conversation): string => {
-    const fromContact = conversation.evolution_contacts?.phone ?? '';
-    const fromConv = conversation.phone ?? '';
-    const candidate = fromContact || fromConv;
+    const fromContact = normalizePhone(conversation.evolution_contacts?.phone);
+    const fromConv = normalizePhone(conversation.phone);
+    const candidate = isRealPhone(fromContact) ? fromContact : (fromConv || fromContact);
 
     const formatted = parseBRPhone(candidate);
     if (formatted) return formatted;
 
-    const digits = candidate.replace(/\D/g, '');
+    const digits = candidate.split('@')[0].replace(/\D/g, '');
     // Se nao tem prefixo 55 ou tamanho fora do esperado, é LID nao resolvido — esconder
     if (!digits.startsWith('55') || digits.length < 12 || digits.length > 13) {
       return '';
@@ -412,12 +437,6 @@ export default function ConversationsPage() {
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-gray-500 bg-gray-200 px-2 py-1 rounded-full">{filtered.length}</span>
-                <button
-                  onClick={() => fetchConvs()}
-                  className="p-1.5 text-gray-500 hover:text-gray-700 hover:bg-gray-200 rounded-full"
-                >
-                  <RefreshCw className={`h-4 w-4 ${loadingConvs ? 'animate-spin' : ''}`} />
-                </button>
               </div>
             </div>
             <div className="relative">

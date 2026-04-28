@@ -406,6 +406,7 @@ class BaileysService {
       if (remoteJid.endsWith('@lid')) {
         isLid = true;
         const lidNum = remoteJid.replace('@lid', '').replace(/\D/g, '');
+        let didPersistResolvedPhone = false;
 
         // Tentativa 1: senderPn (campo direto da mensagem - Baileys 6+)
         phone = message.key?.senderPn || '';
@@ -466,10 +467,25 @@ class BaileysService {
                 // Persistir mapping
                 if (sessionObj?.lidToPhone) sessionObj.lidToPhone.set(remoteJid, phone);
                 await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+                didPersistResolvedPhone = true;
               }
             }
           } catch (onWaErr) {
             console.log('onWhatsApp falhou: ' + onWaErr.message);
+          }
+        }
+
+        // Sempre que um telefone real for descoberto (senderPn/map/participant/banco),
+        // persistir no banco para corrigir conversas/contatos antigos com codigo LID.
+        if (!didPersistResolvedPhone && lidNum && phone && phone !== lidNum) {
+          if (phone.startsWith('55') && phone.length >= 12 && phone.length <= 13) {
+            try {
+              if (sessionObj?.lidToPhone) sessionObj.lidToPhone.set(remoteJid, phone);
+              await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+              didPersistResolvedPhone = true;
+            } catch (persistErr) {
+              console.error('Erro persistindo LID resolvido:', persistErr.message);
+            }
           }
         }
 

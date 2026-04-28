@@ -40,15 +40,15 @@ export function useSocket({ onNewMessage, onConversationUpdated }: UseSocketCall
     // Só roda no browser
     if (typeof window === 'undefined') return;
 
+    console.log('[Socket] Hook iniciado');
+
     const token = localStorage.getItem('contatosync_token');
     if (!token) {
       console.warn('[Socket] Token ausente — conexão não iniciada');
       return;
     }
 
-    console.log('[Socket] Iniciando conexão →', SOCKET_URL);
-
-    const socket: Socket = io(SOCKET_URL, {
+    const socket: Socket = io('https://web-production-50297.up.railway.app', {
       auth: { token },
       transports: ['websocket', 'polling'],
       reconnection: true,
@@ -58,9 +58,12 @@ export function useSocket({ onNewMessage, onConversationUpdated }: UseSocketCall
       timeout: 20000,
     });
 
+    // Expor globalmente para debug no console do browser
+    (window as any).socket = socket;
+
     // ── LIFECYCLE ──────────────────────────────────────────────
     socket.on('connect', () => {
-      console.log('[Socket] ✅ Conectado | id:', socket.id);
+      console.log('[Socket] ✅ Conectado', socket.id);
       setConnected(true);
     });
 
@@ -70,7 +73,7 @@ export function useSocket({ onNewMessage, onConversationUpdated }: UseSocketCall
     });
 
     socket.on('connect_error', (err) => {
-      console.error('[Socket] Erro de conexão:', err.message);
+      console.log('[Socket] ❌ Erro conexão', err);
       setConnected(false);
     });
 

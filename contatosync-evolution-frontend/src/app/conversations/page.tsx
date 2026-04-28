@@ -168,7 +168,26 @@ export default function ConversationsPage() {
 
     setConversations(prev => {
       const existing = prev.find(conv => conv.id === conversationId);
-      if (!existing) return prev;
+
+      if (!existing) {
+        // Conversa nova vinda via socket — adicionar no topo
+        const newConv: Conversation = {
+          id: conversationId,
+          client_id: '',
+          contact_id: payload?.contact_id || '',
+          contact_name: payload?.contact_name || 'Sem nome',
+          phone: payload?.phone || '',
+          status: payload?.status || 'active',
+          last_message_at: payload?.last_message_at || new Date().toISOString(),
+          unread_count: payload?.unread_count ?? 1,
+          created_at: payload?.last_message_at || new Date().toISOString(),
+          updated_at: payload?.updated_at || new Date().toISOString(),
+          evolution_contacts: payload?.contact_name
+            ? { name: payload.contact_name, phone: payload?.phone || '' }
+            : undefined,
+        };
+        return [newConv, ...prev];
+      }
 
       const nextPhone = isRealPhone(payload?.phone)
         ? payload.phone
@@ -183,6 +202,9 @@ export default function ConversationsPage() {
         status: payload?.status || existing.status,
         last_message_at: payload?.last_message_at || existing.last_message_at,
         updated_at: payload?.updated_at || existing.updated_at,
+        evolution_contacts: payload?.contact_name
+          ? { name: payload.contact_name, phone: nextPhone || '' }
+          : existing.evolution_contacts,
       };
 
       setSelectedConv(prevSelected => (
@@ -197,21 +219,19 @@ export default function ConversationsPage() {
   }
 
   useEffect(() => {
-    const handleNewMessage = (payload?: Message & SocketConversationPayload) => {
-      if (!payload) {
-        fetchConvs();
-        if (currentConvId.current) {
-          fetchMsgs(currentConvId.current);
-        }
-        return;
-      }
+    const handleNewMessage = (payload?: Message & SocketConversationPayload & { conversation?: Conversation }) => {
+      if (!payload) return;
+
+      // Conversa completa veio no payload — usar diretamente
+      const fullConv = payload.conversation;
 
       upsertConversationFromSocket({
         conversation_id: payload.conversation_id,
         contact_id: payload.contact_id,
-        contact_name: payload.contact_name,
-        phone: payload.phone,
-        unread_count: currentConvId.current === payload.conversation_id ? 0 : undefined,
+        contact_name: payload.contact_name || fullConv?.contact_name,
+        phone: payload.phone || fullConv?.phone,
+        unread_count: currentConvId.current === payload.conversation_id ? 0 : (fullConv?.unread_count ?? undefined),
+        status: fullConv?.status,
         last_message_at: payload.sent_at || payload.created_at,
         updated_at: payload.created_at,
       });
@@ -221,7 +241,6 @@ export default function ConversationsPage() {
           if (prev.some(message => message.id === payload.id)) {
             return prev;
           }
-
           return [
             ...prev,
             {
@@ -238,16 +257,10 @@ export default function ConversationsPage() {
           ];
         });
       }
-
-      fetchConvs();
-      if (currentConvId.current === payload.conversation_id) {
-        fetchMsgs(currentConvId.current);
-      }
     };
 
     const handleConvUpdated = (payload?: SocketConversationPayload) => {
       upsertConversationFromSocket(payload);
-      fetchConvs();
     };
 
     on('new_message', handleNewMessage);
@@ -263,16 +276,17 @@ export default function ConversationsPage() {
     fetchConvs();
   }, []);
 
+  // Fallback polling — só quando socket cair. Intervalo longo para nao sobrecarregar.
   useEffect(() => {
+    if (socketOk) return; // socket vivo, sem polling
     const intervalId = setInterval(() => {
       fetchConvs();
       if (currentConvId.current) {
         fetchMsgs(currentConvId.current);
       }
-    }, 3000);
-
+    }, 15000);
     return () => clearInterval(intervalId);
-  }, [selectedConv?.id]);
+  }, [socketOk, selectedConv?.id]);
 
   const openConv = async (conv: Conversation) => {
     const normalizedConv = { ...conv, unread_count: 0 };
@@ -330,9 +344,24 @@ export default function ConversationsPage() {
   const getName = (conversation: Conversation) =>
     conversation.contact_name || conversation.evolution_contacts?.name || 'Sem nome';
 
-  const getPhone = (conversation: Conversation) =>
-    parseBRPhone(conversation.evolution_contacts?.phone ?? '') ||
-    parseBRPhone(conversation.phone ?? '');
+  // Retorna telefone formatado BR se possivel; senao retorna numero cru se parecer telefone real;
+  // senao retorna string vazia (LID nao resolvido)
+  const getPhone = (conversation: Conversation): string => {
+    const fromContact = conversation.evolution_contacts?.phone ?? '';
+    const fromConv = conversation.phone ?? '';
+    const candidate = fromContact || fromConv;
+
+    const formatted = parseBRPhone(candidate);
+    if (formatted) return formatted;
+
+    const digits = candidate.replace(/\D/g, '');
+    // Se nao tem prefixo 55 ou tamanho fora do esperado, é LID nao resolvido — esconder
+    if (!digits.startsWith('55') || digits.length < 12 || digits.length > 13) {
+      return '';
+    }
+    // Tem prefixo BR mas parseBRPhone falhou (DDD invalido?) — mostrar cru
+    return '+' + digits;
+  };
 
   const getInitials = (name: string) =>
     name.split(' ').map(word => word[0]).join('').substring(0, 2).toUpperCase();

@@ -52,7 +52,8 @@ router.get('/sessions', asyncHandler(async (req, res) => {
 
 /**
  * POST /api/whatsapp/sessions
- * Criar nova sessão WhatsApp
+ * Criar nova sessão WhatsApp — REGRA: 1 cliente = 1 sessão ativa.
+ * Encerra e remove qualquer sessão anterior antes de criar a nova.
  */
 router.post('/sessions', asyncHandler(async (req, res) => {
   const { session_name } = req.body;
@@ -61,27 +62,51 @@ router.post('/sessions', asyncHandler(async (req, res) => {
     return error(res, 'Nome da sessão é obrigatório', 400);
   }
 
-  // Adicionar prefixo para evitar conflito com ContatoSync antigo
+  // client_id SEMPRE vem do token autenticado — nunca do body
+  const clientId = req.user.id;
   const evolutionSessionName = `evo_${session_name}`;
 
-  const { data: existingSession } = await executeWithRLS(req.user.id, (client) =>
+  // ── REGRA 1 CLIENTE = 1 SESSÃO ──────────────────────────────
+  // Buscar TODAS as sessões existentes desse client (não filtra por nome)
+  const { data: existingSessions } = await executeWithRLS(clientId, (client) =>
     client
       .from('evolution_sessions')
-      .select('id')
-      .eq('client_id', req.user.id)
-      .eq('session_name', evolutionSessionName)
-      .single()
+      .select('id, session_name, status')
+      .eq('client_id', clientId)
   );
 
-  if (existingSession) {
-    return error(res, 'Sessão já existe com este nome', 409);
+  if (existingSessions && existingSessions.length > 0) {
+    console.log(`[SESSION] Cliente ${clientId} já tem ${existingSessions.length} sessão(ões). Encerrando antes de criar nova.`);
+
+    for (const sess of existingSessions) {
+      try {
+        await baileysService.deleteSession(sess.session_name);
+        console.log(`[SESSION] Baileys encerrado: ${sess.session_name}`);
+      } catch (e) {
+        console.warn(`[SESSION] Baileys já encerrado ou erro ao encerrar ${sess.session_name}: ${e.message}`);
+      }
+    }
+
+    const { error: delError } = await executeWithRLS(clientId, (client) =>
+      client
+        .from('evolution_sessions')
+        .delete()
+        .eq('client_id', clientId)
+    );
+
+    if (delError) {
+      console.error('[SESSION] Erro ao remover sessões antigas:', delError);
+      return error(res, 'Erro ao encerrar sessões anteriores', 500);
+    }
+
+    console.log(`[SESSION] ${existingSessions.length} sessão(ões) removida(s) para client ${clientId}`);
   }
 
   const webhookUrl = `${process.env.FRONTEND_URL || 'http://localhost:3003'}/api/webhooks/evolution`;
 
   const sessionData = {
     id: uuidv4(),
-    client_id: req.user.id,
+    client_id: clientId,          // garantido pelo token
     session_name: evolutionSessionName,
     status: 'qr_pending',
     webhook_url: webhookUrl,
@@ -89,7 +114,7 @@ router.post('/sessions', asyncHandler(async (req, res) => {
     updated_at: new Date().toISOString()
   };
 
-  const { data: newSession, error: createError } = await executeWithRLS(req.user.id, (client) =>
+  const { data: newSession, error: createError } = await executeWithRLS(clientId, (client) =>
     client
       .from('evolution_sessions')
       .insert([sessionData])
@@ -104,22 +129,23 @@ router.post('/sessions', asyncHandler(async (req, res) => {
   let baileysResponse = null;
   try {
     baileysResponse = await baileysService.createSession(evolutionSessionName, webhookUrl);
-    console.log('✅ Baileys sessão criada:', baileysResponse);
+    console.log(`[SESSION] Baileys criado: ${evolutionSessionName} → client: ${clientId}`);
   } catch (baileysError) {
     console.error('❌ Erro ao criar sessão Baileys:', baileysError);
+    // Remover do banco se Baileys falhou
+    await executeWithRLS(clientId, (client) =>
+      client.from('evolution_sessions').delete().eq('id', newSession.id)
+    );
     return error(res, 'Erro ao criar sessão WhatsApp', 500, { baileys_error: baileysError.message });
   }
 
-  await executeWithRLS(req.user.id, (client) =>
+  await executeWithRLS(clientId, (client) =>
     client
       .from('evolution_activities')
       .insert([{
         id: uuidv4(),
-        client_id: req.user.id,
-        ...formatActivity('whatsapp_session_created', `Sessão WhatsApp criada: ${session_name}`, {
-          session_name,
-          baileys_response: baileysResponse
-        })
+        client_id: clientId,
+        ...formatActivity('whatsapp_session_created', `Sessão WhatsApp criada: ${session_name}`)
       }])
   );
 

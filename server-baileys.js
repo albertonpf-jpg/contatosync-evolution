@@ -61,6 +61,132 @@ console.log('QR Codes nativos do Baileys');
 // DEBUG ENDPOINTS (sem auth)
 // ========================
 
+// ============================================================
+// SESSIONS HEALTH — visibilidade completa do estado das sessões
+// ============================================================
+app.get('/debug/sessions-health', async function(req, res) {
+  try {
+    var { supabaseAdmin } = require('./src/config/supabase');
+    var baileysService = require('./src/services/baileysService');
+
+    // Todas as sessões do banco
+    var { data: dbSessions } = await supabaseAdmin
+      .from('evolution_sessions')
+      .select('id, session_name, client_id, status, created_at, updated_at')
+      .order('client_id');
+
+    // Agrupar por client_id
+    var byClient = {};
+    for (var sess of (dbSessions || [])) {
+      if (!byClient[sess.client_id]) byClient[sess.client_id] = [];
+      byClient[sess.client_id].push(sess);
+    }
+
+    // Clientes com mais de 1 sessão (violação da regra)
+    var duplicates = Object.entries(byClient)
+      .filter(function(e) { return e[1].length > 1; })
+      .map(function(e) { return { client_id: e[0], count: e[1].length, sessions: e[1] }; });
+
+    // Sessões em memória não registradas no banco
+    var memorySessions = baileysService.getAllSessions();
+    var dbNames = new Set((dbSessions || []).map(function(s) { return s.session_name; }));
+    var memoryOnly = memorySessions.filter(function(s) { return !dbNames.has(s.sessionName); });
+
+    // Sessões no banco não presentes na memória
+    var memoryNames = new Set(memorySessions.map(function(s) { return s.sessionName; }));
+    var dbOnly = (dbSessions || []).filter(function(s) { return !memoryNames.has(s.session_name); });
+
+    // Enriquecer com emails dos clientes
+    var clientIds = [...new Set((dbSessions || []).map(function(s) { return s.client_id; }))];
+    var clientMap = {};
+    if (clientIds.length > 0) {
+      var { data: clients } = await supabaseAdmin
+        .from('evolution_clients')
+        .select('id, email')
+        .in('id', clientIds);
+      for (var c of (clients || [])) clientMap[c.id] = c.email;
+    }
+
+    var health = duplicates.length === 0 && memoryOnly.length === 0 ? 'OK' : 'INCONSISTENT';
+
+    res.json({
+      health: health,
+      total_db_sessions: (dbSessions || []).length,
+      total_memory_sessions: memorySessions.length,
+      clients_with_sessions: Object.keys(byClient).length,
+      violations: {
+        duplicate_clients: duplicates.map(function(d) {
+          return { client_id: d.client_id, email: clientMap[d.client_id] || 'unknown', count: d.count,
+            sessions: d.sessions.map(function(s) { return { name: s.session_name, status: s.status, created: s.created_at }; }) };
+        }),
+        memory_only: memoryOnly.map(function(s) { return { name: s.sessionName, status: s.status }; }),
+        db_only: dbOnly.map(function(s) { return { name: s.session_name, status: s.status, client: clientMap[s.client_id] || s.client_id }; })
+      },
+      sessions_detail: (dbSessions || []).map(function(s) {
+        var mem = memorySessions.find(function(m) { return m.sessionName === s.session_name; });
+        return {
+          session_name: s.session_name,
+          client_id: s.client_id,
+          email: clientMap[s.client_id] || 'unknown',
+          db_status: s.status,
+          memory_status: mem ? mem.status : 'not_in_memory',
+          connected: mem ? mem.state === 'open' : false
+        };
+      }),
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) { res.json({ error: e.message, stack: e.stack }); }
+});
+
+// ============================================================
+// CLEANUP — remove duplicatas, mantém 1 sessão por client
+// ============================================================
+app.post('/debug/cleanup-sessions', async function(req, res) {
+  try {
+    var { supabaseAdmin } = require('./src/config/supabase');
+    var baileysService = require('./src/services/baileysService');
+
+    var { data: allSessions } = await supabaseAdmin
+      .from('evolution_sessions')
+      .select('id, session_name, client_id, status, created_at')
+      .order('created_at', { ascending: false }); // mais recente primeiro
+
+    var byClient = {};
+    for (var sess of (allSessions || [])) {
+      if (!byClient[sess.client_id]) byClient[sess.client_id] = [];
+      byClient[sess.client_id].push(sess);
+    }
+
+    var deleted = [];
+    for (var clientId of Object.keys(byClient)) {
+      var sessions = byClient[clientId];
+      if (sessions.length <= 1) continue;
+      // Manter a primeira (mais recente), deletar o resto
+      var toDelete = sessions.slice(1);
+      for (var old of toDelete) {
+        try { await baileysService.deleteSession(old.session_name); } catch(e) {}
+        await supabaseAdmin.from('evolution_sessions').delete().eq('id', old.id);
+        deleted.push({ session_name: old.session_name, client_id: old.client_id, status: old.status });
+      }
+    }
+
+    // Sessões em memória sem correspondência no banco
+    var dbNames = new Set((allSessions || []).map(function(s) { return s.session_name; }));
+    var orphanMemory = baileysService.getAllSessions().filter(function(s) { return !dbNames.has(s.sessionName); });
+    var orphanDeleted = [];
+    for (var orphan of orphanMemory) {
+      try { await baileysService.deleteSession(orphan.sessionName); orphanDeleted.push(orphan.sessionName); } catch(e) {}
+    }
+
+    res.json({
+      duplicates_removed: deleted,
+      orphan_memory_removed: orphanDeleted,
+      total_removed: deleted.length + orphanDeleted.length,
+      timestamp: new Date().toISOString()
+    });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
 // Mostra detalhes de um client_id (email do dono)
 app.get('/debug/client-info/:clientId', async function(req, res) {
   try {
@@ -430,11 +556,24 @@ app.post('/internal/messages/process', async function(req, res) {
     }
 
     if (!session) {
-      console.error('Sessao nao encontrada no banco: ' + sessionName);
+      console.error('[MSG CRITICAL] Sessao nao encontrada no banco: ' + sessionName + ' — mensagem descartada');
       return res.status(404).json({ error: 'Sessao nao encontrada' });
     }
 
-    console.log('Sessao encontrada, client_id: ' + session.client_id);
+    // ── VALIDAÇÃO DE CLIENT_ID ───────────────────────────────
+    // Garantir que o client_id da sessão aponta para um cliente real
+    var { data: clientOwner } = await supabaseAdmin
+      .from('evolution_clients')
+      .select('id, email')
+      .eq('id', session.client_id)
+      .single();
+
+    if (!clientOwner) {
+      console.error('[MSG CRITICAL] client_id ' + session.client_id + ' da sessao ' + sessionName + ' nao existe em evolution_clients — mensagem descartada');
+      return res.status(500).json({ error: 'client_id invalido na sessao' });
+    }
+
+    console.log('[MSG] Sessao validada: ' + sessionName + ' → client: ' + clientOwner.email + ' (' + session.client_id + ')');
 
     // 2. Buscar ou criar contato
     var { data: contact, error: contactFetchError } = await supabaseAdmin
@@ -581,39 +720,41 @@ app.post('/internal/messages/process', async function(req, res) {
 
     console.log('Mensagem processada: ' + contact.name + ' (' + phone + ') - ' + (content || '').substring(0, 50));
 
-    // 5. Emitir evento WebSocket (se io disponivel)
+    // 5. Emitir evento WebSocket
     try {
       var { getIO } = require('./src/services/socketService');
       var socketIO = getIO();
-      if (socketIO) {
-        // Determinar telefone real para exibicao (nao enviar codigo LID)
-        var displayPhone = phone;
-        if (phone && phone.replace(/\D/g, '').length > 13) {
-          // E um codigo LID, nao enviar como phone
-          displayPhone = '';
-        }
 
-        socketIO.to('client_' + session.client_id).emit('new_message', {
-          id: newMsgId,
-          conversation_id: conversation.id,
-          contact_id: contact.id,
-          contact_name: contact.name,
-          phone: displayPhone,
-          content: content,
-          message_type: messageType || 'text',
-          direction: 'in',
-          status: 'received',
-          is_from_ai: false,
-          sent_at: now,
-          created_at: now,
-          timestamp: now
-        });
-        console.log('WebSocket emitido: new_message para client_' + session.client_id);
+      // Filtrar LID: telefone real tem prefixo 55 + 10-11 dígitos (12-13 total)
+      var rawDigits = (phone || '').replace(/\D/g, '');
+      var displayPhone = (rawDigits.startsWith('55') && rawDigits.length >= 12 && rawDigits.length <= 13)
+        ? rawDigits : '';
+
+      var targetRoom = 'client_' + session.client_id;
+      var payload = {
+        id: newMsgId,
+        conversation_id: conversation.id,
+        contact_id: contact.id,
+        contact_name: contact.name,
+        phone: displayPhone,
+        content: content,
+        message_type: messageType || 'text',
+        direction: 'in',
+        status: 'received',
+        is_from_ai: false,
+        sent_at: now,
+        created_at: now,
+        timestamp: now
+      };
+
+      if (socketIO) {
+        socketIO.to(targetRoom).emit('new_message', payload);
+        console.log('[SOCKET] new_message emitido → room: ' + targetRoom + ' | session: ' + sessionName + ' | conv: ' + conversation.id);
       } else {
-        console.log('WebSocket nao disponivel para emit');
+        console.warn('[SOCKET] io nao disponivel — evento nao emitido');
       }
     } catch (socketErr) {
-      console.error('Erro emitindo WebSocket:', socketErr.message);
+      console.error('[SOCKET] Erro ao emitir:', socketErr.message);
     }
 
     res.json({ success: true, conversation_id: conversation.id, contact_id: contact.id });

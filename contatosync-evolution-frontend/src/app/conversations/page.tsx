@@ -17,6 +17,7 @@ interface Conversation {
   id: string;
   client_id: string;
   contact_id: string;
+  jid?: string;
   contact_name?: string;
   phone?: string;
   status: string;
@@ -43,6 +44,7 @@ interface SocketConversationPayload {
   id?: string;
   conversation_id?: string;
   contact_id?: string;
+  jid?: string;
   contact_name?: string;
   phone?: string;
   unread_count?: number;
@@ -102,6 +104,17 @@ function parseBRPhone(raw: string): string {
 function isRealPhone(raw?: string): boolean {
   const digits = (raw || '').replace(/\D/g, '');
   return digits.startsWith('55') && digits.length >= 12 && digits.length <= 13;
+}
+
+function isLikelyUnresolvedLid(conversation: Conversation, phoneCandidate: string): boolean {
+  const jid = conversation.jid || '';
+  const jidDigits = jid.replace('@lid', '').replace(/\D/g, '');
+  const phoneDigits = (phoneCandidate || '').replace(/\D/g, '');
+
+  if (!jid.endsWith('@lid') || !jidDigits || !phoneDigits) return false;
+
+  // Mesmo valor numerico do LID sem formato valido BR => ainda nao resolvido
+  return jidDigits === phoneDigits && !parseBRPhone(phoneCandidate);
 }
 
 export default function ConversationsPage() {
@@ -176,6 +189,7 @@ export default function ConversationsPage() {
           client_id: '',
           contact_id: payload?.contact_id || '',
           contact_name: payload?.contact_name || 'Sem nome',
+          jid: payload?.jid || '',
           phone: payload?.phone || '',
           status: payload?.status || 'active',
           last_message_at: payload?.last_message_at || new Date().toISOString(),
@@ -197,6 +211,7 @@ export default function ConversationsPage() {
         ...existing,
         contact_id: payload?.contact_id || existing.contact_id,
         contact_name: payload?.contact_name || existing.contact_name,
+        jid: payload?.jid || existing.jid,
         phone: nextPhone,
         unread_count: payload?.unread_count ?? existing.unread_count,
         status: payload?.status || existing.status,
@@ -229,6 +244,7 @@ export default function ConversationsPage() {
         conversation_id: payload.conversation_id,
         contact_id: payload.contact_id,
         contact_name: payload.contact_name || fullConv?.contact_name,
+        jid: payload.jid || fullConv?.jid,
         phone: payload.phone || fullConv?.phone,
         unread_count: currentConvId.current === payload.conversation_id ? 0 : (fullConv?.unread_count ?? undefined),
         status: fullConv?.status,
@@ -276,17 +292,17 @@ export default function ConversationsPage() {
     fetchConvs();
   }, []);
 
-  // Fallback polling — só quando socket cair. Intervalo longo para nao sobrecarregar.
+  // Polling de seguranca: mantem inbox sincronizada mesmo com perda silenciosa de eventos socket.
   useEffect(() => {
-    if (socketOk) return; // socket vivo, sem polling
+    const intervalMs = socketOk ? 12000 : 6000;
     const intervalId = setInterval(() => {
       fetchConvs();
       if (currentConvId.current) {
         fetchMsgs(currentConvId.current);
       }
-    }, 15000);
+    }, intervalMs);
     return () => clearInterval(intervalId);
-  }, [socketOk, selectedConv?.id]);
+  }, [socketOk]);
 
   const openConv = async (conv: Conversation) => {
     const normalizedConv = { ...conv, unread_count: 0 };
@@ -351,15 +367,19 @@ export default function ConversationsPage() {
     const fromConv = conversation.phone ?? '';
     const candidate = fromContact || fromConv;
 
+    if (!candidate || isLikelyUnresolvedLid(conversation, candidate)) {
+      return '';
+    }
+
     const formatted = parseBRPhone(candidate);
     if (formatted) return formatted;
 
     const digits = candidate.replace(/\D/g, '');
-    // Se nao tem prefixo 55 ou tamanho fora do esperado, é LID nao resolvido — esconder
-    if (!digits.startsWith('55') || digits.length < 12 || digits.length > 13) {
+    if (!isRealPhone(digits)) {
       return '';
     }
-    // Tem prefixo BR mas parseBRPhone falhou (DDD invalido?) — mostrar cru
+
+    // fallback para numero BR nao formatavel, mas ainda valido
     return '+' + digits;
   };
 

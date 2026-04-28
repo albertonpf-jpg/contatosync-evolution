@@ -397,6 +397,9 @@ class BaileysService {
       // Ignorar grupos
       if (remoteJid.endsWith('@g.us')) return;
 
+      const sessionObj = this.sessions.get(sessionName);
+      const sock = sessionObj?.socket;
+
       let phone = '';
       let isLid = false;
 
@@ -413,7 +416,6 @@ class BaileysService {
 
         // Tentativa 2: mapa LID->phone em memoria (construido via contacts.upsert)
         if (!phone) {
-          const sessionObj = this.sessions.get(sessionName);
           phone = sessionObj?.lidToPhone?.get(remoteJid) || '';
           if (phone) console.log('LID resolvido via mapa: ' + remoteJid + ' -> ' + phone);
         }
@@ -421,13 +423,17 @@ class BaileysService {
         // Tentativa 3: participant
         if (!phone) {
           phone = (message.key?.participant || '').replace('@s.whatsapp.net', '').replace(/\D/g, '');
+          if (phone && phone.startsWith('55') && phone.length >= 12) {
+            console.log('LID resolvido via participant: ' + remoteJid + ' -> ' + phone);
+          } else {
+            phone = '';
+          }
         }
 
         // Tentativa 4: buscar no banco se esse LID ja foi resolvido antes
         if (!phone && lidNum) {
           try {
             const { supabaseAdmin } = require('../config/supabase');
-            // Buscar conversa com esse JID que ja tenha phone real
             const { data: existingConv } = await supabaseAdmin
               .from('evolution_conversations')
               .select('phone')
@@ -438,20 +444,39 @@ class BaileysService {
 
             if (existingConv?.phone) {
               const existingDigits = existingConv.phone.replace(/\D/g, '');
-              if (existingDigits.length >= 10 && existingDigits.length <= 13) {
+              if (existingDigits.startsWith('55') && existingDigits.length >= 12 && existingDigits.length <= 13) {
                 phone = existingDigits;
-                console.log('LID resolvido via banco (conversa existente): ' + remoteJid + ' -> ' + phone);
+                console.log('LID resolvido via banco: ' + remoteJid + ' -> ' + phone);
               }
             }
-          } catch (dbErr) {
-            // Nao critico
+          } catch (dbErr) { /* nao critico */ }
+        }
+
+        // Tentativa 5: sock.onWhatsApp para buscar JID real do LID
+        if (!phone && sock && typeof sock.onWhatsApp === 'function') {
+          try {
+            const lookup = await sock.onWhatsApp(remoteJid);
+            if (Array.isArray(lookup) && lookup.length > 0) {
+              const found = lookup[0];
+              const realJid = found?.jid || found?.lid || '';
+              const realDigits = realJid.replace('@s.whatsapp.net', '').replace('@lid', '').replace(/\D/g, '');
+              if (realDigits.startsWith('55') && realDigits.length >= 12 && realDigits.length <= 13) {
+                phone = realDigits;
+                console.log('LID resolvido via onWhatsApp: ' + remoteJid + ' -> ' + phone);
+                // Persistir mapping
+                if (sessionObj?.lidToPhone) sessionObj.lidToPhone.set(remoteJid, phone);
+                await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+              }
+            }
+          } catch (onWaErr) {
+            console.log('onWhatsApp falhou: ' + onWaErr.message);
           }
         }
 
         // Fallback: usar o numero numerico do LID como identificador unico
         if (!phone) {
           phone = lidNum;
-          console.log('LID sem resolucao, usando ID como identificador: ' + phone);
+          console.log('LID sem resolucao, usando ID temporario: ' + phone);
         }
 
         console.log('LID detectado: ' + remoteJid + ' -> phone final: ' + phone);

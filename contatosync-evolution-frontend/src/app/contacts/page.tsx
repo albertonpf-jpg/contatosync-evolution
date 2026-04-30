@@ -27,17 +27,14 @@ export default function ContactsPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
 
-  // Carregamento dos contatos
   useEffect(() => {
     loadContacts();
   }, [currentPage]);
 
-  // Debounce para busca
   useEffect(() => {
     const timeoutId = setTimeout(() => {
       loadContacts();
-    }, 500); // 500ms de delay
-
+    }, 500);
     return () => clearTimeout(timeoutId);
   }, [searchTerm]);
 
@@ -45,7 +42,6 @@ export default function ContactsPage() {
     try {
       setLoading(true);
       const response = await apiService.getContacts(currentPage, 10, searchTerm);
-
       setContacts(response.items || []);
       setTotalPages(Math.ceil((response.pagination?.total || 0) / 10));
     } catch (error: unknown) {
@@ -57,7 +53,6 @@ export default function ContactsPage() {
 
   const handleDelete = async (contactId: string) => {
     if (!confirm('Tem certeza que deseja excluir este contato?')) return;
-
     try {
       await apiService.deleteContact(contactId);
       loadContacts();
@@ -96,6 +91,23 @@ export default function ContactsPage() {
     });
   };
 
+  const formatPhone = (raw: string): string => {
+    if (!raw) return 'Sem número';
+    const digits = raw.replace(/\D/g, '');
+    if (digits.startsWith('55') && digits.length >= 12 && digits.length <= 13) {
+      const ddd = digits.substring(2, 4);
+      const local = digits.substring(4);
+      if (local.length === 9 && local.startsWith('9')) {
+        return `+55 (${ddd}) ${local.slice(0, 5)}-${local.slice(5)}`;
+      }
+      if (local.length === 8) {
+        return `+55 (${ddd}) ${local.slice(0, 4)}-${local.slice(4)}`;
+      }
+      return `+${digits}`;
+    }
+    return 'Número pendente';
+  };
+
   if (loading && currentPage === 1) {
     return (
       <div className="flex items-center justify-center min-h-screen">
@@ -107,34 +119,23 @@ export default function ContactsPage() {
   return (
     <DashboardLayout>
       <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Contatos</h1>
           <p className="text-gray-600">Gerencie seus contatos do WhatsApp</p>
         </div>
-        <button
-          onClick={() => setShowForm(true)}
-          className="mt-4 sm:mt-0 inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-        >
+        <button onClick={() => setShowForm(true)} className="mt-4 sm:mt-0 inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">
           <Plus className="h-4 w-4 mr-2" />
           Novo Contato
         </button>
       </div>
 
-      {/* Filtros */}
       <div className="bg-white p-6 rounded-lg shadow-sm border">
         <div className="flex flex-col sm:flex-row gap-4">
           <div className="flex-1">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-              <input
-                type="text"
-                placeholder="Buscar por nome, telefone ou email..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 pr-4 py-2 w-full border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              />
+              <input type="text" placeholder="Buscar por nome, telefone ou email..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-10 pr-4 py-2 w-full border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
             </div>
           </div>
           <select className="px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
@@ -146,21 +147,15 @@ export default function ContactsPage() {
         </div>
       </div>
 
-      {/* Lista de Contatos */}
       <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
         {contacts.length === 0 ? (
           <div className="text-center py-12">
             <Phone className="mx-auto h-12 w-12 text-gray-400" />
             <h3 className="mt-2 text-sm font-medium text-gray-900">Nenhum contato</h3>
-            <p className="mt-1 text-sm text-gray-500">
-              {searchTerm ? 'Nenhum contato encontrado para esta busca.' : 'Comece adicionando um novo contato.'}
-            </p>
+            <p className="mt-1 text-sm text-gray-500">{searchTerm ? 'Nenhum contato encontrado para esta busca.' : 'Comece adicionando um novo contato.'}</p>
             {!searchTerm && (
               <div className="mt-6">
-                <button
-                  onClick={() => setShowForm(true)}
-                  className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                >
+                <button onClick={() => setShowForm(true)} className="inline-flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
                   <Plus className="h-4 w-4 mr-2" />
                   Novo Contato
                 </button>
@@ -176,25 +171,20 @@ export default function ContactsPage() {
                     <div className="flex items-center space-x-3">
                       <div className="flex-shrink-0">
                         <div className="h-10 w-10 bg-blue-100 rounded-full flex items-center justify-center">
-                          <span className="text-blue-600 font-medium">
-                            {contact.name.charAt(0).toUpperCase()}
-                          </span>
+                          <span className="text-blue-600 font-medium">{contact.name.charAt(0).toUpperCase()}</span>
                         </div>
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center space-x-2">
-                          <p className="text-sm font-medium text-gray-900 truncate">
-                            {contact.name}
-                          </p>
+                          <p className="text-sm font-medium text-gray-900 truncate">{contact.name}</p>
                           <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${getStatusColor(contact.status)}`}>
-                            {contact.status === 'active' ? 'Ativo' :
-                             contact.status === 'inactive' ? 'Inativo' : 'Bloqueado'}
+                            {contact.status === 'active' ? 'Ativo' : contact.status === 'inactive' ? 'Inativo' : 'Bloqueado'}
                           </span>
                         </div>
                         <div className="flex items-center space-x-4 mt-1">
                           <div className="flex items-center text-sm text-gray-500">
                             <Phone className="h-3 w-3 mr-1" />
-                            {contact.phone}
+                            {formatPhone(contact.phone)}
                           </div>
                           {contact.email && (
                             <div className="flex items-center text-sm text-gray-500">
@@ -205,27 +195,14 @@ export default function ContactsPage() {
                         </div>
                         <p className="text-xs text-gray-400 mt-1">
                           Criado em {formatDate(contact.created_at)}
-                          {contact.last_message_at && (
-                            <> • Última mensagem: {formatDate(contact.last_message_at)}</>
-                          )}
+                          {contact.last_message_at && (<> • Última mensagem: {formatDate(contact.last_message_at)}</>)}
                         </p>
                       </div>
                     </div>
                   </div>
-
                   <div className="flex items-center space-x-2">
-                    <button
-                      onClick={() => handleEdit(contact)}
-                      className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
-                    >
-                      <Edit className="h-4 w-4" />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(contact.id)}
-                      className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                    <button onClick={() => handleEdit(contact)} className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"><Edit className="h-4 w-4" /></button>
+                    <button onClick={() => handleDelete(contact.id)} className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg"><Trash2 className="h-4 w-4" /></button>
                   </div>
                 </div>
               </div>
@@ -234,60 +211,26 @@ export default function ContactsPage() {
         )}
       </div>
 
-      {/* Paginação */}
       {totalPages > 1 && (
         <div className="flex items-center justify-between bg-white px-6 py-3 border rounded-lg">
           <div className="flex-1 flex justify-between sm:hidden">
-            <button
-              onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-              disabled={currentPage === 1}
-              className="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Anterior
-            </button>
-            <button
-              onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-              disabled={currentPage === totalPages}
-              className="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Próximo
-            </button>
+            <button onClick={() => setCurrentPage(Math.max(1, currentPage - 1))} disabled={currentPage === 1} className="relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">Anterior</button>
+            <button onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))} disabled={currentPage === totalPages} className="ml-3 relative inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">Próximo</button>
           </div>
           <div className="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
-            <div>
-              <p className="text-sm text-gray-700">
-                Página <span className="font-medium">{currentPage}</span> de{' '}
-                <span className="font-medium">{totalPages}</span>
-              </p>
-            </div>
+            <div><p className="text-sm text-gray-700">Página <span className="font-medium">{currentPage}</span> de <span className="font-medium">{totalPages}</span></p></div>
             <div>
               <nav className="relative z-0 inline-flex rounded-md shadow-sm -space-x-px">
-                <button
-                  onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-                  disabled={currentPage === 1}
-                  className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Anterior
-                </button>
-                <button
-                  onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
-                  disabled={currentPage === totalPages}
-                  className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Próximo
-                </button>
+                <button onClick={() => setCurrentPage(Math.max(1, currentPage - 1))} disabled={currentPage === 1} className="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">Anterior</button>
+                <button onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))} disabled={currentPage === totalPages} className="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed">Próximo</button>
               </nav>
             </div>
           </div>
         </div>
       )}
 
-        {/* Modal do Formulário */}
         {showForm && (
-          <ContactForm
-            contact={selectedContact}
-            onClose={handleCloseForm}
-          />
+          <ContactForm contact={selectedContact} onClose={handleCloseForm} />
         )}
       </div>
     </DashboardLayout>

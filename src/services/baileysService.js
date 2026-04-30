@@ -42,9 +42,8 @@ class BaileysService {
         try {
           if (!session.socket?.user?.id) throw new Error('no user');
           session.lastHeartbeat = new Date().toISOString();
-          console.log(`✅ Sessão ${name} heartbeat OK`);
         } catch (err) {
-          console.log(`❌ Sessão ${name} perdeu conexão: ${err.message}`);
+          console.log('Sessao ' + name + ' perdeu conexao: ' + err.message);
           session.status = 'disconnected';
           this._updateDatabaseStatus(name, 'disconnected', 'heartbeat_failed');
         }
@@ -55,12 +54,8 @@ class BaileysService {
   async createSession(sessionName, webhookUrl = null) {
     console.log('Criando sessao Baileys: ' + sessionName);
     this.sessions.set(sessionName, {
-      socket: null,
-      saveCreds: null,
-      status: 'connecting',
-      qrCode: null,
-      createdAt: new Date(),
-      lidToPhone: new Map()
+      socket: null, saveCreds: null, status: 'connecting',
+      qrCode: null, createdAt: new Date(), lidToPhone: new Map()
     });
     this._connectSession(sessionName, webhookUrl).catch(err => {
       console.error('Erro background ' + sessionName + ':', err.message);
@@ -91,65 +86,46 @@ class BaileysService {
         auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, makeSilentLogger()) },
         printQRInTerminal: false,
         browser: ['ContatoSync Evolution', 'Desktop', '1.0.0'],
-        connectTimeoutMs: 120000,
-        defaultQueryTimeoutMs: 60000,
-        keepAliveIntervalMs: 10000,
-        markOnlineOnConnect: false,
-        syncFullHistory: false,
-        shouldSyncHistoryMessage: () => false,
-        maxMsgRetryCount: 3,
-        msgRetryCounterCache: undefined,
-        retryRequestDelayMs: 250,
-        shouldIgnoreJid: () => false,
-        linkPreviewImageThumbnailWidth: 192,
+        connectTimeoutMs: 120000, defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 10000, markOnlineOnConnect: false,
+        syncFullHistory: false, shouldSyncHistoryMessage: () => false,
+        maxMsgRetryCount: 3, retryRequestDelayMs: 250,
+        shouldIgnoreJid: () => false, linkPreviewImageThumbnailWidth: 192,
         transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
-        getMessage: async (key) => {
-          return { conversation: 'hello' };
-        }
+        getMessage: async (key) => { return { conversation: 'hello' }; }
       });
 
       const session = this.sessions.get(sessionName);
       if (session) { session.socket = sock; session.saveCreds = saveCreds; }
 
-      // Sincronizar contatos para resolver LID -> numero real e persistir no banco
       sock.ev.on('contacts.upsert', async (contacts) => {
         const s = this.sessions.get(sessionName);
         if (!s || !s.lidToPhone) return;
         for (const contact of contacts) {
-          // Formato: contact.id = "55xxx@s.whatsapp.net", contact.lid = "123@lid"
           if (contact.id && contact.id.endsWith('@s.whatsapp.net') && contact.lid) {
             const ph = contact.id.replace('@s.whatsapp.net', '').replace(/\D/g, '');
             if (ph && ph.length <= 15) {
               const lidNum = contact.lid.replace('@lid', '').replace(/\D/g, '');
               s.lidToPhone.set(contact.lid, ph);
               console.log('LID mapeado: ' + contact.lid + ' -> ' + ph);
-              // Persistir telefone real no banco substituindo o codigo LID
-              try {
-                const { supabaseAdmin } = require('../config/supabase');
-                const now = new Date().toISOString();
-                await supabaseAdmin.from('evolution_contacts')
-                  .update({ phone: ph, updated_at: now })
-                  .eq('phone', lidNum);
-                await supabaseAdmin.from('evolution_conversations')
-                  .update({ phone: ph, updated_at: now })
-                  .eq('phone', lidNum);
-                console.log('DB atualizado com telefone real: ' + lidNum + ' -> ' + ph);
-              } catch (dbErr) {
-                console.error('Erro persistindo resolucao LID:', dbErr.message);
-              }
+              await this._persistResolvedLidPhone(sessionName, contact.lid, lidNum, ph);
             }
           }
         }
         console.log('Total LID mappings: ' + s.lidToPhone.size);
       });
 
-      sock.ev.on('contacts.update', (updates) => {
+      sock.ev.on('contacts.update', async (updates) => {
         const s = this.sessions.get(sessionName);
         if (!s || !s.lidToPhone) return;
         for (const contact of updates) {
           if (contact.id && contact.id.endsWith('@s.whatsapp.net') && contact.lid) {
             const ph = contact.id.replace('@s.whatsapp.net', '').replace(/\D/g, '');
-            if (ph) s.lidToPhone.set(contact.lid, ph);
+            if (ph) {
+              const lidNum = contact.lid.replace('@lid', '').replace(/\D/g, '');
+              s.lidToPhone.set(contact.lid, ph);
+              await this._persistResolvedLidPhone(sessionName, contact.lid, lidNum, ph);
+            }
           }
         }
       });
@@ -158,58 +134,39 @@ class BaileysService {
         const { connection, lastDisconnect, qr, isNewLogin } = update;
         const s = this.sessions.get(sessionName);
 
-        console.log(`🔄 CONNECTION UPDATE ${sessionName}:`, {
-          connection,
-          isNewLogin,
-          hasQr: !!qr,
-          hasLastDisconnect: !!lastDisconnect,
-          currentStatus: s?.status
-        });
-
         if (qr) {
           const qrBase64 = await QRCode.toDataURL(qr);
           this.qrCodes.set(sessionName, qrBase64);
           if (s) { s.qrCode = qrBase64; s.status = 'qr_ready'; }
-          console.log('✅ QR Code gerado para: ' + sessionName);
+          console.log('QR Code gerado para: ' + sessionName);
         }
 
         if (connection === 'close') {
           const code = lastDisconnect?.error?.output?.statusCode;
           const shouldReconnect = code !== DisconnectReason.loggedOut;
-          console.log('❌ Conexao fechada ' + sessionName + ' code=' + code);
+          console.log('Conexao fechada ' + sessionName + ' code=' + code);
           if (s) { s.status = 'disconnected'; s.qrCode = null; }
           this.qrCodes.delete(sessionName);
           if (shouldReconnect) {
             setTimeout(() => this._connectSession(sessionName, webhookUrl), 3000);
           } else {
-            const sessionDir = path.join(this.authDir, sessionName);
-            try {
-              if (fs.existsSync(sessionDir)) fs.rmSync(sessionDir, { recursive: true, force: true });
-              console.log('Credenciais removidas (logout): ' + sessionName);
-            } catch (e) { console.error('Erro ao limpar credenciais:', e.message); }
+            const sessionDir2 = path.join(this.authDir, sessionName);
+            try { if (fs.existsSync(sessionDir2)) fs.rmSync(sessionDir2, { recursive: true, force: true }); } catch (e) {}
             if (s) s.status = 'connecting';
             setTimeout(() => this._connectSession(sessionName, webhookUrl), 3000);
           }
         } else if (connection === 'open') {
-          console.log('🎉 SESSAO CONECTADA! ' + sessionName);
-          if (s) {
-            s.status = 'connected';
-            s.qrCode = null;
-            s.lastActivity = new Date().toISOString();
-            s.connectedAt = new Date().toISOString();
-            console.log('📱 Status sessão atualizado para CONNECTED:', sessionName);
-          }
+          console.log('SESSAO CONECTADA! ' + sessionName);
+          if (s) { s.status = 'connected'; s.qrCode = null; s.lastActivity = new Date().toISOString(); s.connectedAt = new Date().toISOString(); }
           this.qrCodes.delete(sessionName);
           this._updateDatabaseStatus(sessionName, 'connected', 'whatsapp_connected');
         } else if (connection === 'connecting') {
-          console.log('🔄 Conectando... ' + sessionName);
           if (s) s.status = 'connecting';
         }
       });
 
       sock.ev.on('creds.update', saveCreds);
 
-      // HANDLER MENSAGENS - apenas novas (type=notify)
       sock.ev.on('messages.upsert', async (m) => {
         if (m.type !== 'notify') return;
         const messages = m.messages || [];
@@ -232,9 +189,7 @@ class BaileysService {
     const session = this.sessions.get(sessionName);
     const qrCode = this.qrCodes.get(sessionName);
     if (!session) {
-      if (_retries > 0) {
-        return { base64: null, qr: null, qrcode: null, status: 'disconnected', sessionName };
-      }
+      if (_retries > 0) return { base64: null, qr: null, qrcode: null, status: 'disconnected', sessionName };
       throw new Error('Sessao nao encontrada');
     }
     if (!qrCode && (session.status === 'connecting' || session.status === 'qr_ready') && _retries < 20) {
@@ -246,67 +201,34 @@ class BaileysService {
 
   getSessionStatus(sessionName) {
     const session = this.sessions.get(sessionName);
-    if (!session) {
-      console.log(`❌ Sessão ${sessionName} não encontrada`);
-      return { sessionName, status: 'not_found', state: 'close' };
-    }
-
-    console.log(`🔍 GET STATUS ${sessionName}:`, {
-      currentStatus: session.status,
-      hasSocket: !!session.socket,
-      hasUser: !!session.socket?.user,
-      wsReadyState: session.socket?.ws?.readyState,
-      hasQrCode: !!session.qrCode
-    });
+    if (!session) return { sessionName, status: 'not_found', state: 'close' };
 
     if (session.status === 'connected') {
-      try {
-        if (!session.socket?.user?.id) {
-          session.status = 'disconnected';
-          console.log(`🔄 Status ${sessionName} atualizado: connected -> disconnected (no user)`);
-        }
-      } catch (err) {
-        session.status = 'disconnected';
-        console.log(`🔄 Status ${sessionName} erro: ${err.message}`);
-      }
+      try { if (!session.socket?.user?.id) { session.status = 'disconnected'; } } catch (err) { session.status = 'disconnected'; }
     } else if (session.status === 'connecting' || session.status === 'qr_ready') {
       try {
         if (session.socket?.user?.id) {
-          console.log(`🔥 Conexao detectada para ${sessionName}!`);
-          session.status = 'connected';
-          session.connectedAt = new Date().toISOString();
+          session.status = 'connected'; session.connectedAt = new Date().toISOString();
           this._updateDatabaseStatus(sessionName, 'connected', 'force_detected');
         }
-      } catch (err) {
-        console.log(`Error force check ${sessionName}:`, err.message);
-      }
+      } catch (err) {}
     }
 
     let state = 'close';
     if (session.status === 'connected') state = 'open';
     else if (session.status === 'connecting' || session.status === 'qr_ready') state = 'connecting';
 
-    const result = { sessionName, status: session.status, state, hasQR: !!session.qrCode, createdAt: session.createdAt };
-    console.log(`📤 RETORNANDO STATUS ${sessionName}:`, result);
-    return result;
+    return { sessionName, status: session.status, state, hasQR: !!session.qrCode, createdAt: session.createdAt };
   }
 
   async sendTextMessage(sessionName, jidOrPhone, message) {
     const session = this.sessions.get(sessionName);
     if (!session) throw new Error('Sessao nao encontrada: ' + sessionName);
-
-    // Aceitar qr_ready quando socket ja tem user (status desatualizado)
     if (session.status !== 'connected') {
-      if (session.socket?.user?.id) {
-        session.status = 'connected';
-        console.log('Status corrigido para connected antes de enviar: ' + sessionName);
-      } else {
-        throw new Error('Sessao nao conectada. Status: ' + session.status);
-      }
+      if (session.socket?.user?.id) { session.status = 'connected'; }
+      else { throw new Error('Sessao nao conectada. Status: ' + session.status); }
     }
-
     const jid = jidOrPhone.includes('@') ? jidOrPhone : jidOrPhone.replace(/\D/g, '') + '@s.whatsapp.net';
-    console.log('Enviando para JID: ' + jid);
     const result = await session.socket.sendMessage(jid, { text: message });
     return { success: true, messageId: result.key.id, to: jid, message, timestamp: new Date() };
   }
@@ -320,9 +242,7 @@ class BaileysService {
     return sessions;
   }
 
-  verifyAllSessions() {
-    for (const [name] of this.sessions.entries()) this.getSessionStatus(name);
-  }
+  verifyAllSessions() { for (const [name] of this.sessions.entries()) this.getSessionStatus(name); }
 
   async deleteSession(sessionName) {
     const session = this.sessions.get(sessionName);
@@ -342,13 +262,32 @@ class BaileysService {
     return this.getSessionStatus(sessionName);
   }
 
+  async _persistResolvedLidPhone(sessionName, lidJid, lidNum, realPhone) {
+    try {
+      const { supabaseAdmin } = require('../config/supabase');
+      const { emitConversationUpdate } = require('./socketService');
+      const now = new Date().toISOString();
+      const { data: sessionRow } = await supabaseAdmin.from('evolution_sessions').select('client_id').eq('session_name', sessionName).single();
+      await supabaseAdmin.from('evolution_contacts').update({ phone: realPhone, updated_at: now }).eq('phone', lidNum);
+      let conversationsQuery = supabaseAdmin.from('evolution_conversations').update({ phone: realPhone, updated_at: now }).eq('phone', lidNum).select('*');
+      if (sessionRow?.client_id) conversationsQuery = conversationsQuery.eq('client_id', sessionRow.client_id);
+      const { data: updatedConversations, error: convErr } = await conversationsQuery;
+      if (convErr) throw convErr;
+      if (lidJid && sessionRow?.client_id) {
+        const { data: jidConversations } = await supabaseAdmin.from('evolution_conversations').select('*').eq('client_id', sessionRow.client_id).eq('jid', lidJid).eq('phone', realPhone);
+        for (const conv of (jidConversations || [])) emitConversationUpdate(sessionRow.client_id, conv);
+      }
+      for (const conv of (updatedConversations || [])) { if (sessionRow?.client_id) emitConversationUpdate(sessionRow.client_id, conv); }
+      console.log('DB atualizado com telefone real: ' + lidNum + ' -> ' + realPhone);
+    } catch (dbErr) { console.error('Erro persistindo resolucao LID:', dbErr.message); }
+  }
+
   async _processIncomingMessage(sessionName, message) {
     try {
       const remoteJid = message.key?.remoteJid || '';
-
-      // Ignorar grupos
       if (remoteJid.endsWith('@g.us')) return;
-
+      const sessionObj = this.sessions.get(sessionName);
+      const sock = sessionObj?.socket;
       let phone = '';
       let isLid = false;
 
@@ -356,16 +295,19 @@ class BaileysService {
         isLid = true;
         const lidNum = remoteJid.replace('@lid', '').replace(/\D/g, '');
 
-        // Tentativa 1: senderPn (campo direto da mensagem - Baileys 6+)
+        // Tentativa 1: senderPn
         phone = message.key?.senderPn || '';
         if (phone) {
           phone = phone.replace(/\D/g, '');
-          console.log('LID resolvido via senderPn: ' + remoteJid + ' -> ' + phone);
+          if (phone.startsWith('55') && phone.length >= 12 && phone.length <= 13) {
+            console.log('LID resolvido via senderPn: ' + remoteJid + ' -> ' + phone);
+            if (sessionObj?.lidToPhone) sessionObj.lidToPhone.set(remoteJid, phone);
+            await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+          } else { phone = ''; }
         }
 
-        // Tentativa 2: mapa LID->phone em memoria (construido via contacts.upsert)
+        // Tentativa 2: mapa memoria
         if (!phone) {
-          const sessionObj = this.sessions.get(sessionName);
           phone = sessionObj?.lidToPhone?.get(remoteJid) || '';
           if (phone) console.log('LID resolvido via mapa: ' + remoteJid + ' -> ' + phone);
         }
@@ -373,71 +315,96 @@ class BaileysService {
         // Tentativa 3: participant
         if (!phone) {
           phone = (message.key?.participant || '').replace('@s.whatsapp.net', '').replace(/\D/g, '');
+          if (phone && phone.startsWith('55') && phone.length >= 12) {
+            console.log('LID resolvido via participant: ' + remoteJid + ' -> ' + phone);
+            if (sessionObj?.lidToPhone) sessionObj.lidToPhone.set(remoteJid, phone);
+            await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+          } else { phone = ''; }
         }
 
-        // Tentativa 4: buscar no banco se esse LID ja foi resolvido antes
+        // Tentativa 4: banco
         if (!phone && lidNum) {
           try {
             const { supabaseAdmin } = require('../config/supabase');
-            // Buscar conversa com esse JID que ja tenha phone real
-            const { data: existingConv } = await supabaseAdmin
-              .from('evolution_conversations')
-              .select('phone')
-              .eq('jid', remoteJid)
-              .not('phone', 'is', null)
-              .limit(1)
-              .single();
-
+            const { data: existingConv } = await supabaseAdmin.from('evolution_conversations').select('phone').eq('jid', remoteJid).not('phone', 'is', null).limit(1).single();
             if (existingConv?.phone) {
               const existingDigits = existingConv.phone.replace(/\D/g, '');
-              if (existingDigits.length >= 10 && existingDigits.length <= 13) {
+              if (existingDigits.startsWith('55') && existingDigits.length >= 12 && existingDigits.length <= 13) {
                 phone = existingDigits;
-                console.log('LID resolvido via banco (conversa existente): ' + remoteJid + ' -> ' + phone);
+                console.log('LID resolvido via banco: ' + remoteJid + ' -> ' + phone);
               }
             }
-          } catch (dbErr) {
-            // Nao critico
-          }
+            if (!phone) {
+              const { data: existingContact } = await supabaseAdmin.from('evolution_contacts').select('phone').eq('phone', lidNum).limit(1).single();
+              if (existingContact?.phone && existingContact.phone !== lidNum) {
+                const cd = existingContact.phone.replace(/\D/g, '');
+                if (cd.startsWith('55') && cd.length >= 12 && cd.length <= 13) {
+                  phone = cd;
+                  console.log('LID resolvido via contato existente: ' + remoteJid + ' -> ' + phone);
+                }
+              }
+            }
+          } catch (dbErr) { /* nao critico */ }
         }
 
-        // Fallback: usar o numero numerico do LID como identificador unico
-        if (!phone) {
-          phone = lidNum;
-          console.log('LID sem resolucao, usando ID como identificador: ' + phone);
+        // Tentativa 5: onWhatsApp
+        if (!phone && sock && typeof sock.onWhatsApp === 'function') {
+          try {
+            const lookup = await sock.onWhatsApp(remoteJid);
+            if (Array.isArray(lookup) && lookup.length > 0) {
+              const found = lookup[0];
+              const realJid = found?.jid || found?.lid || '';
+              const realDigits = realJid.replace('@s.whatsapp.net', '').replace('@lid', '').replace(/\D/g, '');
+              if (realDigits.startsWith('55') && realDigits.length >= 12 && realDigits.length <= 13) {
+                phone = realDigits;
+                console.log('LID resolvido via onWhatsApp: ' + remoteJid + ' -> ' + phone);
+                if (sessionObj?.lidToPhone) sessionObj.lidToPhone.set(remoteJid, phone);
+                await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+              }
+            }
+          } catch (onWaErr) { console.log('onWhatsApp falhou: ' + onWaErr.message); }
         }
 
+        // Tentativa 6: store.contacts
+        if (!phone && sock && sock.store?.contacts) {
+          try {
+            for (const [cid, contact] of Object.entries(sock.store.contacts)) {
+              if (contact.lid === remoteJid && cid.endsWith('@s.whatsapp.net')) {
+                const cDigits = cid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+                if (cDigits.startsWith('55') && cDigits.length >= 12 && cDigits.length <= 13) {
+                  phone = cDigits;
+                  console.log('LID resolvido via store.contacts: ' + remoteJid + ' -> ' + phone);
+                  if (sessionObj?.lidToPhone) sessionObj.lidToPhone.set(remoteJid, phone);
+                  await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+                  break;
+                }
+              }
+            }
+          } catch (storeErr) { console.log('store.contacts scan falhou: ' + storeErr.message); }
+        }
+
+        // Fallback
+        if (!phone) { phone = lidNum; console.log('LID sem resolucao, usando ID temporario: ' + phone); }
         console.log('LID detectado: ' + remoteJid + ' -> phone final: ' + phone);
       } else {
         phone = remoteJid.replace('@s.whatsapp.net', '');
       }
 
       phone = phone.replace(/\D/g, '');
-      if (!phone) {
-        console.log('Phone vazio apos extracao, ignorando. remoteJid: ' + remoteJid);
-        return;
-      }
+      if (!phone) { console.log('Phone vazio apos extracao, ignorando. remoteJid: ' + remoteJid); return; }
 
-      const content = message.message?.conversation
-        || message.message?.extendedTextMessage?.text
-        || message.message?.imageMessage?.caption
-        || '[Midia]';
-
+      const content = message.message?.conversation || message.message?.extendedTextMessage?.text || message.message?.imageMessage?.caption || '[Midia]';
       console.log('Mensagem recebida de ' + phone + ': ' + content.substring(0, 50));
 
       const axios = require('axios');
       const PORT = process.env.PORT || 3003;
       await axios.post('http://localhost:' + PORT + '/internal/messages/process', {
-        sessionName,
-        phone,
-        remoteJid,
-        content,
+        sessionName, phone, remoteJid, content,
         messageType: this._getMessageType(message),
         whatsappMessageId: message.key.id,
         pushName: message.pushName
       });
-    } catch (error) {
-      console.error('Erro processando mensagem:', error.message);
-    }
+    } catch (error) { console.error('Erro processando mensagem:', error.message); }
   }
 
   _getMessageType(message) {
@@ -456,9 +423,7 @@ class BaileysService {
       await axios.put('http://localhost:' + PORT + '/internal/sessions/' + sessionName + '/status', {
         status, reason: reason || 'unknown', timestamp: new Date().toISOString()
       });
-    } catch (error) {
-      console.error('Erro atualizando banco ' + sessionName + ':', error.message);
-    }
+    } catch (error) { console.error('Erro atualizando banco ' + sessionName + ':', error.message); }
   }
 }
 

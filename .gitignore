@@ -86,3 +86,4 @@ baileys_sessions/
 # Next.js frontend build
 contatosync-evolution-frontend/.next/
 contatosync-evolution-frontend/node_modules/
+.vercel

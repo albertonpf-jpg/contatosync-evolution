@@ -55,7 +55,9 @@ class BaileysService {
     console.log('Criando sessao Baileys: ' + sessionName);
     this.sessions.set(sessionName, {
       socket: null, saveCreds: null, status: 'connecting',
-      qrCode: null, createdAt: new Date(), lidToPhone: new Map()
+      qrCode: null, createdAt: new Date(),
+      lidToPhone: new Map(),
+      contactsStore: new Map()
     });
     this._connectSession(sessionName, webhookUrl).catch(err => {
       console.error('Erro background ' + sessionName + ':', err.message);
@@ -63,6 +65,11 @@ class BaileysService {
       if (s) s.status = 'error';
     });
     return { sessionName, status: 'created', message: 'Sessao criada' };
+  }
+
+  _isRealPhone(phone) {
+    const digits = (phone || '').replace(/\D/g, '');
+    return digits.startsWith('55') && digits.length >= 12 && digits.length <= 13;
   }
 
   async _connectSession(sessionName, webhookUrl = null) {
@@ -98,40 +105,55 @@ class BaileysService {
       const session = this.sessions.get(sessionName);
       if (session) { session.socket = sock; session.saveCreds = saveCreds; }
 
+      // ── CAPTURA DE CONTATOS — alimenta lidToPhone e contactsStore ──
       sock.ev.on('contacts.upsert', async (contacts) => {
         const s = this.sessions.get(sessionName);
-        if (!s || !s.lidToPhone) return;
+        if (!s) return;
+        if (!s.lidToPhone) s.lidToPhone = new Map();
+        if (!s.contactsStore) s.contactsStore = new Map();
+
         for (const contact of contacts) {
+          if (contact.id) s.contactsStore.set(contact.id, contact);
           if (contact.id && contact.id.endsWith('@s.whatsapp.net') && contact.lid) {
             const ph = contact.id.replace('@s.whatsapp.net', '').replace(/\D/g, '');
             if (ph && ph.length <= 15) {
+              const lidJid = contact.lid.endsWith('@lid') ? contact.lid : contact.lid + '@lid';
               const lidNum = contact.lid.replace('@lid', '').replace(/\D/g, '');
-              s.lidToPhone.set(contact.lid, ph);
-              console.log('LID mapeado: ' + contact.lid + ' -> ' + ph);
-              await this._persistResolvedLidPhone(sessionName, contact.lid, lidNum, ph);
+              s.lidToPhone.set(lidJid, ph);
+              s.lidToPhone.set(lidNum, ph);
+              console.log('[LID MAP] ' + lidJid + ' -> ' + ph + ' (upsert)');
+              await this._persistResolvedLidPhone(sessionName, lidJid, lidNum, ph);
             }
           }
         }
-        console.log('Total LID mappings: ' + s.lidToPhone.size);
+        console.log('[LID MAP] Total: ' + s.lidToPhone.size + ' | Store: ' + s.contactsStore.size);
       });
 
       sock.ev.on('contacts.update', async (updates) => {
         const s = this.sessions.get(sessionName);
-        if (!s || !s.lidToPhone) return;
+        if (!s) return;
+        if (!s.lidToPhone) s.lidToPhone = new Map();
+        if (!s.contactsStore) s.contactsStore = new Map();
         for (const contact of updates) {
+          if (contact.id) {
+            const existing = s.contactsStore.get(contact.id) || {};
+            s.contactsStore.set(contact.id, { ...existing, ...contact });
+          }
           if (contact.id && contact.id.endsWith('@s.whatsapp.net') && contact.lid) {
             const ph = contact.id.replace('@s.whatsapp.net', '').replace(/\D/g, '');
             if (ph) {
+              const lidJid = contact.lid.endsWith('@lid') ? contact.lid : contact.lid + '@lid';
               const lidNum = contact.lid.replace('@lid', '').replace(/\D/g, '');
-              s.lidToPhone.set(contact.lid, ph);
-              await this._persistResolvedLidPhone(sessionName, contact.lid, lidNum, ph);
+              s.lidToPhone.set(lidJid, ph);
+              s.lidToPhone.set(lidNum, ph);
+              await this._persistResolvedLidPhone(sessionName, lidJid, lidNum, ph);
             }
           }
         }
       });
 
       sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr, isNewLogin } = update;
+        const { connection, lastDisconnect, qr } = update;
         const s = this.sessions.get(sessionName);
 
         if (qr) {
@@ -202,7 +224,6 @@ class BaileysService {
   getSessionStatus(sessionName) {
     const session = this.sessions.get(sessionName);
     if (!session) return { sessionName, status: 'not_found', state: 'close' };
-
     if (session.status === 'connected') {
       try { if (!session.socket?.user?.id) { session.status = 'disconnected'; } } catch (err) { session.status = 'disconnected'; }
     } else if (session.status === 'connecting' || session.status === 'qr_ready') {
@@ -213,11 +234,9 @@ class BaileysService {
         }
       } catch (err) {}
     }
-
     let state = 'close';
     if (session.status === 'connected') state = 'open';
     else if (session.status === 'connecting' || session.status === 'qr_ready') state = 'connecting';
-
     return { sessionName, status: session.status, state, hasQR: !!session.qrCode, createdAt: session.createdAt };
   }
 
@@ -268,17 +287,28 @@ class BaileysService {
       const { emitConversationUpdate } = require('./socketService');
       const now = new Date().toISOString();
       const { data: sessionRow } = await supabaseAdmin.from('evolution_sessions').select('client_id').eq('session_name', sessionName).single();
+
+      // Atualizar contatos com LID como telefone
       await supabaseAdmin.from('evolution_contacts').update({ phone: realPhone, updated_at: now }).eq('phone', lidNum);
+
+      // Atualizar conversas com LID como telefone
       let conversationsQuery = supabaseAdmin.from('evolution_conversations').update({ phone: realPhone, updated_at: now }).eq('phone', lidNum).select('*');
       if (sessionRow?.client_id) conversationsQuery = conversationsQuery.eq('client_id', sessionRow.client_id);
       const { data: updatedConversations, error: convErr } = await conversationsQuery;
       if (convErr) throw convErr;
+
+      // Atualizar conversas pelo JID @lid
       if (lidJid && sessionRow?.client_id) {
-        const { data: jidConversations } = await supabaseAdmin.from('evolution_conversations').select('*').eq('client_id', sessionRow.client_id).eq('jid', lidJid).eq('phone', realPhone);
+        const { data: jidConversations } = await supabaseAdmin
+          .from('evolution_conversations')
+          .update({ phone: realPhone, updated_at: now })
+          .eq('client_id', sessionRow.client_id)
+          .eq('jid', lidJid)
+          .select('*');
         for (const conv of (jidConversations || [])) emitConversationUpdate(sessionRow.client_id, conv);
       }
       for (const conv of (updatedConversations || [])) { if (sessionRow?.client_id) emitConversationUpdate(sessionRow.client_id, conv); }
-      console.log('DB atualizado com telefone real: ' + lidNum + ' -> ' + realPhone);
+      console.log('[LID PERSIST] ' + lidNum + ' -> ' + realPhone);
     } catch (dbErr) { console.error('Erro persistindo resolucao LID:', dbErr.message); }
   }
 
@@ -295,106 +325,126 @@ class BaileysService {
         isLid = true;
         const lidNum = remoteJid.replace('@lid', '').replace(/\D/g, '');
 
-        // Tentativa 1: senderPn
+        // T1: senderPn
         phone = message.key?.senderPn || '';
         if (phone) {
           phone = phone.replace(/\D/g, '');
-          if (phone.startsWith('55') && phone.length >= 12 && phone.length <= 13) {
-            console.log('LID resolvido via senderPn: ' + remoteJid + ' -> ' + phone);
-            if (sessionObj?.lidToPhone) sessionObj.lidToPhone.set(remoteJid, phone);
+          if (this._isRealPhone(phone)) {
+            console.log('[LID T1] senderPn: ' + remoteJid + ' -> ' + phone);
+            if (sessionObj?.lidToPhone) { sessionObj.lidToPhone.set(remoteJid, phone); sessionObj.lidToPhone.set(lidNum, phone); }
             await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
           } else { phone = ''; }
         }
 
-        // Tentativa 2: mapa memoria
-        if (!phone) {
-          phone = sessionObj?.lidToPhone?.get(remoteJid) || '';
-          if (phone) console.log('LID resolvido via mapa: ' + remoteJid + ' -> ' + phone);
-        }
-
-        // Tentativa 3: participant
-        if (!phone) {
-          phone = (message.key?.participant || '').replace('@s.whatsapp.net', '').replace(/\D/g, '');
-          if (phone && phone.startsWith('55') && phone.length >= 12) {
-            console.log('LID resolvido via participant: ' + remoteJid + ' -> ' + phone);
-            if (sessionObj?.lidToPhone) sessionObj.lidToPhone.set(remoteJid, phone);
-            await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+        // T2: mapa memória
+        if (!phone && sessionObj?.lidToPhone) {
+          phone = sessionObj.lidToPhone.get(remoteJid) || sessionObj.lidToPhone.get(lidNum) || '';
+          if (phone && this._isRealPhone(phone)) {
+            console.log('[LID T2] mapa: ' + remoteJid + ' -> ' + phone);
           } else { phone = ''; }
         }
 
-        // Tentativa 4: banco
-        if (!phone && lidNum) {
-          try {
-            const { supabaseAdmin } = require('../config/supabase');
-            const { data: existingConv } = await supabaseAdmin.from('evolution_conversations').select('phone').eq('jid', remoteJid).not('phone', 'is', null).limit(1).single();
-            if (existingConv?.phone) {
-              const existingDigits = existingConv.phone.replace(/\D/g, '');
-              if (existingDigits.startsWith('55') && existingDigits.length >= 12 && existingDigits.length <= 13) {
-                phone = existingDigits;
-                console.log('LID resolvido via banco: ' + remoteJid + ' -> ' + phone);
-              }
-            }
-            if (!phone) {
-              const { data: existingContact } = await supabaseAdmin.from('evolution_contacts').select('phone').eq('phone', lidNum).limit(1).single();
-              if (existingContact?.phone && existingContact.phone !== lidNum) {
-                const cd = existingContact.phone.replace(/\D/g, '');
-                if (cd.startsWith('55') && cd.length >= 12 && cd.length <= 13) {
-                  phone = cd;
-                  console.log('LID resolvido via contato existente: ' + remoteJid + ' -> ' + phone);
-                }
-              }
-            }
-          } catch (dbErr) { /* nao critico */ }
-        }
-
-        // Tentativa 5: onWhatsApp
-        if (!phone && sock && typeof sock.onWhatsApp === 'function') {
-          try {
-            const lookup = await sock.onWhatsApp(remoteJid);
-            if (Array.isArray(lookup) && lookup.length > 0) {
-              const found = lookup[0];
-              const realJid = found?.jid || found?.lid || '';
-              const realDigits = realJid.replace('@s.whatsapp.net', '').replace('@lid', '').replace(/\D/g, '');
-              if (realDigits.startsWith('55') && realDigits.length >= 12 && realDigits.length <= 13) {
-                phone = realDigits;
-                console.log('LID resolvido via onWhatsApp: ' + remoteJid + ' -> ' + phone);
-                if (sessionObj?.lidToPhone) sessionObj.lidToPhone.set(remoteJid, phone);
-                await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
-              }
-            }
-          } catch (onWaErr) { console.log('onWhatsApp falhou: ' + onWaErr.message); }
-        }
-
-        // Tentativa 6: store.contacts
-        if (!phone && sock && sock.store?.contacts) {
-          try {
-            for (const [cid, contact] of Object.entries(sock.store.contacts)) {
-              if (contact.lid === remoteJid && cid.endsWith('@s.whatsapp.net')) {
-                const cDigits = cid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
-                if (cDigits.startsWith('55') && cDigits.length >= 12 && cDigits.length <= 13) {
-                  phone = cDigits;
-                  console.log('LID resolvido via store.contacts: ' + remoteJid + ' -> ' + phone);
-                  if (sessionObj?.lidToPhone) sessionObj.lidToPhone.set(remoteJid, phone);
+        // T3: contactsStore (varredura de todos os contatos em memória)
+        if (!phone && sessionObj?.contactsStore) {
+          for (const [cid, contact] of sessionObj.contactsStore.entries()) {
+            const cLid = contact.lid || '';
+            const cLidJid = cLid.endsWith('@lid') ? cLid : cLid + '@lid';
+            if (cLidJid === remoteJid || cLid.replace('@lid', '').replace(/\D/g, '') === lidNum) {
+              if (cid.endsWith('@s.whatsapp.net')) {
+                const cp = cid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+                if (this._isRealPhone(cp)) {
+                  phone = cp;
+                  console.log('[LID T3] contactsStore: ' + remoteJid + ' -> ' + phone);
+                  sessionObj.lidToPhone.set(remoteJid, phone);
+                  sessionObj.lidToPhone.set(lidNum, phone);
                   await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
                   break;
                 }
               }
             }
-          } catch (storeErr) { console.log('store.contacts scan falhou: ' + storeErr.message); }
+          }
+        }
+
+        // T4: participant
+        if (!phone) {
+          phone = (message.key?.participant || '').replace('@s.whatsapp.net', '').replace(/\D/g, '');
+          if (phone && this._isRealPhone(phone)) {
+            console.log('[LID T4] participant: ' + remoteJid + ' -> ' + phone);
+            if (sessionObj?.lidToPhone) { sessionObj.lidToPhone.set(remoteJid, phone); sessionObj.lidToPhone.set(lidNum, phone); }
+            await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+          } else { phone = ''; }
+        }
+
+        // T5: banco de dados
+        if (!phone && lidNum) {
+          try {
+            const { supabaseAdmin } = require('../config/supabase');
+            const { data: ec } = await supabaseAdmin.from('evolution_conversations').select('phone').eq('jid', remoteJid).not('phone', 'is', null).limit(1).single();
+            if (ec?.phone && this._isRealPhone(ec.phone)) {
+              phone = ec.phone.replace(/\D/g, '');
+              console.log('[LID T5a] banco conv: ' + remoteJid + ' -> ' + phone);
+            }
+            if (!phone) {
+              const { data: ex } = await supabaseAdmin.from('evolution_contacts').select('phone').eq('phone', lidNum).limit(1).single();
+              if (ex?.phone && ex.phone !== lidNum && this._isRealPhone(ex.phone)) {
+                phone = ex.phone.replace(/\D/g, '');
+                console.log('[LID T5b] banco contato: ' + remoteJid + ' -> ' + phone);
+              }
+            }
+          } catch (dbErr) { /* nao critico */ }
+        }
+
+        // T6: onWhatsApp
+        if (!phone && sock && typeof sock.onWhatsApp === 'function') {
+          try {
+            const lookup = await sock.onWhatsApp(remoteJid);
+            if (Array.isArray(lookup) && lookup.length > 0) {
+              const rJid = lookup[0]?.jid || '';
+              if (rJid.endsWith('@s.whatsapp.net')) {
+                const rd = rJid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+                if (this._isRealPhone(rd)) {
+                  phone = rd;
+                  console.log('[LID T6] onWhatsApp: ' + remoteJid + ' -> ' + phone);
+                  if (sessionObj?.lidToPhone) { sessionObj.lidToPhone.set(remoteJid, phone); sessionObj.lidToPhone.set(lidNum, phone); }
+                  await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+                }
+              }
+            }
+          } catch (onWaErr) { console.log('[LID T6] falhou: ' + onWaErr.message); }
+        }
+
+        // T7: sock.store?.contacts (legado)
+        if (!phone && sock?.store?.contacts) {
+          try {
+            for (const [cid, contact] of Object.entries(sock.store.contacts)) {
+              if (contact.lid === remoteJid && cid.endsWith('@s.whatsapp.net')) {
+                const cd = cid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+                if (this._isRealPhone(cd)) {
+                  phone = cd;
+                  console.log('[LID T7] store: ' + remoteJid + ' -> ' + phone);
+                  if (sessionObj?.lidToPhone) { sessionObj.lidToPhone.set(remoteJid, phone); sessionObj.lidToPhone.set(lidNum, phone); }
+                  await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+                  break;
+                }
+              }
+            }
+          } catch (storeErr) {}
         }
 
         // Fallback
-        if (!phone) { phone = lidNum; console.log('LID sem resolucao, usando ID temporario: ' + phone); }
-        console.log('LID detectado: ' + remoteJid + ' -> phone final: ' + phone);
+        if (!phone) {
+          phone = lidNum;
+          console.log('[LID FALLBACK] ' + remoteJid + ' -> usando LID: ' + phone);
+        }
       } else {
         phone = remoteJid.replace('@s.whatsapp.net', '');
       }
 
       phone = phone.replace(/\D/g, '');
-      if (!phone) { console.log('Phone vazio apos extracao, ignorando. remoteJid: ' + remoteJid); return; }
+      if (!phone) { console.log('Phone vazio, ignorando. remoteJid: ' + remoteJid); return; }
 
       const content = message.message?.conversation || message.message?.extendedTextMessage?.text || message.message?.imageMessage?.caption || '[Midia]';
-      console.log('Mensagem recebida de ' + phone + ': ' + content.substring(0, 50));
+      console.log('Msg de ' + phone + ': ' + content.substring(0, 50));
 
       const axios = require('axios');
       const PORT = process.env.PORT || 3003;
@@ -402,7 +452,8 @@ class BaileysService {
         sessionName, phone, remoteJid, content,
         messageType: this._getMessageType(message),
         whatsappMessageId: message.key.id,
-        pushName: message.pushName
+        pushName: message.pushName,
+        isLid: isLid
       });
     } catch (error) { console.error('Erro processando mensagem:', error.message); }
   }

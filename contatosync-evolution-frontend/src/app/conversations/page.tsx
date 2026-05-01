@@ -179,6 +179,7 @@ export default function ConversationsPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [draft, setDraft] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(new Set());
   const [sending, setSending] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -459,7 +460,19 @@ export default function ConversationsPage() {
       <div className="space-y-2">
         {type === 'image' || type === 'sticker' || type === 'gif' ? (
           <a href={mediaUrl} target="_blank" rel="noreferrer" className="block">
-            <img src={mediaUrl} alt={mediaLabel(type)} className="max-h-72 max-w-full rounded-md object-contain bg-white" />
+            {failedMediaIds.has(msg.id) ? (
+              <span className="flex items-center gap-2 rounded-md bg-white/70 px-3 py-2 text-sm text-blue-700 hover:underline">
+                <ImageIcon className="h-4 w-4" />
+                Abrir {mediaLabel(type)}
+              </span>
+            ) : (
+              <img
+                src={mediaUrl}
+                alt={mediaLabel(type)}
+                className="max-h-72 max-w-full rounded-md object-contain bg-white"
+                onError={() => setFailedMediaIds(prev => new Set(prev).add(msg.id))}
+              />
+            )}
           </a>
         ) : type === 'video' ? (
           <video src={mediaUrl} controls className="max-h-80 max-w-full rounded-md bg-black" />

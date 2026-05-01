@@ -14,6 +14,18 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }
 });
 
+function getPublicBaseUrl(req) {
+  const explicit = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL;
+  if (explicit) return explicit.replace(/\/api\/?$/, '').replace(/\/+$/, '');
+  if (process.env.RAILWAY_PUBLIC_DOMAIN) return 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN.replace(/\/+$/, '');
+  return `${req.protocol}://${req.get('host')}`;
+}
+
+function toPublicMediaUrl(req, mediaUrl) {
+  if (!mediaUrl || /^https?:\/\//i.test(mediaUrl) || mediaUrl.startsWith('data:')) return mediaUrl || '';
+  return getPublicBaseUrl(req) + (mediaUrl.startsWith('/') ? mediaUrl : '/' + mediaUrl);
+}
+
 function normalizeOutgoingMessageType(messageType, file) {
   const requested = String(messageType || '').toLowerCase();
   const mimetype = file?.mimetype || '';
@@ -363,7 +375,7 @@ router.post('/send',
             contact_id: conversation.contact_id,
             content: finalContent,
             message_type: outgoingType,
-            media_url: storedMedia?.publicPath || '',
+            media_url: toPublicMediaUrl(req, storedMedia?.publicPath || ''),
             direction: 'out',
             status: 'sent',
             is_from_ai: false,
@@ -401,7 +413,7 @@ router.post('/send',
         updated_at: now
       });
 
-      success(res, newMessage || { content: finalContent, direction: 'out', sent_at: now, media_url: storedMedia?.publicPath || '' }, 'Mensagem enviada com sucesso');
+      success(res, newMessage || { content: finalContent, direction: 'out', sent_at: now, media_url: toPublicMediaUrl(req, storedMedia?.publicPath || '') }, 'Mensagem enviada com sucesso');
     } catch (baileysError) {
       console.error('Erro ao enviar via Baileys:', baileysError.message);
       return error(res, 'Erro ao enviar: ' + baileysError.message, 500);

@@ -41,6 +41,19 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3003;
 
+function getPublicBaseUrl() {
+  const explicit = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL;
+  if (explicit) return explicit.replace(/\/api\/?$/, '').replace(/\/+$/, '');
+  if (process.env.RAILWAY_PUBLIC_DOMAIN) return 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN.replace(/\/+$/, '');
+  return '';
+}
+
+function toPublicMediaUrl(mediaUrl) {
+  if (!mediaUrl || /^https?:\/\//i.test(mediaUrl) || mediaUrl.startsWith('data:')) return mediaUrl || '';
+  const baseUrl = getPublicBaseUrl();
+  return baseUrl ? baseUrl + (mediaUrl.startsWith('/') ? mediaUrl : '/' + mediaUrl) : mediaUrl;
+}
+
 // Socket.IO com CORS
 const io = socketIo(server, {
   cors: {
@@ -552,6 +565,7 @@ app.post('/internal/messages/process', async function(req, res) {
     var mediaUrl = req.body.mediaUrl || '';
     var mediaMimeType = req.body.mediaMimeType || '';
     var mediaFileName = req.body.mediaFileName || '';
+    var publicMediaUrl = toPublicMediaUrl(mediaUrl);
 
     console.log('=== PROCESSANDO MENSAGEM ===');
     console.log('Sessao: ' + sessionName);
@@ -856,7 +870,7 @@ app.post('/internal/messages/process', async function(req, res) {
         contact_id: contact.id,
         content: content,
         message_type: messageType || 'text',
-        media_url: mediaUrl,
+        media_url: publicMediaUrl,
         direction: 'in',
         status: 'received',
         is_from_ai: false,
@@ -900,7 +914,7 @@ app.post('/internal/messages/process', async function(req, res) {
         },
         content: content,
         message_type: messageType || 'text',
-        media_url: mediaUrl,
+        media_url: publicMediaUrl,
         media_mime_type: mediaMimeType,
         media_file_name: mediaFileName,
         direction: 'in',

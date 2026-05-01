@@ -10,6 +10,7 @@ const {
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
   downloadMediaMessage,
+  downloadContentFromMessage,
   extractMessageContent,
   getContentType
 } = require('@whiskeysockets/baileys');
@@ -647,25 +648,41 @@ class BaileysService {
   async _downloadIncomingMedia(sessionName, message, messageType, sock) {
     if (messageType === 'text') return null;
     const mediaNode = this._getMediaNode(message, messageType);
-    if (!mediaNode) return null;
+    if (!mediaNode) {
+      console.warn('[MEDIA] No media node for type=' + messageType + ' id=' + (message.key?.id || 'unknown'));
+      return null;
+    }
 
     try {
-      const buffer = await downloadMediaMessage(
+      let buffer = await downloadMediaMessage(
         message,
         'buffer',
         {},
         { logger: makeSilentLogger(), reuploadRequest: sock?.updateMediaMessage?.bind(sock) }
-      );
+      ).catch(err => {
+        console.warn('[MEDIA] downloadMediaMessage failed: ' + err.message);
+        return null;
+      });
+
+      if (!buffer || !buffer.length) {
+        const mediaKind = messageType === 'gif' ? 'video' : messageType;
+        const stream = await downloadContentFromMessage(mediaNode, mediaKind);
+        const chunks = [];
+        for await (const chunk of stream) chunks.push(chunk);
+        buffer = Buffer.concat(chunks);
+      }
       if (!buffer || !buffer.length) return null;
 
       const mimetype = String(mediaNode.mimetype || (messageType === 'sticker' ? 'image/webp' : 'application/octet-stream')).split(';')[0].trim();
       const originalName = mediaNode.fileName || mediaNode.title || `${messageType}-${message.key?.id || Date.now()}`;
-      return createStoredFile(buffer, {
+      const stored = createStoredFile(buffer, {
         clientId: sessionName,
         messageType,
         mimetype,
         originalName
       });
+      console.log('[MEDIA] saved type=' + messageType + ' mime=' + stored.mimetype + ' size=' + stored.size + ' url=' + stored.publicPath);
+      return stored;
     } catch (err) {
       console.error('Erro baixando midia recebida:', err.message);
       if (mediaNode.jpegThumbnail) {

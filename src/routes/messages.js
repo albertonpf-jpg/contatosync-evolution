@@ -54,6 +54,19 @@ function fallbackContentForMedia(type, originalName) {
   return labels[type] || '[Midia]';
 }
 
+function isRealBrazilPhone(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  return digits.startsWith('55') && digits.length >= 12 && digits.length <= 13;
+}
+
+function resolveJidForSend(conversation, isMedia) {
+  const phoneDigits = String(conversation.phone || '').replace(/\D/g, '');
+  if (isMedia && isRealBrazilPhone(phoneDigits)) {
+    return phoneDigits + '@s.whatsapp.net';
+  }
+  return conversation.jid || (phoneDigits + '@s.whatsapp.net');
+}
+
 /**
  * GET /api/messages
  * Listar mensagens do cliente com paginação e filtros
@@ -336,7 +349,8 @@ router.post('/send',
     if (!activeSessionName) activeSessionName = dbSessions[0].session_name;
 
     // 3. JID da conversa (preserva @lid para contatos LID)
-    const jidToSend = conversation.jid || (conversation.phone + '@s.whatsapp.net');
+    const jidToSend = resolveJidForSend(conversation, !!req.file);
+    console.log('[MESSAGE SEND] conversation=' + conversation.id + ' media=' + !!req.file + ' jid=' + jidToSend);
 
     try {
       const now = new Date().toISOString();

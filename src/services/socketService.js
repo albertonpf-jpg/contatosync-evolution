@@ -112,6 +112,14 @@ const emitNewContact = (clientId, contact) => {
   });
 };
 
+const emitContactUpdate = (clientId, contact) => {
+  if (!io) return;
+  io.to(`client_${clientId}`).emit('contact_updated', {
+    ...contact,
+    timestamp: new Date().toISOString()
+  });
+};
+
 const emitActivity = (clientId, activity) => {
   if (!io) return;
   io.to(`client_${clientId}`).emit('new_activity', {
@@ -186,6 +194,7 @@ module.exports = {
   emitNewMessage,
   emitConversationUpdate,
   emitNewContact,
+  emitContactUpdate,
   emitActivity,
   emitAIResponse,
   emitError,

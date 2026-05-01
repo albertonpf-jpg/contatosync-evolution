@@ -1,22 +1,76 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Plus, Search, Phone, Mail, MoreHorizontal, Edit, Trash2 } from 'lucide-react';
 import { apiService } from '@/lib/api';
 import DashboardLayout from '@/components/DashboardLayout';
 import ContactForm from '@/components/ContactForm';
 import { useSocketContext } from '@/contexts/SocketContext';
+import { getSupabaseAnonKey, getSupabaseUrl } from '@/lib/runtime-config';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(getSupabaseUrl(), getSupabaseAnonKey());
 
 interface Contact {
   id: string;
+  client_id?: string;
   name: string;
   phone: string;
   email?: string;
   whatsapp_number?: string;
   notes?: string;
   created_at: string;
+  updated_at?: string;
   last_message_at?: string;
   status: 'active' | 'inactive' | 'blocked';
+}
+
+interface ContactRealtimePayload {
+  id?: string;
+  contact_id?: string;
+  client_id?: string;
+  name?: string;
+  contact_name?: string;
+  phone?: string;
+  status?: 'active' | 'inactive' | 'blocked';
+  last_message_at?: string;
+  created_at?: string;
+  updated_at?: string;
+  evolution_contacts?: {
+    name?: string;
+    phone?: string;
+  };
+}
+
+function getToken(): string {
+  return (typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : '') ?? '';
+}
+
+function getClientIdFromToken(): string {
+  try {
+    const token = getToken();
+    const payloadB64 = token.split('.')[1];
+    if (!payloadB64) return '';
+    const payload = JSON.parse(atob(payloadB64));
+    return payload.sub || '';
+  } catch {
+    return '';
+  }
+}
+
+function isRealPhone(raw?: string): boolean {
+  const digits = (raw || '').split('@')[0].replace(/\D/g, '');
+  return digits.startsWith('55') && digits.length >= 12 && digits.length <= 13;
+}
+
+function normalizePhone(raw?: string): string {
+  return (raw || '').split('@')[0].replace(/\D/g, '');
+}
+
+function getBestPhone(...phones: Array<string | undefined>): string {
+  const realPhone = phones.find(isRealPhone);
+  if (realPhone) return normalizePhone(realPhone);
+  return normalizePhone(phones.find(Boolean));
 }
 
 export default function ContactsPage() {
@@ -28,37 +82,9 @@ export default function ContactsPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const { on, off } = useSocketContext();
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    loadContacts();
-  }, [currentPage]);
-
-  useEffect(() => {
-    const refreshContacts = () => {
-      loadContacts();
-    };
-
-    on('new_message', refreshContacts);
-    on('conversation_updated', refreshContacts);
-    on('conversation_update', refreshContacts);
-    on('new_contact', refreshContacts);
-
-    return () => {
-      off('new_message', refreshContacts);
-      off('conversation_updated', refreshContacts);
-      off('conversation_update', refreshContacts);
-      off('new_contact', refreshContacts);
-    };
-  }, [off, on, currentPage, searchTerm]);
-
-  useEffect(() => {
-    const timeoutId = setTimeout(() => {
-      loadContacts();
-    }, 500);
-    return () => clearTimeout(timeoutId);
-  }, [searchTerm]);
-
-  const loadContacts = async () => {
+  const loadContacts = useCallback(async () => {
     try {
       setLoading(true);
       const response = await apiService.getContacts(currentPage, 10, searchTerm);
@@ -69,13 +95,146 @@ export default function ContactsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [currentPage, searchTerm]);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => {
+      void loadContacts();
+    }, 250);
+  }, [loadContacts]);
+
+  const upsertContactFromRealtime = useCallback((payload?: ContactRealtimePayload) => {
+    if (!payload) return;
+    const contactId = payload.contact_id || payload.id;
+    if (!contactId) {
+      scheduleRefresh();
+      return;
+    }
+
+    setContacts(prev => {
+      const existing = prev.find(contact => contact.id === contactId);
+      const nextPhone = getBestPhone(
+        payload.phone,
+        payload.evolution_contacts?.phone,
+        existing?.phone,
+      );
+
+      if (!existing) {
+        scheduleRefresh();
+        return prev;
+      }
+
+      const updated: Contact = {
+        ...existing,
+        name: payload.name || payload.contact_name || payload.evolution_contacts?.name || existing.name,
+        phone: nextPhone || existing.phone,
+        status: payload.status || existing.status,
+        last_message_at: payload.last_message_at || existing.last_message_at,
+        updated_at: payload.updated_at || existing.updated_at,
+      } as Contact;
+
+      return [updated, ...prev.filter(contact => contact.id !== contactId)];
+    });
+  }, [scheduleRefresh]);
+
+  useEffect(() => {
+    void loadContacts();
+  }, [loadContacts]);
+
+  useEffect(() => {
+    const handleRealtimeContact = (payload?: ContactRealtimePayload) => {
+      upsertContactFromRealtime(payload);
+      scheduleRefresh();
+    };
+
+    on('new_message', handleRealtimeContact);
+    on('conversation_updated', handleRealtimeContact);
+    on('conversation_update', handleRealtimeContact);
+    on('new_contact', handleRealtimeContact);
+    on('contact_updated', handleRealtimeContact);
+
+    return () => {
+      off('new_message', handleRealtimeContact);
+      off('conversation_updated', handleRealtimeContact);
+      off('conversation_update', handleRealtimeContact);
+      off('new_contact', handleRealtimeContact);
+      off('contact_updated', handleRealtimeContact);
+    };
+  }, [off, on, scheduleRefresh, upsertContactFromRealtime]);
+
+  useEffect(() => {
+    const clientId = getClientIdFromToken();
+    if (!clientId) return;
+
+    const channel = supabase
+      .channel('contacts-realtime-' + clientId)
+      .on(
+        'postgres_changes' as any,
+        {
+          event: '*',
+          schema: 'public',
+          table: 'evolution_contacts',
+          filter: `client_id=eq.${clientId}`,
+        },
+        (payload: any) => {
+          if (payload.eventType === 'DELETE') {
+            const deletedId = payload.old?.id;
+            if (deletedId) setContacts(prev => prev.filter(contact => contact.id !== deletedId));
+            scheduleRefresh();
+            return;
+          }
+          upsertContactFromRealtime(payload.new);
+          scheduleRefresh();
+        }
+      )
+      .on(
+        'postgres_changes' as any,
+        {
+          event: '*',
+          schema: 'public',
+          table: 'evolution_conversations',
+          filter: `client_id=eq.${clientId}`,
+        },
+        (payload: any) => {
+          const record = payload.new || payload.old;
+          upsertContactFromRealtime({
+            contact_id: record?.contact_id,
+            contact_name: record?.contact_name,
+            phone: record?.phone,
+            last_message_at: record?.last_message_at,
+            updated_at: record?.updated_at,
+          });
+          scheduleRefresh();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [scheduleRefresh, upsertContactFromRealtime]);
+
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      void loadContacts();
+    }, 500);
+    return () => clearTimeout(timeoutId);
+  }, [searchTerm, loadContacts]);
+
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void loadContacts();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [loadContacts]);
 
   const handleDelete = async (contactId: string) => {
     if (!confirm('Tem certeza que deseja excluir este contato?')) return;
     try {
       await apiService.deleteContact(contactId);
-      loadContacts();
+      void loadContacts();
     } catch (error: unknown) {
       console.error('Erro ao excluir contato:', error);
     }
@@ -89,7 +248,7 @@ export default function ContactsPage() {
   const handleCloseForm = () => {
     setShowForm(false);
     setSelectedContact(null);
-    loadContacts();
+    void loadContacts();
   };
 
   const getStatusColor = (status: string) => {

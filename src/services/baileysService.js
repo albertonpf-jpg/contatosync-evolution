@@ -284,12 +284,64 @@ class BaileysService {
   async _persistResolvedLidPhone(sessionName, lidJid, lidNum, realPhone) {
     try {
       const { supabaseAdmin } = require('../config/supabase');
-      const { emitConversationUpdate } = require('./socketService');
+      const { emitConversationUpdate, emitContactUpdate } = require('./socketService');
       const now = new Date().toISOString();
       const { data: sessionRow } = await supabaseAdmin.from('evolution_sessions').select('client_id').eq('session_name', sessionName).single();
+      let realPhoneContact = null;
+      if (sessionRow?.client_id) {
+        const realContactResult = await supabaseAdmin
+          .from('evolution_contacts')
+          .select('*')
+          .eq('client_id', sessionRow.client_id)
+          .eq('phone', realPhone)
+          .single();
+        realPhoneContact = realContactResult.data || null;
+      }
+
+      if (realPhoneContact) {
+        await supabaseAdmin
+          .from('evolution_conversations')
+          .update({ contact_id: realPhoneContact.id, contact_name: realPhoneContact.name, phone: realPhone, updated_at: now })
+          .eq('client_id', sessionRow.client_id)
+          .eq('phone', lidNum);
+        if (lidJid) {
+          await supabaseAdmin
+            .from('evolution_conversations')
+            .update({ contact_id: realPhoneContact.id, contact_name: realPhoneContact.name, phone: realPhone, updated_at: now })
+            .eq('client_id', sessionRow.client_id)
+            .eq('jid', lidJid);
+        }
+        await supabaseAdmin
+          .from('evolution_messages')
+          .update({ contact_id: realPhoneContact.id })
+          .eq('client_id', sessionRow.client_id)
+          .in('contact_id',
+            (await supabaseAdmin
+              .from('evolution_contacts')
+              .select('id')
+              .eq('client_id', sessionRow.client_id)
+              .eq('phone', lidNum)).data?.map(contact => contact.id) || []
+          );
+        await supabaseAdmin
+          .from('evolution_contacts')
+          .delete()
+          .eq('client_id', sessionRow.client_id)
+          .eq('phone', lidNum);
+        emitContactUpdate(sessionRow.client_id, { ...realPhoneContact, phone: realPhone, updated_at: now });
+      }
 
       // Atualizar contatos com LID como telefone
-      await supabaseAdmin.from('evolution_contacts').update({ phone: realPhone, updated_at: now }).eq('phone', lidNum);
+      let contactsQuery = supabaseAdmin
+        .from('evolution_contacts')
+        .update({ phone: realPhone, updated_at: now })
+        .eq('phone', lidNum)
+        .select('*');
+      if (sessionRow?.client_id) contactsQuery = contactsQuery.eq('client_id', sessionRow.client_id);
+      const { data: updatedContacts, error: contactErr } = await contactsQuery;
+      if (contactErr) throw contactErr;
+      for (const contact of (updatedContacts || [])) {
+        if (sessionRow?.client_id) emitContactUpdate(sessionRow.client_id, contact);
+      }
 
       // Atualizar conversas com LID como telefone
       let conversationsQuery = supabaseAdmin.from('evolution_conversations').update({ phone: realPhone, updated_at: now }).eq('phone', lidNum).select('*');
@@ -305,9 +357,21 @@ class BaileysService {
           .eq('client_id', sessionRow.client_id)
           .eq('jid', lidJid)
           .select('*');
-        for (const conv of (jidConversations || [])) emitConversationUpdate(sessionRow.client_id, conv);
+        for (const conv of (jidConversations || [])) {
+          emitConversationUpdate(sessionRow.client_id, {
+            ...conv,
+            evolution_contacts: { phone: realPhone }
+          });
+        }
       }
-      for (const conv of (updatedConversations || [])) { if (sessionRow?.client_id) emitConversationUpdate(sessionRow.client_id, conv); }
+      for (const conv of (updatedConversations || [])) {
+        if (sessionRow?.client_id) {
+          emitConversationUpdate(sessionRow.client_id, {
+            ...conv,
+            evolution_contacts: { phone: realPhone }
+          });
+        }
+      }
       console.log('[LID PERSIST] ' + lidNum + ' -> ' + realPhone);
     } catch (dbErr) { console.error('Erro persistindo resolucao LID:', dbErr.message); }
   }

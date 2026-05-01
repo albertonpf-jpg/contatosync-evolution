@@ -629,6 +629,61 @@ app.post('/internal/messages/process', async function(req, res) {
       console.error('Erro buscando contato:', contactFetchError);
     }
 
+    async function mergeOrUpdateContactPhone(currentContact, realPhone) {
+      if (!currentContact || !realPhone || currentContact.phone === realPhone) return currentContact;
+
+      var { data: realPhoneContact } = await supabaseAdmin
+        .from('evolution_contacts')
+        .select('*')
+        .eq('client_id', session.client_id)
+        .eq('phone', realPhone)
+        .single();
+
+      if (realPhoneContact && realPhoneContact.id !== currentContact.id) {
+        var mergedName = pushName || realPhoneContact.name || currentContact.name;
+        await supabaseAdmin
+          .from('evolution_conversations')
+          .update({ contact_id: realPhoneContact.id, contact_name: mergedName, phone: realPhone, updated_at: now })
+          .eq('client_id', session.client_id)
+          .eq('contact_id', currentContact.id);
+        await supabaseAdmin
+          .from('evolution_messages')
+          .update({ contact_id: realPhoneContact.id })
+          .eq('client_id', session.client_id)
+          .eq('contact_id', currentContact.id);
+        await supabaseAdmin
+          .from('evolution_contacts')
+          .update({ name: mergedName, last_message_at: now, updated_at: now })
+          .eq('client_id', session.client_id)
+          .eq('id', realPhoneContact.id);
+        await supabaseAdmin
+          .from('evolution_contacts')
+          .delete()
+          .eq('client_id', session.client_id)
+          .eq('id', currentContact.id);
+
+        realPhoneContact.name = mergedName;
+        realPhoneContact.last_message_at = now;
+        realPhoneContact.updated_at = now;
+        return realPhoneContact;
+      }
+
+      var { data: updatedPhoneContact, error: phoneUpdateError } = await supabaseAdmin
+        .from('evolution_contacts')
+        .update({ phone: realPhone, updated_at: now })
+        .eq('client_id', session.client_id)
+        .eq('id', currentContact.id)
+        .select('*')
+        .single();
+
+      if (phoneUpdateError) {
+        console.error('Erro atualizando telefone do contato:', phoneUpdateError);
+        return currentContact;
+      }
+
+      return updatedPhoneContact || { ...currentContact, phone: realPhone, updated_at: now };
+    }
+
     if (!contact) {
       var newContactId = uuidv4();
       // Se é LID não resolvido, salvar digitsOnlyPhone mas nome via pushName
@@ -657,27 +712,24 @@ app.post('/internal/messages/process', async function(req, res) {
       contact = newContact;
       console.log('Novo contato criado: ' + contact.name + ' (phone: ' + contactPhoneToSave + ', isLid: ' + isLid + ')');
     } else {
+      if (storedPhone && contact.phone !== storedPhone) {
+        contact = await mergeOrUpdateContactPhone(contact, storedPhone);
+        if (existingConversationByJid) {
+          existingConversationByJid.contact_id = contact.id;
+          existingConversationByJid.phone = storedPhone;
+          existingConversationByJid.contact_name = contact.name;
+        }
+      }
+
       // Atualizar nome se pushName veio e contato tinha nome generico
       if (pushName && contact.name && (contact.name.startsWith('Contato ') || contact.name === 'Contato WhatsApp')) {
         var nextContactUpdate = { name: pushName, updated_at: now };
         // Só atualizar telefone se temos telefone real
-        if (storedPhone && contact.phone !== storedPhone) nextContactUpdate.phone = storedPhone;
         await supabaseAdmin
           .from('evolution_contacts')
           .update(nextContactUpdate)
           .eq('id', contact.id);
         contact.name = pushName;
-        if (storedPhone) contact.phone = storedPhone;
-      } else if (storedPhone && contact.phone !== storedPhone) {
-        // Atualizar telefone apenas se o novo é real (não sobrescrever real com LID)
-        var contactCurrentIsReal = contact.phone && contact.phone.startsWith('55') && contact.phone.length >= 12 && contact.phone.length <= 13;
-        if (!contactCurrentIsReal || hasRealPhone) {
-          await supabaseAdmin
-            .from('evolution_contacts')
-            .update({ phone: storedPhone, updated_at: now })
-            .eq('id', contact.id);
-          contact.phone = storedPhone;
-        }
       }
       // Atualizar last_message_at do contato
       await supabaseAdmin
@@ -877,6 +929,18 @@ app.post('/internal/messages/process', async function(req, res) {
       if (socketIO) {
         socketIO.to(targetRoom).emit('new_message', payload);
         socketIO.to(targetRoom).emit('conversation_updated', conversationPayload);
+        socketIO.to(targetRoom).emit(conversationCreated ? 'new_contact' : 'contact_updated', {
+          id: contact.id,
+          client_id: session.client_id,
+          name: contact.name,
+          phone: displayPhone || contact.phone || '',
+          status: contact.status || 'active',
+          source: contact.source || 'whatsapp',
+          last_message_at: now,
+          created_at: contact.created_at || now,
+          updated_at: now,
+          timestamp: now
+        });
         console.log('[SOCKET] new_message emitido → room: ' + targetRoom + ' | session: ' + sessionName + ' | conv: ' + conversation.id + ' | created: ' + conversationCreated);
       } else {
         console.warn('[SOCKET] io nao disponivel — evento nao emitido');

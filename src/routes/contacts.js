@@ -22,6 +22,7 @@ router.get('/',
         .from('evolution_contacts')
         .select('*', { count: 'exact' })
         .eq('client_id', req.user.id)
+        .order('last_message_at', { ascending: false, nullsFirst: false })
         .order('created_at', { ascending: false });
 
       if (search) {

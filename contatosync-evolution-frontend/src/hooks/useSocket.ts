@@ -15,8 +15,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
-
-const SOCKET_URL = 'https://web-production-50297.up.railway.app';
+import { getSocketUrl } from '@/lib/runtime-config';
 
 interface UseSocketCallbacks {
   onNewMessage?: (data: any) => void;
@@ -48,7 +47,7 @@ export function useSocket({ onNewMessage, onConversationUpdated }: UseSocketCall
       return;
     }
 
-    const socket: Socket = io('https://web-production-50297.up.railway.app', {
+    const socket: Socket = io(getSocketUrl(), {
       auth: { token },
       transports: ['websocket', 'polling'],
       reconnection: true,

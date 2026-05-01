@@ -17,8 +17,8 @@ import React, {
   useCallback,
 } from 'react';
 import { io, Socket } from 'socket.io-client';
+import { getSocketUrl } from '@/lib/runtime-config';
 
-const SOCKET_URL = 'https://web-production-50297.up.railway.app';
 const TOKEN_KEY  = 'contatosync_token';
 
 // ── Tipos ────────────────────────────────────────────────────────
@@ -79,7 +79,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
 
       console.log('[Socket] Criando conexão → token:', token.slice(0, 12) + '...');
 
-      const socket = io(SOCKET_URL, {
+      const socket = io(getSocketUrl(), {
         auth: { token },
         transports: ['websocket', 'polling'],
         reconnection: true,
@@ -110,7 +110,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       });
 
       // Redirecionar todos os eventos para os listeners registrados
-      ['new_message', 'conversation_updated', 'conversation_update', 'new_contact', 'whatsapp_status', 'typing_status'].forEach(ev => {
+      ['new_message', 'conversation_updated', 'conversation_update', 'new_contact', 'contact_updated', 'whatsapp_status', 'typing_status'].forEach(ev => {
         socket.on(ev, (data: any) => {
           console.log('[Socket] evento:', ev, data?.conversation_id || '');
           listeners.current.get(ev)?.forEach(fn => fn(data));

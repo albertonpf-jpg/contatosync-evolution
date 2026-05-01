@@ -4,13 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Check, CheckCheck, MessageSquare, Search, Send } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { useSocketContext } from '@/contexts/SocketContext';
-import { getApiUrl, getSupabaseUrl, getSupabaseAnonKey } from '@/lib/runtime-config';
-import { createClient, RealtimeChannel } from '@supabase/supabase-js';
+import { getApiUrl } from '@/lib/runtime-config';
 
 const API = getApiUrl();
-
-// Supabase client para Realtime (usa anon key, sem auth — filtramos client_id no código)
-const supabase = createClient(getSupabaseUrl(), getSupabaseAnonKey());
 
 interface Contact {
   name: string;
@@ -46,6 +42,7 @@ interface Message {
 interface SocketConversationPayload {
   id?: string;
   conversation_id?: string;
+  conversationId?: string;
   client_id?: string;
   contact_id?: string;
   contact_name?: string;
@@ -126,6 +123,14 @@ function getBestPhone(...phones: Array<string | undefined>): string {
   return normalizePhone(phones.find(Boolean));
 }
 
+function getConversationId(payload?: SocketConversationPayload): string {
+  return payload?.conversation_id || payload?.conversationId || payload?.id || '';
+}
+
+function normalizeDirection(direction?: string): Message['direction'] {
+  return direction === 'out' || direction === 'outgoing' ? 'out' : 'in';
+}
+
 export default function ConversationsPage() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
@@ -182,7 +187,7 @@ export default function ConversationsPage() {
   const { connected: socketOk, on, off } = useSocketContext();
 
   function upsertConversationFromSocket(payload?: SocketConversationPayload) {
-    const conversationId = payload?.conversation_id || payload?.id;
+    const conversationId = getConversationId(payload);
     if (!conversationId) return;
 
     setConversations(prev => {
@@ -241,29 +246,31 @@ export default function ConversationsPage() {
     const handleNewMessage = (payload?: Message & SocketConversationPayload & { conversation?: Conversation }) => {
       if (!payload) return;
       const fullConv = payload.conversation;
+      const conversationId = getConversationId(payload);
+      if (!conversationId) return;
 
       upsertConversationFromSocket({
-        conversation_id: payload.conversation_id,
+        conversation_id: conversationId,
         contact_id: payload.contact_id,
         contact_name: payload.contact_name || fullConv?.contact_name,
         phone: payload.phone || fullConv?.phone,
-        unread_count: currentConvId.current === payload.conversation_id ? 0 : (fullConv?.unread_count ?? undefined),
+        unread_count: currentConvId.current === conversationId ? 0 : (fullConv?.unread_count ?? undefined),
         status: fullConv?.status,
         last_message_at: payload.sent_at || payload.created_at,
         updated_at: payload.created_at,
       });
 
-      if (payload.conversation_id === currentConvId.current) {
+      if (conversationId === currentConvId.current) {
         setMessages(prev => {
           if (prev.some(message => message.id === payload.id)) return prev;
           return [
             ...prev,
             {
               id: payload.id,
-              conversation_id: payload.conversation_id,
+              conversation_id: conversationId,
               content: payload.content,
               message_type: payload.message_type || 'text',
-              direction: payload.direction,
+              direction: normalizeDirection(payload.direction),
               status: payload.status || 'received',
               is_from_ai: !!payload.is_from_ai,
               created_at: payload.created_at,
@@ -287,9 +294,9 @@ export default function ConversationsPage() {
       off('conversation_updated', handleConvUpdated);
       off('conversation_update', handleConvUpdated);
     };
-  }, [off, on, selectedConv?.id]);
+  }, [off, on]);
 
-  // Polling backup — Supabase Realtime é o canal primário
+  // Socket.IO é o canal imediato. O polling abaixo cobre reconexões e eventos perdidos.
   useEffect(() => {
     const runRefresh = () => {
       void fetchConvs();
@@ -298,119 +305,12 @@ export default function ConversationsPage() {
       }
     };
     const firstRunId = window.setTimeout(runRefresh, 0);
-    const intervalId = setInterval(runRefresh, 30000);
+    const intervalId = setInterval(runRefresh, currentConvId.current ? 5000 : 15000);
     return () => {
       clearTimeout(firstRunId);
       clearInterval(intervalId);
     };
-  }, [fetchConvs, fetchMsgs]);
-
-  // ── Supabase Realtime — canal primário de tempo real ──────────────
-  useEffect(() => {
-    const token = getToken();
-    if (!token) return;
-
-    let clientId = '';
-    try {
-      const payloadB64 = token.split('.')[1];
-      const payload = JSON.parse(atob(payloadB64));
-      clientId = payload.sub || '';
-    } catch { return; }
-    if (!clientId) return;
-
-    console.log('[Realtime] Subscribing for client:', clientId);
-
-    const channel = supabase.channel('evolution-realtime-' + clientId)
-      .on(
-        'postgres_changes' as any,
-        {
-          event: '*',
-          schema: 'public',
-          table: 'evolution_conversations',
-          filter: `client_id=eq.${clientId}`,
-        },
-        (payload: any) => {
-          console.log('[Realtime] conversation change:', payload.eventType);
-          const record = payload.new || payload.old;
-          if (!record) return;
-
-          if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
-            setConversations(prev => {
-              const existing = prev.find(c => c.id === record.id);
-              const updated: Conversation = {
-                id: record.id,
-                client_id: record.client_id,
-                contact_id: record.contact_id,
-                contact_name: record.contact_name || existing?.contact_name || 'Sem nome',
-                phone: record.phone ? normalizePhone(record.phone) : (existing?.phone || ''),
-                status: record.status || 'active',
-                last_message_at: record.last_message_at || new Date().toISOString(),
-                unread_count: record.unread_count ?? (existing?.unread_count || 0),
-                created_at: record.created_at || existing?.created_at || new Date().toISOString(),
-                updated_at: record.updated_at || new Date().toISOString(),
-                evolution_contacts: record.contact_name
-                  ? { name: record.contact_name, phone: record.phone ? normalizePhone(record.phone) : '' }
-                  : existing?.evolution_contacts,
-              };
-
-              setSelectedConv(prevSel => (
-                prevSel?.id === record.id ? { ...prevSel, ...updated } : prevSel
-              ));
-
-              if (existing) {
-                if (currentConvId.current === record.id) {
-                  updated.unread_count = 0;
-                }
-                return [updated, ...prev.filter(c => c.id !== record.id)];
-              }
-              return [updated, ...prev];
-            });
-          }
-        }
-      )
-      .on(
-        'postgres_changes' as any,
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'evolution_messages',
-          filter: `client_id=eq.${clientId}`,
-        },
-        (payload: any) => {
-          const msg = payload.new;
-          if (!msg) return;
-          console.log('[Realtime] new message:', msg.conversation_id, msg.direction);
-
-          if (msg.conversation_id === currentConvId.current) {
-            setMessages(prev => {
-              if (prev.some(m => m.id === msg.id)) return prev;
-              return [
-                ...prev,
-                {
-                  id: msg.id,
-                  conversation_id: msg.conversation_id,
-                  content: msg.content || '',
-                  message_type: msg.message_type || 'text',
-                  direction: msg.direction,
-                  status: msg.status || 'received',
-                  is_from_ai: !!msg.is_from_ai,
-                  created_at: msg.created_at,
-                  sent_at: msg.sent_at,
-                },
-              ];
-            });
-          }
-        }
-      )
-      .subscribe((status: string) => {
-        console.log('[Realtime] subscription status:', status);
-      });
-
-    return () => {
-      console.log('[Realtime] Unsubscribing');
-      supabase.removeChannel(channel);
-    };
-  }, [getToken]);
+  }, [fetchConvs, fetchMsgs, selectedConv?.id]);
 
   useEffect(() => {
     const onVisible = () => {

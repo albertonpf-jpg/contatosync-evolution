@@ -144,6 +144,7 @@ export default function ConversationsPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const prevMsgCount = useRef(0);
   const currentConvId = useRef<string | null>(null);
+  const autoOpenedInitialConv = useRef(false);
 
   useEffect(() => {
     currentConvId.current = selectedConv?.id ?? null;
@@ -162,12 +163,20 @@ export default function ConversationsPage() {
 
   const fetchConvs = useCallback(async () => {
     const token = getToken();
-    if (!token) return;
+    if (!token) return [];
     try {
       const data = await apiFetch('/conversations?page=1&limit=50&status=active', token);
-      setConversations(data?.items ?? []);
+      const items: Conversation[] = data?.items ?? [];
+      setConversations(items);
+      setSelectedConv(prevSelected => {
+        if (!prevSelected) return prevSelected;
+        const refreshed = items.find(item => item.id === prevSelected.id);
+        return refreshed ? { ...refreshed, unread_count: 0 } : prevSelected;
+      });
+      return items;
     } catch (error: unknown) {
       console.error('[fetchConvs]', getErrorMessage(error));
+      return [];
     } finally {
       setLoadingConvs(false);
     }
@@ -175,12 +184,15 @@ export default function ConversationsPage() {
 
   const fetchMsgs = useCallback(async (id: string) => {
     const token = getToken();
-    if (!token || !id) return;
+    if (!token || !id) return [];
     try {
       const data = await apiFetch(`/messages/conversation/${id}?page=1&limit=100`, token);
-      setMessages(data?.items ?? []);
+      const items: Message[] = data?.items ?? [];
+      setMessages(items);
+      return items;
     } catch (error: unknown) {
       console.error('[fetchMsgs]', getErrorMessage(error));
+      return [];
     }
   }, [getToken]);
 
@@ -323,7 +335,7 @@ export default function ConversationsPage() {
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [fetchConvs, fetchMsgs]);
 
-  const openConv = async (conv: Conversation) => {
+  const openConv = useCallback(async (conv: Conversation) => {
     const normalizedConv = { ...conv, unread_count: 0 };
     setSelectedConv(normalizedConv);
     setMessages([]);
@@ -331,7 +343,14 @@ export default function ConversationsPage() {
     setConversations(prev => prev.map(item => (item.id === conv.id ? normalizedConv : item)));
     await fetchMsgs(conv.id);
     setLoadingMsgs(false);
-  };
+  }, [fetchMsgs]);
+
+  useEffect(() => {
+    if (autoOpenedInitialConv.current || selectedConv || conversations.length === 0) return;
+
+    autoOpenedInitialConv.current = true;
+    void openConv(conversations[0]);
+  }, [conversations, openConv, selectedConv]);
 
   const handleSend = async () => {
     if (!draft.trim() || !selectedConv || sending) return;

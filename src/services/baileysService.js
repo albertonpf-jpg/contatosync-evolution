@@ -1,6 +1,8 @@
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
+const ffmpegPath = require('ffmpeg-static');
 const { createStoredFile, sanitizeFileName } = require('../utils/mediaStore');
 
 const {
@@ -301,11 +303,17 @@ class BaileysService {
     }
 
     const jid = jidOrPhone.includes('@') ? jidOrPhone : jidOrPhone.replace(/\D/g, '') + '@s.whatsapp.net';
-    const buffer = fs.readFileSync(media.path);
-    const mimetype = String(media.mimetype || 'application/octet-stream').split(';')[0].trim();
+    let mediaPath = media.path;
+    let mimetype = String(media.mimetype || 'application/octet-stream').split(';')[0].trim();
     const caption = media.caption || '';
     const fileName = sanitizeFileName(media.fileName || media.originalName || 'arquivo');
     const type = this._normalizeOutgoingMediaType(media.messageType, mimetype, fileName);
+    if (type === 'audio' && mimetype !== 'audio/ogg' && mimetype !== 'audio/opus') {
+      const converted = await this._convertAudioForWhatsApp(mediaPath);
+      mediaPath = converted.path;
+      mimetype = converted.mimetype;
+    }
+    const buffer = fs.readFileSync(mediaPath);
     let payload;
 
     if (type === 'image') {
@@ -314,7 +322,7 @@ class BaileysService {
       payload = { video: buffer, mimetype, caption, gifPlayback: type === 'gif' || mimetype === 'image/gif' };
     } else if (type === 'audio') {
       const isVoiceNoteCompatible = mimetype === 'audio/ogg' || mimetype === 'audio/opus';
-      payload = { audio: buffer, mimetype, ptt: !!media.ptt && isVoiceNoteCompatible };
+      payload = { audio: buffer, mimetype, ptt: isVoiceNoteCompatible };
     } else if (type === 'sticker') {
       payload = { sticker: buffer, mimetype };
     } else {
@@ -325,6 +333,35 @@ class BaileysService {
     const result = await session.socket.sendMessage(jid, payload);
     console.log('[MEDIA SEND] sent id=' + (result?.key?.id || 'unknown') + ' type=' + type + ' mime=' + mimetype);
     return { success: true, messageId: result.key.id, to: jid, messageType: type, timestamp: new Date() };
+  }
+
+  async _convertAudioForWhatsApp(inputPath) {
+    if (!ffmpegPath) throw new Error('ffmpeg nao disponivel para converter audio');
+    const outputPath = inputPath.replace(/\.[^.]+$/, '') + '-whatsapp.ogg';
+    await new Promise((resolve, reject) => {
+      execFile(ffmpegPath, [
+        '-y',
+        '-i', inputPath,
+        '-vn',
+        '-c:a', 'libopus',
+        '-b:a', '32k',
+        '-ar', '48000',
+        '-ac', '1',
+        '-f', 'ogg',
+        outputPath
+      ], (error, _stdout, stderr) => {
+        if (error) {
+          error.message = error.message + (stderr ? ' | ' + stderr.slice(-500) : '');
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+    const size = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
+    if (!size) throw new Error('conversao de audio gerou arquivo vazio');
+    console.log('[MEDIA SEND] audio converted to ogg/opus size=' + size);
+    return { path: outputPath, mimetype: 'audio/ogg' };
   }
 
   getAllSessions() {

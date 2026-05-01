@@ -5,6 +5,7 @@ import { Plus, Search, Phone, Mail, MoreHorizontal, Edit, Trash2 } from 'lucide-
 import { apiService } from '@/lib/api';
 import DashboardLayout from '@/components/DashboardLayout';
 import ContactForm from '@/components/ContactForm';
+import { useSocketContext } from '@/contexts/SocketContext';
 
 interface Contact {
   id: string;
@@ -26,10 +27,29 @@ export default function ContactsPage() {
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const { on, off } = useSocketContext();
 
   useEffect(() => {
     loadContacts();
   }, [currentPage]);
+
+  useEffect(() => {
+    const refreshContacts = () => {
+      loadContacts();
+    };
+
+    on('new_message', refreshContacts);
+    on('conversation_updated', refreshContacts);
+    on('conversation_update', refreshContacts);
+    on('new_contact', refreshContacts);
+
+    return () => {
+      off('new_message', refreshContacts);
+      off('conversation_updated', refreshContacts);
+      off('conversation_update', refreshContacts);
+      off('new_contact', refreshContacts);
+    };
+  }, [off, on, currentPage, searchTerm]);
 
   useEffect(() => {
     const timeoutId = setTimeout(() => {

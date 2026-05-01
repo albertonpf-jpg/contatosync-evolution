@@ -552,6 +552,10 @@ app.post('/internal/messages/process', async function(req, res) {
     if (isLid && !hasRealPhone) {
       console.log('[MSG] LID nao resolvido: ' + digitsOnlyPhone + ' — telefone sera preservado do contato/conversa existente');
     }
+    var isRealBrazilPhone = function(value) {
+      var digits = (value || '').replace(/\D/g, '');
+      return digits.startsWith('55') && digits.length >= 12 && digits.length <= 13;
+    };
 
     // 1. Buscar sessao -> client_id
     var { data: session, error: sessionError } = await supabaseAdmin
@@ -803,8 +807,13 @@ app.post('/internal/messages/process', async function(req, res) {
 
       // Filtrar LID: telefone real tem prefixo 55 + 10-11 dígitos (12-13 total)
       var rawDigits = (phone || '').replace(/\D/g, '');
-      var displayPhone = (rawDigits.startsWith('55') && rawDigits.length >= 12 && rawDigits.length <= 13)
-        ? rawDigits : (storedPhone || '');
+      var contactPhone = contact && contact.phone ? String(contact.phone).replace(/\D/g, '') : '';
+      var conversationPhone = conversation && conversation.phone ? String(conversation.phone).replace(/\D/g, '') : '';
+      var displayPhone = isRealBrazilPhone(rawDigits)
+        ? rawDigits
+        : (isRealBrazilPhone(storedPhone)
+          ? storedPhone
+          : (isRealBrazilPhone(contactPhone) ? contactPhone : (isRealBrazilPhone(conversationPhone) ? conversationPhone : '')));
 
       var targetRoom = 'client_' + session.client_id;
       var payload = {
@@ -813,6 +822,10 @@ app.post('/internal/messages/process', async function(req, res) {
         contact_id: contact.id,
         contact_name: contact.name,
         phone: displayPhone,
+        evolution_contacts: {
+          name: contact.name,
+          phone: displayPhone || contact.phone || ''
+        },
         content: content,
         message_type: messageType || 'text',
         direction: 'in',
@@ -856,7 +869,7 @@ app.post('/internal/messages/process', async function(req, res) {
         last_message_at: now,
         created_at: conversation.created_at || now,
         updated_at: now,
-        evolution_contacts: { name: contact.name, phone: displayPhone },
+        evolution_contacts: { name: contact.name, phone: displayPhone || contact.phone || '' },
         created: conversationCreated,
         timestamp: now
       };

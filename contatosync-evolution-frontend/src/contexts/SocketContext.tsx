@@ -110,7 +110,7 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
       });
 
       // Redirecionar todos os eventos para os listeners registrados
-      ['new_message', 'conversation_updated', 'whatsapp_status', 'typing_status'].forEach(ev => {
+      ['new_message', 'conversation_updated', 'conversation_update', 'new_contact', 'whatsapp_status', 'typing_status'].forEach(ev => {
         socket.on(ev, (data: any) => {
           console.log('[Socket] evento:', ev, data?.conversation_id || '');
           listeners.current.get(ev)?.forEach(fn => fn(data));

@@ -89,6 +89,11 @@ export function useSocket({ onNewMessage, onConversationUpdated }: UseSocketCall
       onConversationUpdatedRef.current?.();
     });
 
+    socket.on('conversation_update', (data: any) => {
+      console.log('[Socket] conversation_update', data?.conversation_id || '');
+      onConversationUpdatedRef.current?.();
+    });
+
     return () => {
       console.log('[Socket] Cleanup — desconectando');
       socket.disconnect();

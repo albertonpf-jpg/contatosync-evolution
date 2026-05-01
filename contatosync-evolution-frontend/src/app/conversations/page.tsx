@@ -46,13 +46,17 @@ interface Message {
 interface SocketConversationPayload {
   id?: string;
   conversation_id?: string;
+  client_id?: string;
   contact_id?: string;
   contact_name?: string;
   phone?: string;
   unread_count?: number;
+  total_messages?: number;
   status?: string;
   last_message_at?: string;
+  created_at?: string;
   updated_at?: string;
+  evolution_contacts?: Contact;
 }
 
 function getErrorMessage(error: unknown): string {
@@ -113,6 +117,13 @@ function normalizePhone(raw?: string): string {
   const digits = base.replace(/\D/g, '');
   if (!digits) return base;
   return `+${digits}`;
+}
+
+function getBestPhone(...phones: Array<string | undefined>): string {
+  const realPhone = phones.find(phone => isRealPhone(phone));
+  if (realPhone) return normalizePhone(realPhone);
+
+  return normalizePhone(phones.find(Boolean));
 }
 
 export default function ConversationsPage() {
@@ -177,41 +188,42 @@ export default function ConversationsPage() {
     setConversations(prev => {
       const existing = prev.find(conv => conv.id === conversationId);
 
-      if (!existing) {
-        const newConv: Conversation = {
-          id: conversationId,
-          client_id: '',
-          contact_id: payload?.contact_id || '',
-          contact_name: payload?.contact_name || 'Sem nome',
-          phone: normalizePhone(payload?.phone),
-          status: payload?.status || 'active',
-          last_message_at: payload?.last_message_at || new Date().toISOString(),
-          unread_count: payload?.unread_count ?? 1,
-          created_at: payload?.last_message_at || new Date().toISOString(),
-          updated_at: payload?.updated_at || new Date().toISOString(),
-          evolution_contacts: payload?.contact_name
-            ? { name: payload.contact_name, phone: normalizePhone(payload?.phone) }
-            : undefined,
-        };
-        return [newConv, ...prev];
-      }
+      const nextPhone = getBestPhone(
+        payload?.phone,
+        payload?.evolution_contacts?.phone,
+        existing?.evolution_contacts?.phone,
+        existing?.phone,
+      );
 
-      const nextPhone = isRealPhone(payload?.phone)
-        ? normalizePhone(payload.phone)
-        : (isRealPhone(existing.phone) ? normalizePhone(existing.phone) : normalizePhone(payload?.phone || existing.phone));
+      const baseConversation: Conversation = existing || {
+        id: conversationId,
+        client_id: payload?.client_id || '',
+        contact_id: payload?.contact_id || '',
+        contact_name: payload?.contact_name || payload?.evolution_contacts?.name || 'Sem nome',
+        phone: nextPhone,
+        status: payload?.status || 'active',
+        last_message_at: payload?.last_message_at || payload?.created_at || new Date().toISOString(),
+        unread_count: payload?.unread_count ?? 0,
+        created_at: payload?.created_at || new Date().toISOString(),
+        updated_at: payload?.updated_at || payload?.last_message_at || new Date().toISOString(),
+        evolution_contacts: payload?.evolution_contacts,
+      };
 
       const updatedConversation: Conversation = {
-        ...existing,
-        contact_id: payload?.contact_id || existing.contact_id,
-        contact_name: payload?.contact_name || existing.contact_name,
+        ...baseConversation,
+        contact_id: payload?.contact_id || baseConversation.contact_id,
+        contact_name: payload?.contact_name || baseConversation.contact_name,
         phone: nextPhone,
-        unread_count: payload?.unread_count ?? existing.unread_count,
-        status: payload?.status || existing.status,
-        last_message_at: payload?.last_message_at || existing.last_message_at,
-        updated_at: payload?.updated_at || existing.updated_at,
-        evolution_contacts: payload?.contact_name
-          ? { name: payload.contact_name, phone: nextPhone || '' }
-          : existing.evolution_contacts,
+        evolution_contacts: {
+          ...baseConversation.evolution_contacts,
+          ...payload?.evolution_contacts,
+          phone: getBestPhone(payload?.evolution_contacts?.phone, nextPhone, baseConversation.evolution_contacts?.phone),
+          name: payload?.evolution_contacts?.name || baseConversation.evolution_contacts?.name || payload?.contact_name || baseConversation.contact_name || 'Sem nome',
+        },
+        unread_count: payload?.unread_count ?? baseConversation.unread_count,
+        status: payload?.status || baseConversation.status,
+        last_message_at: payload?.last_message_at || baseConversation.last_message_at,
+        updated_at: payload?.updated_at || baseConversation.updated_at,
       };
 
       setSelectedConv(prevSelected => (
@@ -268,10 +280,12 @@ export default function ConversationsPage() {
 
     on('new_message', handleNewMessage);
     on('conversation_updated', handleConvUpdated);
+    on('conversation_update', handleConvUpdated);
 
     return () => {
       off('new_message', handleNewMessage);
       off('conversation_updated', handleConvUpdated);
+      off('conversation_update', handleConvUpdated);
     };
   }, [off, on, selectedConv?.id]);
 

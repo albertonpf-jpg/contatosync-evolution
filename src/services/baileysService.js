@@ -192,6 +192,7 @@ class BaileysService {
           const qrBase64 = await QRCode.toDataURL(qr);
           this.qrCodes.set(sessionName, qrBase64);
           if (s) { s.qrCode = qrBase64; s.status = 'qr_ready'; }
+          this._updateDatabaseStatus(sessionName, 'qr_pending', 'qr_generated');
           console.log('QR Code gerado para: ' + sessionName);
         }
 
@@ -201,6 +202,7 @@ class BaileysService {
           console.log('Conexao fechada ' + sessionName + ' code=' + code);
           if (s) { s.status = 'disconnected'; s.qrCode = null; }
           this.qrCodes.delete(sessionName);
+          this._updateDatabaseStatus(sessionName, 'disconnected', 'connection_closed_' + (code || 'unknown'));
           if (shouldReconnect) {
             setTimeout(() => this._connectSession(sessionName, webhookUrl), 3000);
           } else {
@@ -216,6 +218,7 @@ class BaileysService {
           this._updateDatabaseStatus(sessionName, 'connected', 'whatsapp_connected');
         } else if (connection === 'connecting') {
           if (s) s.status = 'connecting';
+          this._updateDatabaseStatus(sessionName, 'connecting', 'connection_update');
         }
       });
 

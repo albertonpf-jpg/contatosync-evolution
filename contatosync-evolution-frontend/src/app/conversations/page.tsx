@@ -454,7 +454,7 @@ export default function ConversationsPage() {
     const formatted = parseBRPhone(candidate);
     if (formatted) return formatted;
     const digits = candidate.split('@')[0].replace(/\D/g, '');
-    if (!digits.startsWith('55') || digits.length < 12 || digits.length > 13) return '';
+    if (!digits.startsWith('55') || digits.length < 12 || digits.length > 13) return 'Número pendente';
     return '+' + digits;
   };
 

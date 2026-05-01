@@ -358,7 +358,7 @@ router.post('/send',
           fileName: storedMedia.originalName,
           caption: messageContent,
           messageType: outgoingType,
-          ptt: outgoingType === 'audio'
+          ptt: false
         });
       } else {
         sendResult = await baileysService.sendTextMessage(activeSessionName, jidToSend, messageContent);

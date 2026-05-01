@@ -313,14 +313,17 @@ class BaileysService {
     } else if (type === 'video' || type === 'gif') {
       payload = { video: buffer, mimetype, caption, gifPlayback: type === 'gif' || mimetype === 'image/gif' };
     } else if (type === 'audio') {
-      payload = { audio: buffer, mimetype, ptt: !!media.ptt };
+      const isVoiceNoteCompatible = mimetype === 'audio/ogg' || mimetype === 'audio/opus';
+      payload = { audio: buffer, mimetype, ptt: !!media.ptt && isVoiceNoteCompatible };
     } else if (type === 'sticker') {
       payload = { sticker: buffer, mimetype };
     } else {
       payload = { document: buffer, mimetype, fileName, caption };
     }
 
+    console.log('[MEDIA SEND] type=' + type + ' mime=' + mimetype + ' size=' + buffer.length + ' to=' + jid);
     const result = await session.socket.sendMessage(jid, payload);
+    console.log('[MEDIA SEND] sent id=' + (result?.key?.id || 'unknown') + ' type=' + type + ' mime=' + mimetype);
     return { success: true, messageId: result.key.id, to: jid, messageType: type, timestamp: new Date() };
   }
 

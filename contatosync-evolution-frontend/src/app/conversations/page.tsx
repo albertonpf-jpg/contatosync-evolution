@@ -476,8 +476,9 @@ export default function ConversationsPage() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recordingStreamRef.current = stream;
       recordingChunksRef.current = [];
-      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
-      const recorder = new MediaRecorder(stream, { mimeType });
+      const preferredTypes = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'];
+      const mimeType = preferredTypes.find(type => MediaRecorder.isTypeSupported(type)) || '';
+      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       mediaRecorderRef.current = recorder;
       recorder.ondataavailable = event => {
         if (event.data.size > 0) recordingChunksRef.current.push(event.data);
@@ -485,7 +486,8 @@ export default function ConversationsPage() {
       recorder.onstop = () => {
         const blob = new Blob(recordingChunksRef.current, { type: mimeType });
         if (blob.size > 0) {
-          const file = new File([blob], `audio-${Date.now()}.webm`, { type: mimeType });
+          const extension = mimeType.includes('mp4') ? 'm4a' : 'webm';
+          const file = new File([blob], `audio-${Date.now()}.${extension}`, { type: mimeType });
           setSelectedFile(file);
         }
         stream.getTracks().forEach(track => track.stop());

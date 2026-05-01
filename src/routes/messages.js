@@ -365,6 +365,7 @@ router.post('/send',
           mimetype: req.file.mimetype,
           originalName: req.file.originalname
         });
+        console.log('[MESSAGE SEND] stored media path=' + storedMedia.path + ' public=' + storedMedia.publicPath + ' size=' + storedMedia.size + ' mime=' + storedMedia.mimetype + ' session=' + activeSessionName);
         sendResult = await baileysService.sendMediaMessage(activeSessionName, jidToSend, {
           path: storedMedia.path,
           mimetype: storedMedia.mimetype,

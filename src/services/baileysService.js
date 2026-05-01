@@ -26,6 +26,14 @@ function makeSilentLogger() {
   };
 }
 
+function fileSizeOrZero(filePath) {
+  try {
+    return fs.existsSync(filePath) ? fs.statSync(filePath).size : 0;
+  } catch {
+    return 0;
+  }
+}
+
 class BaileysService {
   constructor() {
     this.sessions = new Map();
@@ -308,10 +316,12 @@ class BaileysService {
     const caption = media.caption || '';
     const fileName = sanitizeFileName(media.fileName || media.originalName || 'arquivo');
     const type = this._normalizeOutgoingMediaType(media.messageType, mimetype, fileName);
+    console.log('[MEDIA SEND] source path=' + mediaPath + ' exists=' + fs.existsSync(mediaPath) + ' size=' + fileSizeOrZero(mediaPath));
     if (type === 'audio' && mimetype !== 'audio/ogg' && mimetype !== 'audio/opus') {
       const converted = await this._convertAudioForWhatsApp(mediaPath);
       mediaPath = converted.path;
       mimetype = converted.mimetype;
+      console.log('[MEDIA SEND] converted path=' + mediaPath + ' exists=' + fs.existsSync(mediaPath) + ' size=' + fileSizeOrZero(mediaPath));
     }
     const buffer = fs.readFileSync(mediaPath);
     let payload;
@@ -321,8 +331,7 @@ class BaileysService {
     } else if (type === 'video' || type === 'gif') {
       payload = { video: buffer, mimetype, caption, gifPlayback: type === 'gif' || mimetype === 'image/gif' };
     } else if (type === 'audio') {
-      const isVoiceNoteCompatible = mimetype === 'audio/ogg' || mimetype === 'audio/opus';
-      payload = { audio: buffer, mimetype, ptt: isVoiceNoteCompatible };
+      payload = { audio: { url: mediaPath }, mimetype, ptt: !!media.ptt };
     } else if (type === 'sticker') {
       payload = { sticker: buffer, mimetype };
     } else {

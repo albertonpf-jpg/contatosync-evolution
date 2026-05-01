@@ -543,9 +543,15 @@ app.post('/internal/messages/process', async function(req, res) {
     var { supabaseAdmin } = require('./src/config/supabase');
     var { v4: uuidv4 } = require('uuid');
     var now = new Date().toISOString();
+    var isLid = req.body.isLid || false;
     var digitsOnlyPhone = (phone || '').replace(/\D/g, '');
     var hasRealPhone = digitsOnlyPhone.startsWith('55') && digitsOnlyPhone.length >= 12 && digitsOnlyPhone.length <= 13;
     var storedPhone = hasRealPhone ? digitsOnlyPhone : '';
+    
+    // Se é LID não resolvido, NÃO gravar como telefone — preservar o que já existe
+    if (isLid && !hasRealPhone) {
+      console.log('[MSG] LID nao resolvido: ' + digitsOnlyPhone + ' — telefone sera preservado do contato/conversa existente');
+    }
 
     // 1. Buscar sessao -> client_id
     var { data: session, error: sessionError } = await supabaseAdmin
@@ -621,13 +627,16 @@ app.post('/internal/messages/process', async function(req, res) {
 
     if (!contact) {
       var newContactId = uuidv4();
+      // Se é LID não resolvido, salvar digitsOnlyPhone mas nome via pushName
+      var contactPhoneToSave = storedPhone || digitsOnlyPhone;
+      var contactNameToSave = pushName || (storedPhone ? ('Contato ' + storedPhone) : 'Contato WhatsApp');
       var { data: newContact, error: contactError } = await supabaseAdmin
         .from('evolution_contacts')
         .insert([{
           id: newContactId,
           client_id: session.client_id,
-          phone: storedPhone || digitsOnlyPhone,
-          name: pushName || (storedPhone ? ('Contato ' + storedPhone) : 'Contato WhatsApp'),
+          phone: contactPhoneToSave,
+          name: contactNameToSave,
           source: 'whatsapp',
           status: 'active',
           last_message_at: now,
@@ -642,11 +651,12 @@ app.post('/internal/messages/process', async function(req, res) {
         return res.status(500).json({ error: 'Erro criando contato', details: contactError });
       }
       contact = newContact;
-      console.log('Novo contato criado: ' + contact.name + ' (' + phone + ')');
+      console.log('Novo contato criado: ' + contact.name + ' (phone: ' + contactPhoneToSave + ', isLid: ' + isLid + ')');
     } else {
       // Atualizar nome se pushName veio e contato tinha nome generico
-      if (pushName && contact.name && contact.name.startsWith('Contato ')) {
+      if (pushName && contact.name && (contact.name.startsWith('Contato ') || contact.name === 'Contato WhatsApp')) {
         var nextContactUpdate = { name: pushName, updated_at: now };
+        // Só atualizar telefone se temos telefone real
         if (storedPhone && contact.phone !== storedPhone) nextContactUpdate.phone = storedPhone;
         await supabaseAdmin
           .from('evolution_contacts')
@@ -655,11 +665,15 @@ app.post('/internal/messages/process', async function(req, res) {
         contact.name = pushName;
         if (storedPhone) contact.phone = storedPhone;
       } else if (storedPhone && contact.phone !== storedPhone) {
-        await supabaseAdmin
-          .from('evolution_contacts')
-          .update({ phone: storedPhone, updated_at: now })
-          .eq('id', contact.id);
-        contact.phone = storedPhone;
+        // Atualizar telefone apenas se o novo é real (não sobrescrever real com LID)
+        var contactCurrentIsReal = contact.phone && contact.phone.startsWith('55') && contact.phone.length >= 12 && contact.phone.length <= 13;
+        if (!contactCurrentIsReal || hasRealPhone) {
+          await supabaseAdmin
+            .from('evolution_contacts')
+            .update({ phone: storedPhone, updated_at: now })
+            .eq('id', contact.id);
+          contact.phone = storedPhone;
+        }
       }
       // Atualizar last_message_at do contato
       await supabaseAdmin
@@ -694,6 +708,8 @@ app.post('/internal/messages/process', async function(req, res) {
     var conversationCreated = false;
     if (!conversation) {
       var newConvId = uuidv4();
+      // Usar storedPhone (real) ou digitsOnlyPhone (pode ser LID — será corrigido quando resolver)
+      var convPhoneToSave = storedPhone || digitsOnlyPhone;
       var { data: newConv, error: convError } = await supabaseAdmin
         .from('evolution_conversations')
         .insert([{
@@ -701,7 +717,7 @@ app.post('/internal/messages/process', async function(req, res) {
           client_id: session.client_id,
           contact_id: contact.id,
           jid: jid,
-          phone: storedPhone || digitsOnlyPhone,
+          phone: convPhoneToSave,
           contact_name: contact.name,
           status: 'active',
           priority: 'normal',
@@ -721,12 +737,14 @@ app.post('/internal/messages/process', async function(req, res) {
       }
       conversation = newConv;
       conversationCreated = true;
-      console.log('Nova conversa criada: ' + contact.name);
+      console.log('Nova conversa criada: ' + contact.name + ' (phone: ' + convPhoneToSave + ', isLid: ' + isLid + ')');
     } else {
       var newUnread = (conversation.unread_count || 0) + 1;
       var newTotal = (conversation.total_messages || 0) + 1;
 
-      var nextConversationPhone = storedPhone || conversation.phone || '';
+      // Preservar telefone real existente — só atualizar se o novo é real
+      var convCurrentIsReal = conversation.phone && conversation.phone.startsWith('55') && conversation.phone.length >= 12 && conversation.phone.length <= 13;
+      var nextConversationPhone = storedPhone || (convCurrentIsReal ? conversation.phone : '') || conversation.phone || '';
       var { error: updateError } = await supabaseAdmin
         .from('evolution_conversations')
         .update({

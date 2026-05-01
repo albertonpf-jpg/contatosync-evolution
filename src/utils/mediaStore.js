@@ -24,18 +24,24 @@ function sanitizeFileName(value) {
 }
 
 function extensionFromMime(mimetype) {
+  const cleanMime = String(mimetype || '').split(';')[0].trim().toLowerCase();
   const map = {
     'image/jpeg': '.jpg',
     'image/png': '.png',
     'image/gif': '.gif',
     'image/webp': '.webp',
     'video/mp4': '.mp4',
+    'video/webm': '.webm',
     'audio/ogg': '.ogg',
+    'audio/opus': '.ogg',
+    'audio/webm': '.webm',
+    'audio/wav': '.wav',
     'audio/mpeg': '.mp3',
     'audio/mp4': '.m4a',
+    'audio/aac': '.aac',
     'application/pdf': '.pdf'
   };
-  return map[mimetype] || '';
+  return map[cleanMime] || '';
 }
 
 function createStoredFile(buffer, options = {}) {
@@ -58,10 +64,10 @@ function createStoredFile(buffer, options = {}) {
     id,
     fileName,
     originalName: originalName || fileName,
-    mimetype: options.mimetype || 'application/octet-stream',
+    mimetype: String(options.mimetype || 'application/octet-stream').split(';')[0].trim(),
     size: buffer.length,
     path: filePath,
-    publicPath: `${PUBLIC_BASE_PATH}/${clientId}/${fileName}`
+    publicPath: `${PUBLIC_BASE_PATH}/${encodeURIComponent(clientId)}/${encodeURIComponent(fileName)}`
   };
 }
 

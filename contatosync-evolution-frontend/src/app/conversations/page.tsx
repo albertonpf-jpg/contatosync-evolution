@@ -162,6 +162,13 @@ function mediaLabel(type: string): string {
   return labels[type] || 'Arquivo';
 }
 
+function isMediaPlaceholder(content: string, type: string): boolean {
+  const normalized = content.trim().toLowerCase();
+  if (!normalized) return true;
+  if (normalized === `[${mediaLabel(type).toLowerCase()}]`) return true;
+  return /^(audio|image|video|gif|document|sticker)-[a-z0-9]+/i.test(content.trim());
+}
+
 export default function ConversationsPage() {
   const { token, isAuthenticated, isLoading: authLoading } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -464,7 +471,7 @@ export default function ConversationsPage() {
             <span className="truncate">{msg.content || mediaLabel(type)}</span>
           </a>
         )}
-        {msg.content && !msg.content.startsWith('[') && type !== 'document' && (
+        {msg.content && !isMediaPlaceholder(msg.content, type) && type !== 'document' && (
           <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
         )}
       </div>

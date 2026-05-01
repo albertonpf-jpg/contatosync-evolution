@@ -55,8 +55,17 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/media', express.static(mediaRoot(), {
   maxAge: '7d',
-  setHeaders: function(res) {
+  setHeaders: function(res, filePath) {
     res.setHeader('Access-Control-Allow-Origin', '*');
+    var ext = require('path').extname(filePath);
+    if (!ext || ext === '.bin') {
+      var baseName = require('path').basename(filePath).toLowerCase();
+      if (baseName.startsWith('audio-')) res.setHeader('Content-Type', 'audio/ogg');
+      else if (baseName.startsWith('image-')) res.setHeader('Content-Type', 'image/jpeg');
+      else if (baseName.startsWith('video-')) res.setHeader('Content-Type', 'video/mp4');
+      else if (baseName.startsWith('gif-')) res.setHeader('Content-Type', 'image/gif');
+      else if (baseName.startsWith('sticker-')) res.setHeader('Content-Type', 'image/webp');
+    }
   }
 }));
 

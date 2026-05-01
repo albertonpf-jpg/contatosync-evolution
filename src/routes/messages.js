@@ -21,7 +21,7 @@ function normalizeOutgoingMessageType(messageType, file) {
 
   if (requested === 'gif') return 'gif';
   if (requested === 'sticker' || fileName.endsWith('.webp')) return 'sticker';
-  if (requested === 'image' || mimetype.startsWith('image/')) return mimetype === 'image/gif' ? 'gif' : 'image';
+  if (requested === 'image' || mimetype.startsWith('image/')) return mimetype.split(';')[0].trim() === 'image/gif' ? 'gif' : 'image';
   if (requested === 'video' || mimetype.startsWith('video/')) return 'video';
   if (requested === 'audio' || mimetype.startsWith('audio/')) return 'audio';
   if (file) return 'document';

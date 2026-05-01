@@ -299,7 +299,7 @@ class BaileysService {
 
     const jid = jidOrPhone.includes('@') ? jidOrPhone : jidOrPhone.replace(/\D/g, '') + '@s.whatsapp.net';
     const buffer = fs.readFileSync(media.path);
-    const mimetype = media.mimetype || 'application/octet-stream';
+    const mimetype = String(media.mimetype || 'application/octet-stream').split(';')[0].trim();
     const caption = media.caption || '';
     const fileName = sanitizeFileName(media.fileName || media.originalName || 'arquivo');
     const type = this._normalizeOutgoingMediaType(media.messageType, mimetype, fileName);
@@ -589,7 +589,7 @@ class BaileysService {
         || message.message?.imageMessage?.caption
         || message.message?.videoMessage?.caption
         || message.message?.documentMessage?.caption
-        || mediaInfo?.originalName
+        || (messageType === 'document' ? mediaInfo?.originalName : '')
         || this._fallbackContentForType(messageType);
       console.log('Msg de ' + phone + ': ' + content.substring(0, 50));
 
@@ -655,7 +655,7 @@ class BaileysService {
       );
       if (!buffer || !buffer.length) return null;
 
-      const mimetype = mediaNode.mimetype || (messageType === 'sticker' ? 'image/webp' : 'application/octet-stream');
+      const mimetype = String(mediaNode.mimetype || (messageType === 'sticker' ? 'image/webp' : 'application/octet-stream')).split(';')[0].trim();
       const originalName = mediaNode.fileName || mediaNode.title || `${messageType}-${message.key?.id || Date.now()}`;
       return createStoredFile(buffer, {
         clientId: sessionName,

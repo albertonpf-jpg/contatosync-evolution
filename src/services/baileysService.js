@@ -9,7 +9,9 @@ const {
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
-  downloadMediaMessage
+  downloadMediaMessage,
+  extractMessageContent,
+  getContentType
 } = require('@whiskeysockets/baileys');
 
 function makeSilentLogger() {
@@ -584,11 +586,12 @@ class BaileysService {
 
       const messageType = this._getMessageType(message);
       const mediaInfo = await this._downloadIncomingMedia(sessionName, message, messageType, sock);
-      const content = message.message?.conversation
-        || message.message?.extendedTextMessage?.text
-        || message.message?.imageMessage?.caption
-        || message.message?.videoMessage?.caption
-        || message.message?.documentMessage?.caption
+      const messageContent = extractMessageContent(message.message) || message.message || {};
+      const content = messageContent.conversation
+        || messageContent.extendedTextMessage?.text
+        || messageContent.imageMessage?.caption
+        || messageContent.videoMessage?.caption
+        || messageContent.documentMessage?.caption
         || (messageType === 'document' ? mediaInfo?.originalName : '')
         || this._fallbackContentForType(messageType);
       console.log('Msg de ' + phone + ': ' + content.substring(0, 50));
@@ -632,7 +635,7 @@ class BaileysService {
   }
 
   _getMediaNode(message, messageType) {
-    const msg = message.message || {};
+    const msg = extractMessageContent(message.message) || message.message || {};
     if (messageType === 'image') return msg.imageMessage;
     if (messageType === 'audio') return msg.audioMessage;
     if (messageType === 'video' || messageType === 'gif') return msg.videoMessage;
@@ -651,7 +654,7 @@ class BaileysService {
         message,
         'buffer',
         {},
-        { logger: makeSilentLogger(), reuploadRequest: sock?.updateMediaMessage }
+        { logger: makeSilentLogger(), reuploadRequest: sock?.updateMediaMessage?.bind(sock) }
       );
       if (!buffer || !buffer.length) return null;
 
@@ -665,16 +668,35 @@ class BaileysService {
       });
     } catch (err) {
       console.error('Erro baixando midia recebida:', err.message);
+      if (mediaNode.jpegThumbnail) {
+        try {
+          const thumbBuffer = Buffer.isBuffer(mediaNode.jpegThumbnail)
+            ? mediaNode.jpegThumbnail
+            : Buffer.from(mediaNode.jpegThumbnail);
+          if (thumbBuffer.length > 0) {
+            return createStoredFile(thumbBuffer, {
+              clientId: sessionName,
+              messageType,
+              mimetype: 'image/jpeg',
+              originalName: `${messageType}-thumbnail-${message.key?.id || Date.now()}.jpg`
+            });
+          }
+        } catch (thumbErr) {
+          console.error('Erro salvando thumbnail da midia:', thumbErr.message);
+        }
+      }
       return null;
     }
   }
 
   _getMessageType(message) {
-    if (message.message?.imageMessage) return 'image';
-    if (message.message?.audioMessage) return 'audio';
-    if (message.message?.videoMessage) return message.message.videoMessage.gifPlayback ? 'gif' : 'video';
-    if (message.message?.documentMessage) return 'document';
-    if (message.message?.stickerMessage) return 'sticker';
+    const content = extractMessageContent(message.message) || message.message || {};
+    const contentType = getContentType(content);
+    if (contentType === 'imageMessage') return 'image';
+    if (contentType === 'audioMessage') return 'audio';
+    if (contentType === 'videoMessage') return content.videoMessage?.gifPlayback ? 'gif' : 'video';
+    if (contentType === 'documentMessage') return 'document';
+    if (contentType === 'stickerMessage') return 'sticker';
     return 'text';
   }
 

@@ -6,10 +6,6 @@ import { apiService } from '@/lib/api';
 import DashboardLayout from '@/components/DashboardLayout';
 import ContactForm from '@/components/ContactForm';
 import { useSocketContext } from '@/contexts/SocketContext';
-import { getSupabaseAnonKey, getSupabaseUrl } from '@/lib/runtime-config';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(getSupabaseUrl(), getSupabaseAnonKey());
 
 interface Contact {
   id: string;
@@ -40,22 +36,6 @@ interface ContactRealtimePayload {
     name?: string;
     phone?: string;
   };
-}
-
-function getToken(): string {
-  return (typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : '') ?? '';
-}
-
-function getClientIdFromToken(): string {
-  try {
-    const token = getToken();
-    const payloadB64 = token.split('.')[1];
-    if (!payloadB64) return '';
-    const payload = JSON.parse(atob(payloadB64));
-    return payload.sub || '';
-  } catch {
-    return '';
-  }
 }
 
 function isRealPhone(raw?: string): boolean {
@@ -164,56 +144,11 @@ export default function ContactsPage() {
   }, [off, on, scheduleRefresh, upsertContactFromRealtime]);
 
   useEffect(() => {
-    const clientId = getClientIdFromToken();
-    if (!clientId) return;
-
-    const channel = supabase
-      .channel('contacts-realtime-' + clientId)
-      .on(
-        'postgres_changes' as any,
-        {
-          event: '*',
-          schema: 'public',
-          table: 'evolution_contacts',
-          filter: `client_id=eq.${clientId}`,
-        },
-        (payload: any) => {
-          if (payload.eventType === 'DELETE') {
-            const deletedId = payload.old?.id;
-            if (deletedId) setContacts(prev => prev.filter(contact => contact.id !== deletedId));
-            scheduleRefresh();
-            return;
-          }
-          upsertContactFromRealtime(payload.new);
-          scheduleRefresh();
-        }
-      )
-      .on(
-        'postgres_changes' as any,
-        {
-          event: '*',
-          schema: 'public',
-          table: 'evolution_conversations',
-          filter: `client_id=eq.${clientId}`,
-        },
-        (payload: any) => {
-          const record = payload.new || payload.old;
-          upsertContactFromRealtime({
-            contact_id: record?.contact_id,
-            contact_name: record?.contact_name,
-            phone: record?.phone,
-            last_message_at: record?.last_message_at,
-            updated_at: record?.updated_at,
-          });
-          scheduleRefresh();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [scheduleRefresh, upsertContactFromRealtime]);
+    const intervalId = setInterval(() => {
+      void loadContacts();
+    }, 15000);
+    return () => clearInterval(intervalId);
+  }, [loadContacts]);
 
   useEffect(() => {
     const timeoutId = setTimeout(() => {

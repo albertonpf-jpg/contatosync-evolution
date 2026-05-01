@@ -23,7 +23,9 @@ class BaileysService {
   constructor() {
     this.sessions = new Map();
     this.qrCodes = new Map();
-    this.authDir = path.join(__dirname, '../../baileys_sessions');
+    this.authDir = process.env.BAILEYS_AUTH_DIR
+      || process.env.RAILWAY_VOLUME_MOUNT_PATH
+      || path.join(__dirname, '../../baileys_sessions');
     if (!fs.existsSync(this.authDir)) {
       fs.mkdirSync(this.authDir, { recursive: true });
     }
@@ -72,6 +74,41 @@ class BaileysService {
     return digits.startsWith('55') && digits.length >= 12 && digits.length <= 13;
   }
 
+  _jidToDigits(jid) {
+    return (jid || '').split('@')[0].replace(/\D/g, '');
+  }
+
+  _normalizeLidJid(value) {
+    if (!value) return '';
+    const digits = this._jidToDigits(value);
+    return digits ? digits + '@lid' : '';
+  }
+
+  _extractPhoneJid(value) {
+    if (!value) return '';
+    if (typeof value === 'string') {
+      return value.endsWith('@s.whatsapp.net') ? value : '';
+    }
+    return '';
+  }
+
+  async _rememberLidMapping(sessionName, lidValue, phoneValue, source) {
+    const lidJid = this._normalizeLidJid(lidValue);
+    const phoneDigits = this._jidToDigits(phoneValue);
+    if (!lidJid || !this._isRealPhone(phoneDigits)) return '';
+
+    const session = this.sessions.get(sessionName);
+    if (session?.lidToPhone) {
+      const lidNum = this._jidToDigits(lidJid);
+      session.lidToPhone.set(lidJid, phoneDigits);
+      session.lidToPhone.set(lidNum, phoneDigits);
+    }
+
+    console.log('[LID MAP] ' + lidJid + ' -> ' + phoneDigits + ' (' + source + ')');
+    await this._persistResolvedLidPhone(sessionName, lidJid, this._jidToDigits(lidJid), phoneDigits);
+    return phoneDigits;
+  }
+
   async _connectSession(sessionName, webhookUrl = null) {
     try {
       const sessionDir = path.join(this.authDir, sessionName);
@@ -114,16 +151,13 @@ class BaileysService {
 
         for (const contact of contacts) {
           if (contact.id) s.contactsStore.set(contact.id, contact);
-          if (contact.id && contact.id.endsWith('@s.whatsapp.net') && contact.lid) {
-            const ph = contact.id.replace('@s.whatsapp.net', '').replace(/\D/g, '');
-            if (ph && ph.length <= 15) {
-              const lidJid = contact.lid.endsWith('@lid') ? contact.lid : contact.lid + '@lid';
-              const lidNum = contact.lid.replace('@lid', '').replace(/\D/g, '');
-              s.lidToPhone.set(lidJid, ph);
-              s.lidToPhone.set(lidNum, ph);
-              console.log('[LID MAP] ' + lidJid + ' -> ' + ph + ' (upsert)');
-              await this._persistResolvedLidPhone(sessionName, lidJid, lidNum, ph);
-            }
+          if (contact.phoneNumber) s.contactsStore.set(contact.phoneNumber, contact);
+          if (contact.lid) s.contactsStore.set(this._normalizeLidJid(contact.lid), contact);
+
+          const phoneJid = this._extractPhoneJid(contact.phoneNumber) || this._extractPhoneJid(contact.id);
+          const lidJid = contact.lid || (contact.id && contact.id.endsWith('@lid') ? contact.id : '');
+          if (phoneJid && lidJid) {
+            await this._rememberLidMapping(sessionName, lidJid, phoneJid, 'contacts.upsert');
           }
         }
         console.log('[LID MAP] Total: ' + s.lidToPhone.size + ' | Store: ' + s.contactsStore.size);
@@ -139,15 +173,13 @@ class BaileysService {
             const existing = s.contactsStore.get(contact.id) || {};
             s.contactsStore.set(contact.id, { ...existing, ...contact });
           }
-          if (contact.id && contact.id.endsWith('@s.whatsapp.net') && contact.lid) {
-            const ph = contact.id.replace('@s.whatsapp.net', '').replace(/\D/g, '');
-            if (ph) {
-              const lidJid = contact.lid.endsWith('@lid') ? contact.lid : contact.lid + '@lid';
-              const lidNum = contact.lid.replace('@lid', '').replace(/\D/g, '');
-              s.lidToPhone.set(lidJid, ph);
-              s.lidToPhone.set(lidNum, ph);
-              await this._persistResolvedLidPhone(sessionName, lidJid, lidNum, ph);
-            }
+          if (contact.phoneNumber) s.contactsStore.set(contact.phoneNumber, { ...(s.contactsStore.get(contact.phoneNumber) || {}), ...contact });
+          if (contact.lid) s.contactsStore.set(this._normalizeLidJid(contact.lid), { ...(s.contactsStore.get(this._normalizeLidJid(contact.lid)) || {}), ...contact });
+
+          const phoneJid = this._extractPhoneJid(contact.phoneNumber) || this._extractPhoneJid(contact.id);
+          const lidJid = contact.lid || (contact.id && contact.id.endsWith('@lid') ? contact.id : '');
+          if (phoneJid && lidJid) {
+            await this._rememberLidMapping(sessionName, lidJid, phoneJid, 'contacts.update');
           }
         }
       });
@@ -311,17 +343,19 @@ class BaileysService {
             .eq('client_id', sessionRow.client_id)
             .eq('jid', lidJid);
         }
-        await supabaseAdmin
-          .from('evolution_messages')
-          .update({ contact_id: realPhoneContact.id })
+        const { data: lidContacts } = await supabaseAdmin
+          .from('evolution_contacts')
+          .select('id')
           .eq('client_id', sessionRow.client_id)
-          .in('contact_id',
-            (await supabaseAdmin
-              .from('evolution_contacts')
-              .select('id')
-              .eq('client_id', sessionRow.client_id)
-              .eq('phone', lidNum)).data?.map(contact => contact.id) || []
-          );
+          .eq('phone', lidNum);
+        const lidContactIds = (lidContacts || []).map(contact => contact.id);
+        if (lidContactIds.length > 0) {
+          await supabaseAdmin
+            .from('evolution_messages')
+            .update({ contact_id: realPhoneContact.id })
+            .eq('client_id', sessionRow.client_id)
+            .in('contact_id', lidContactIds);
+        }
         await supabaseAdmin
           .from('evolution_contacts')
           .delete()
@@ -389,15 +423,20 @@ class BaileysService {
         isLid = true;
         const lidNum = remoteJid.replace('@lid', '').replace(/\D/g, '');
 
-        // T1: senderPn
-        phone = message.key?.senderPn || '';
-        if (phone) {
-          phone = phone.replace(/\D/g, '');
-          if (this._isRealPhone(phone)) {
-            console.log('[LID T1] senderPn: ' + remoteJid + ' -> ' + phone);
-            if (sessionObj?.lidToPhone) { sessionObj.lidToPhone.set(remoteJid, phone); sessionObj.lidToPhone.set(lidNum, phone); }
-            await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
-          } else { phone = ''; }
+        // T1: alternate PN fields from newer Baileys versions.
+        const altPhoneJids = [
+          message.key?.remoteJidAlt,
+          message.key?.participantAlt,
+          message.key?.senderPn,
+          message.key?.participantPn
+        ].filter(Boolean);
+
+        for (const candidate of altPhoneJids) {
+          const candidateDigits = this._jidToDigits(candidate);
+          if (this._isRealPhone(candidateDigits)) {
+            phone = await this._rememberLidMapping(sessionName, remoteJid, candidate, 'message.key.alt');
+            break;
+          }
         }
 
         // T2: mapa memória
@@ -411,17 +450,14 @@ class BaileysService {
         // T3: contactsStore (varredura de todos os contatos em memória)
         if (!phone && sessionObj?.contactsStore) {
           for (const [cid, contact] of sessionObj.contactsStore.entries()) {
-            const cLid = contact.lid || '';
+            const cLid = contact.lid || (contact.id && contact.id.endsWith('@lid') ? contact.id : '');
             const cLidJid = cLid.endsWith('@lid') ? cLid : cLid + '@lid';
             if (cLidJid === remoteJid || cLid.replace('@lid', '').replace(/\D/g, '') === lidNum) {
-              if (cid.endsWith('@s.whatsapp.net')) {
-                const cp = cid.replace('@s.whatsapp.net', '').replace(/\D/g, '');
+              const phoneJid = this._extractPhoneJid(contact.phoneNumber) || this._extractPhoneJid(cid);
+              if (phoneJid) {
+                const cp = this._jidToDigits(phoneJid);
                 if (this._isRealPhone(cp)) {
-                  phone = cp;
-                  console.log('[LID T3] contactsStore: ' + remoteJid + ' -> ' + phone);
-                  sessionObj.lidToPhone.set(remoteJid, phone);
-                  sessionObj.lidToPhone.set(lidNum, phone);
-                  await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+                  phone = await this._rememberLidMapping(sessionName, remoteJid, phoneJid, 'contactsStore');
                   break;
                 }
               }
@@ -431,11 +467,10 @@ class BaileysService {
 
         // T4: participant
         if (!phone) {
-          phone = (message.key?.participant || '').replace('@s.whatsapp.net', '').replace(/\D/g, '');
-          if (phone && this._isRealPhone(phone)) {
-            console.log('[LID T4] participant: ' + remoteJid + ' -> ' + phone);
-            if (sessionObj?.lidToPhone) { sessionObj.lidToPhone.set(remoteJid, phone); sessionObj.lidToPhone.set(lidNum, phone); }
-            await this._persistResolvedLidPhone(sessionName, remoteJid, lidNum, phone);
+          const participant = message.key?.participant || '';
+          phone = this._jidToDigits(participant);
+          if (participant.endsWith('@s.whatsapp.net') && this._isRealPhone(phone)) {
+            phone = await this._rememberLidMapping(sessionName, remoteJid, participant, 'participant');
           } else { phone = ''; }
         }
 
@@ -502,6 +537,9 @@ class BaileysService {
         }
       } else {
         phone = remoteJid.replace('@s.whatsapp.net', '');
+        if (message.key?.remoteJidAlt && String(message.key.remoteJidAlt).endsWith('@lid') && this._isRealPhone(phone)) {
+          await this._rememberLidMapping(sessionName, message.key.remoteJidAlt, remoteJid, 'non-lid-alt');
+        }
       }
 
       phone = phone.replace(/\D/g, '');

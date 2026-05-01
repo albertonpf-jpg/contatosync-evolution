@@ -18,9 +18,13 @@ export interface WhatsAppSession {
 }
 
 export interface QRCodeResponse {
-  base64: string;
-  code: string;
-  instance: {
+  base64?: string | null;
+  qr?: string | null;
+  qrcode?: string | null;
+  code?: string;
+  status?: string;
+  sessionName?: string;
+  instance?: {
     instanceName: string;
     status: string;
     state: string;

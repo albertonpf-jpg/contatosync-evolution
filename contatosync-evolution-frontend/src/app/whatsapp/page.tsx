@@ -39,7 +39,7 @@ export default function WhatsAppPage() {
     try {
       const data = await apiService.getWhatsAppSessions();
       const sessionsWithUpdatedStatus = await Promise.all(
-        (data || []).map(async (session) => {
+        (data || []).map(async (session: WhatsAppSession) => {
           try {
             // Verificar status individual de cada sessão
             const statusData = await apiService.getSessionStatus(session.session_name);

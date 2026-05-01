@@ -1,13 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Check, CheckCheck, FileText, Image as ImageIcon, MessageSquare, Paperclip, Search, Send, Video } from 'lucide-react';
+import { ArrowLeft, Camera, Check, CheckCheck, FileText, Image as ImageIcon, MessageSquare, Mic, Paperclip, Search, Send, Smile, Square, Video, X } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSocketContext } from '@/contexts/SocketContext';
 import { getApiUrl } from '@/lib/runtime-config';
 
 const API = getApiUrl();
+const QUICK_EMOJIS = ['😀', '😂', '😍', '🙏', '👍', '👏', '🔥', '❤️', '✅', '🎉', '😎', '🤝', '📌', '💬', '🚀', '⭐'];
 
 interface Contact {
   name: string;
@@ -180,10 +181,19 @@ export default function ConversationsPage() {
   const [draft, setDraft] = useState('');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [failedMediaIds, setFailedMediaIds] = useState<Set<string>>(new Set());
+  const [showEmojiPanel, setShowEmojiPanel] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraError, setCameraError] = useState('');
   const [sending, setSending] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const videoPreviewRef = useRef<HTMLVideoElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
   const prevMsgCount = useRef(0);
   const currentConvId = useRef<string | null>(null);
   const autoOpenedInitialConv = useRef(false);
@@ -198,6 +208,13 @@ export default function ConversationsPage() {
     }
     prevMsgCount.current = messages.length;
   }, [messages]);
+
+  useEffect(() => {
+    return () => {
+      recordingStreamRef.current?.getTracks().forEach(track => track.stop());
+      cameraStreamRef.current?.getTracks().forEach(track => track.stop());
+    };
+  }, []);
 
   const getToken = useCallback((): string => {
     return token || (typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : '') || '';
@@ -448,6 +465,88 @@ export default function ConversationsPage() {
     }
   };
 
+  const addEmoji = (emoji: string) => {
+    setDraft(current => `${current}${emoji}`);
+    setShowEmojiPanel(false);
+  };
+
+  const startRecording = async () => {
+    if (recording || sending) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+      recordingChunksRef.current = [];
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+      const recorder = new MediaRecorder(stream, { mimeType });
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) recordingChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(recordingChunksRef.current, { type: mimeType });
+        if (blob.size > 0) {
+          const file = new File([blob], `audio-${Date.now()}.webm`, { type: mimeType });
+          setSelectedFile(file);
+        }
+        stream.getTracks().forEach(track => track.stop());
+        recordingStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        recordingChunksRef.current = [];
+        setRecording(false);
+      };
+      recorder.start();
+      setRecording(true);
+    } catch (error) {
+      console.error('[startRecording]', error);
+      alert('Não foi possível acessar o microfone.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.stop();
+    }
+  };
+
+  const openCamera = async () => {
+    if (sending) return;
+    setCameraError('');
+    setCameraOpen(true);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+      cameraStreamRef.current = stream;
+      if (videoPreviewRef.current) {
+        videoPreviewRef.current.srcObject = stream;
+      }
+    } catch (error) {
+      console.error('[openCamera]', error);
+      setCameraError('Não foi possível acessar a câmera.');
+    }
+  };
+
+  const closeCamera = () => {
+    cameraStreamRef.current?.getTracks().forEach(track => track.stop());
+    cameraStreamRef.current = null;
+    if (videoPreviewRef.current) videoPreviewRef.current.srcObject = null;
+    setCameraOpen(false);
+    setCameraError('');
+  };
+
+  const capturePhoto = () => {
+    const video = videoPreviewRef.current;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(blob => {
+      if (!blob) return;
+      const file = new File([blob], `foto-${Date.now()}.jpg`, { type: 'image/jpeg' });
+      setSelectedFile(file);
+      closeCamera();
+    }, 'image/jpeg', 0.92);
+  };
+
   const renderMessageContent = (msg: Message) => {
     const mediaUrl = getMediaUrl(msg.media_url);
     const type = msg.message_type || 'text';
@@ -530,6 +629,27 @@ export default function ConversationsPage() {
   return (
     <DashboardLayout>
       <div className="flex h-[calc(100vh-64px)] bg-gray-100">
+        {cameraOpen && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4">
+            <div className="w-full max-w-lg rounded-lg bg-white p-4 shadow-xl">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-900">Câmera</h3>
+                <button type="button" onClick={closeCamera} className="rounded-full p-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+              {cameraError ? (
+                <div className="rounded-md bg-red-50 px-3 py-6 text-center text-sm text-red-600">{cameraError}</div>
+              ) : (
+                <video ref={videoPreviewRef} autoPlay playsInline muted className="aspect-video w-full rounded-md bg-black object-cover" />
+              )}
+              <div className="mt-4 flex justify-end gap-2">
+                <button type="button" onClick={closeCamera} className="rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">Cancelar</button>
+                <button type="button" onClick={capturePhoto} disabled={!!cameraError} className="rounded-md bg-blue-600 px-3 py-2 text-sm text-white hover:bg-blue-700 disabled:opacity-50">Usar foto</button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className={`${selectedConv ? 'hidden md:flex' : 'flex'} flex-col w-full md:w-96 bg-white border-r border-gray-200`}>
           <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
             <div className="flex items-center justify-between mb-3">
@@ -621,6 +741,15 @@ export default function ConversationsPage() {
               </div>
 
               <div className="px-4 py-3 bg-white border-t border-gray-200">
+                {showEmojiPanel && (
+                  <div className="mb-2 grid max-w-sm grid-cols-8 gap-1 rounded-md border border-gray-200 bg-white p-2 shadow-sm">
+                    {QUICK_EMOJIS.map(emoji => (
+                      <button key={emoji} type="button" onClick={() => addEmoji(emoji)} className="h-8 rounded-md text-lg hover:bg-gray-100">
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {selectedFile && (
                   <div className="mb-2 flex items-center justify-between rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
                     <span className="flex min-w-0 items-center gap-2">
@@ -633,9 +762,13 @@ export default function ConversationsPage() {
                 <div className="flex items-end gap-2">
                   <input ref={fileInputRef} type="file" className="hidden" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.rar,.webp" onChange={(event) => setSelectedFile(event.target.files?.[0] || null)} />
                   <button type="button" onClick={() => fileInputRef.current?.click()} disabled={sending} className="flex-shrink-0 p-2.5 bg-gray-100 text-gray-600 rounded-full hover:bg-gray-200 disabled:opacity-50"><Paperclip className="h-5 w-5" /></button>
+                  <button type="button" onClick={() => setShowEmojiPanel(current => !current)} disabled={sending} className="flex-shrink-0 p-2.5 bg-gray-100 text-gray-600 rounded-full hover:bg-gray-200 disabled:opacity-50"><Smile className="h-5 w-5" /></button>
+                  <button type="button" onClick={openCamera} disabled={sending} className="flex-shrink-0 p-2.5 bg-gray-100 text-gray-600 rounded-full hover:bg-gray-200 disabled:opacity-50"><Camera className="h-5 w-5" /></button>
+                  <button type="button" onClick={recording ? stopRecording : startRecording} disabled={sending} className={`flex-shrink-0 p-2.5 rounded-full disabled:opacity-50 ${recording ? 'bg-red-100 text-red-600 hover:bg-red-200' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>{recording ? <Square className="h-5 w-5" /> : <Mic className="h-5 w-5" />}</button>
                   <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSend(); } }} placeholder="Digite uma mensagem..." rows={1} className="flex-1 resize-none px-4 py-2.5 bg-gray-100 border border-gray-200 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-32" style={{ minHeight: '42px' }} />
                   <button onClick={handleSend} disabled={(!draft.trim() && !selectedFile) || sending} className="flex-shrink-0 p-2.5 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"><Send className="h-5 w-5" /></button>
                 </div>
+                {recording && <p className="mt-2 text-xs text-red-600">Gravando áudio...</p>}
               </div>
             </>
           ) : (

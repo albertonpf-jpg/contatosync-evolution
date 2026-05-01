@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Check, CheckCheck, MessageSquare, Search, Send } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
+import { useAuth } from '@/contexts/AuthContext';
 import { useSocketContext } from '@/contexts/SocketContext';
 import { getApiUrl } from '@/lib/runtime-config';
 
@@ -132,6 +133,7 @@ function normalizeDirection(direction?: string): Message['direction'] {
 }
 
 export default function ConversationsPage() {
+  const { token, isAuthenticated, isLoading: authLoading } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConv, setSelectedConv] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -158,14 +160,20 @@ export default function ConversationsPage() {
   }, [messages]);
 
   const getToken = useCallback((): string => {
-    return (typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : '') ?? '';
-  }, []);
+    return token || (typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : '') || '';
+  }, [token]);
 
   const fetchConvs = useCallback(async () => {
-    const token = getToken();
-    if (!token) return [];
+    if (authLoading) return [];
+    const currentToken = getToken();
+    if (!currentToken) {
+      setConversations([]);
+      setSelectedConv(null);
+      setLoadingConvs(false);
+      return [];
+    }
     try {
-      const data = await apiFetch('/conversations?page=1&limit=50&status=active', token);
+      const data = await apiFetch('/conversations?page=1&limit=50&status=active', currentToken);
       const items: Conversation[] = data?.items ?? [];
       setConversations(items);
       setSelectedConv(prevSelected => {
@@ -180,13 +188,14 @@ export default function ConversationsPage() {
     } finally {
       setLoadingConvs(false);
     }
-  }, [getToken]);
+  }, [authLoading, getToken]);
 
   const fetchMsgs = useCallback(async (id: string) => {
-    const token = getToken();
-    if (!token || !id) return [];
+    if (authLoading) return [];
+    const currentToken = getToken();
+    if (!currentToken || !id) return [];
     try {
-      const data = await apiFetch(`/messages/conversation/${id}?page=1&limit=100`, token);
+      const data = await apiFetch(`/messages/conversation/${id}?page=1&limit=100`, currentToken);
       const items: Message[] = data?.items ?? [];
       setMessages(items);
       return items;
@@ -194,7 +203,7 @@ export default function ConversationsPage() {
       console.error('[fetchMsgs]', getErrorMessage(error));
       return [];
     }
-  }, [getToken]);
+  }, [authLoading, getToken]);
 
   const { connected: socketOk, on, off } = useSocketContext();
 
@@ -310,6 +319,8 @@ export default function ConversationsPage() {
 
   // Socket.IO é o canal imediato. O polling abaixo cobre reconexões e eventos perdidos.
   useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
+
     const runRefresh = () => {
       void fetchConvs();
       if (currentConvId.current) {
@@ -322,9 +333,11 @@ export default function ConversationsPage() {
       clearTimeout(firstRunId);
       clearInterval(intervalId);
     };
-  }, [fetchConvs, fetchMsgs, selectedConv?.id]);
+  }, [authLoading, fetchConvs, fetchMsgs, isAuthenticated, selectedConv?.id]);
 
   useEffect(() => {
+    if (authLoading || !isAuthenticated) return;
+
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
         void fetchConvs();
@@ -333,7 +346,7 @@ export default function ConversationsPage() {
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [fetchConvs, fetchMsgs]);
+  }, [authLoading, fetchConvs, fetchMsgs, isAuthenticated]);
 
   const openConv = useCallback(async (conv: Conversation) => {
     const normalizedConv = { ...conv, unread_count: 0 };

@@ -1,13 +1,15 @@
 const QRCode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
+const { createStoredFile, sanitizeFileName } = require('../utils/mediaStore');
 
 const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
-  makeCacheableSignalKeyStore
+  makeCacheableSignalKeyStore,
+  downloadMediaMessage
 } = require('@whiskeysockets/baileys');
 
 function makeSilentLogger() {
@@ -287,6 +289,38 @@ class BaileysService {
     return { success: true, messageId: result.key.id, to: jid, message, timestamp: new Date() };
   }
 
+  async sendMediaMessage(sessionName, jidOrPhone, media) {
+    const session = this.sessions.get(sessionName);
+    if (!session) throw new Error('Sessao nao encontrada: ' + sessionName);
+    if (session.status !== 'connected') {
+      if (session.socket?.user?.id) { session.status = 'connected'; }
+      else { throw new Error('Sessao nao conectada. Status: ' + session.status); }
+    }
+
+    const jid = jidOrPhone.includes('@') ? jidOrPhone : jidOrPhone.replace(/\D/g, '') + '@s.whatsapp.net';
+    const buffer = fs.readFileSync(media.path);
+    const mimetype = media.mimetype || 'application/octet-stream';
+    const caption = media.caption || '';
+    const fileName = sanitizeFileName(media.fileName || media.originalName || 'arquivo');
+    const type = this._normalizeOutgoingMediaType(media.messageType, mimetype, fileName);
+    let payload;
+
+    if (type === 'image') {
+      payload = { image: buffer, mimetype, caption };
+    } else if (type === 'video' || type === 'gif') {
+      payload = { video: buffer, mimetype, caption, gifPlayback: type === 'gif' || mimetype === 'image/gif' };
+    } else if (type === 'audio') {
+      payload = { audio: buffer, mimetype, ptt: !!media.ptt };
+    } else if (type === 'sticker') {
+      payload = { sticker: buffer, mimetype };
+    } else {
+      payload = { document: buffer, mimetype, fileName, caption };
+    }
+
+    const result = await session.socket.sendMessage(jid, payload);
+    return { success: true, messageId: result.key.id, to: jid, messageType: type, timestamp: new Date() };
+  }
+
   getAllSessions() {
     const sessions = [];
     for (const [name] of this.sessions.entries()) {
@@ -548,25 +582,97 @@ class BaileysService {
       phone = phone.replace(/\D/g, '');
       if (!phone) { console.log('Phone vazio, ignorando. remoteJid: ' + remoteJid); return; }
 
-      const content = message.message?.conversation || message.message?.extendedTextMessage?.text || message.message?.imageMessage?.caption || '[Midia]';
+      const messageType = this._getMessageType(message);
+      const mediaInfo = await this._downloadIncomingMedia(sessionName, message, messageType, sock);
+      const content = message.message?.conversation
+        || message.message?.extendedTextMessage?.text
+        || message.message?.imageMessage?.caption
+        || message.message?.videoMessage?.caption
+        || message.message?.documentMessage?.caption
+        || mediaInfo?.originalName
+        || this._fallbackContentForType(messageType);
       console.log('Msg de ' + phone + ': ' + content.substring(0, 50));
 
       const axios = require('axios');
       const PORT = process.env.PORT || 3003;
       await axios.post('http://localhost:' + PORT + '/internal/messages/process', {
         sessionName, phone, remoteJid, content,
-        messageType: this._getMessageType(message),
+        messageType,
         whatsappMessageId: message.key.id,
         pushName: message.pushName,
-        isLid: isLid
+        isLid: isLid,
+        mediaUrl: mediaInfo?.publicPath || '',
+        mediaMimeType: mediaInfo?.mimetype || '',
+        mediaFileName: mediaInfo?.originalName || ''
       });
     } catch (error) { console.error('Erro processando mensagem:', error.message); }
+  }
+
+  _normalizeOutgoingMediaType(messageType, mimetype, fileName) {
+    const type = String(messageType || '').toLowerCase();
+    const name = String(fileName || '').toLowerCase();
+    if (type === 'gif') return 'gif';
+    if (type === 'sticker' || name.endsWith('.webp')) return 'sticker';
+    if (type === 'image' || mimetype.startsWith('image/')) return mimetype === 'image/gif' ? 'gif' : 'image';
+    if (type === 'video' || mimetype.startsWith('video/')) return 'video';
+    if (type === 'audio' || mimetype.startsWith('audio/')) return 'audio';
+    return 'document';
+  }
+
+  _fallbackContentForType(messageType) {
+    const labels = {
+      image: '[Imagem]',
+      audio: '[Audio]',
+      video: '[Video]',
+      gif: '[GIF]',
+      document: '[Arquivo]',
+      sticker: '[Figurinha]'
+    };
+    return labels[messageType] || '[Midia]';
+  }
+
+  _getMediaNode(message, messageType) {
+    const msg = message.message || {};
+    if (messageType === 'image') return msg.imageMessage;
+    if (messageType === 'audio') return msg.audioMessage;
+    if (messageType === 'video' || messageType === 'gif') return msg.videoMessage;
+    if (messageType === 'document') return msg.documentMessage;
+    if (messageType === 'sticker') return msg.stickerMessage;
+    return null;
+  }
+
+  async _downloadIncomingMedia(sessionName, message, messageType, sock) {
+    if (messageType === 'text') return null;
+    const mediaNode = this._getMediaNode(message, messageType);
+    if (!mediaNode) return null;
+
+    try {
+      const buffer = await downloadMediaMessage(
+        message,
+        'buffer',
+        {},
+        { logger: makeSilentLogger(), reuploadRequest: sock?.updateMediaMessage }
+      );
+      if (!buffer || !buffer.length) return null;
+
+      const mimetype = mediaNode.mimetype || (messageType === 'sticker' ? 'image/webp' : 'application/octet-stream');
+      const originalName = mediaNode.fileName || mediaNode.title || `${messageType}-${message.key?.id || Date.now()}`;
+      return createStoredFile(buffer, {
+        clientId: sessionName,
+        messageType,
+        mimetype,
+        originalName
+      });
+    } catch (err) {
+      console.error('Erro baixando midia recebida:', err.message);
+      return null;
+    }
   }
 
   _getMessageType(message) {
     if (message.message?.imageMessage) return 'image';
     if (message.message?.audioMessage) return 'audio';
-    if (message.message?.videoMessage) return 'video';
+    if (message.message?.videoMessage) return message.message.videoMessage.gifPlayback ? 'gif' : 'video';
     if (message.message?.documentMessage) return 'document';
     if (message.message?.stickerMessage) return 'sticker';
     return 'text';

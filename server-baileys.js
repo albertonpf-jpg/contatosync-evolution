@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const socketIo = require('socket.io');
+const { mediaRoot } = require('./src/utils/mediaStore');
 
 console.log('🚀 Iniciando ContatoSync Evolution...');
 
@@ -52,6 +53,12 @@ const io = socketIo(server, {
 app.use(cors({ origin: "*", credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use('/media', express.static(mediaRoot(), {
+  maxAge: '7d',
+  setHeaders: function(res) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+}));
 
 console.log('ContatoSync com BAILEYS na porta ' + PORT);
 console.log('WhatsApp direto, sem Evolution API');
@@ -533,6 +540,9 @@ app.post('/internal/messages/process', async function(req, res) {
     var messageType = req.body.messageType;
     var whatsappMessageId = req.body.whatsappMessageId;
     var pushName = req.body.pushName;
+    var mediaUrl = req.body.mediaUrl || '';
+    var mediaMimeType = req.body.mediaMimeType || '';
+    var mediaFileName = req.body.mediaFileName || '';
 
     console.log('=== PROCESSANDO MENSAGEM ===');
     console.log('Sessao: ' + sessionName);
@@ -837,6 +847,7 @@ app.post('/internal/messages/process', async function(req, res) {
         contact_id: contact.id,
         content: content,
         message_type: messageType || 'text',
+        media_url: mediaUrl,
         direction: 'in',
         status: 'received',
         is_from_ai: false,
@@ -880,6 +891,9 @@ app.post('/internal/messages/process', async function(req, res) {
         },
         content: content,
         message_type: messageType || 'text',
+        media_url: mediaUrl,
+        media_mime_type: mediaMimeType,
+        media_file_name: mediaFileName,
         direction: 'in',
         status: 'received',
         is_from_ai: false,

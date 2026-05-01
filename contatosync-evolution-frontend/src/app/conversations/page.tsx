@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Check, CheckCheck, MessageSquare, Search, Send } from 'lucide-react';
+import { ArrowLeft, Check, CheckCheck, FileText, Image as ImageIcon, MessageSquare, Paperclip, Search, Send, Video } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSocketContext } from '@/contexts/SocketContext';
@@ -36,6 +36,7 @@ interface Message {
   direction: 'in' | 'out';
   status: string;
   is_from_ai: boolean;
+  media_url?: string;
   created_at: string;
   sent_at?: string;
 }
@@ -132,6 +133,35 @@ function normalizeDirection(direction?: string): Message['direction'] {
   return direction === 'out' || direction === 'outgoing' ? 'out' : 'in';
 }
 
+function getMediaUrl(mediaUrl?: string): string {
+  if (!mediaUrl) return '';
+  if (/^https?:\/\//i.test(mediaUrl)) return mediaUrl;
+  const apiRoot = API.endsWith('/api') ? API.slice(0, -4) : API;
+  return `${apiRoot}${mediaUrl.startsWith('/') ? mediaUrl : `/${mediaUrl}`}`;
+}
+
+function getFileMessageType(file: File): string {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.webp')) return 'sticker';
+  if (file.type === 'image/gif') return 'gif';
+  if (file.type.startsWith('image/')) return 'image';
+  if (file.type.startsWith('video/')) return 'video';
+  if (file.type.startsWith('audio/')) return 'audio';
+  return 'document';
+}
+
+function mediaLabel(type: string): string {
+  const labels: Record<string, string> = {
+    image: 'Imagem',
+    audio: 'Audio',
+    video: 'Video',
+    gif: 'GIF',
+    document: 'Arquivo',
+    sticker: 'Figurinha'
+  };
+  return labels[type] || 'Arquivo';
+}
+
 export default function ConversationsPage() {
   const { token, isAuthenticated, isLoading: authLoading } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -141,9 +171,11 @@ export default function ConversationsPage() {
   const [loadingMsgs, setLoadingMsgs] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [draft, setDraft] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [sending, setSending] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const prevMsgCount = useRef(0);
   const currentConvId = useRef<string | null>(null);
   const autoOpenedInitialConv = useRef(false);
@@ -294,6 +326,7 @@ export default function ConversationsPage() {
               direction: normalizeDirection(payload.direction),
               status: payload.status || 'received',
               is_from_ai: !!payload.is_from_ai,
+              media_url: payload.media_url,
               created_at: payload.created_at,
               sent_at: payload.sent_at,
             },
@@ -366,16 +399,32 @@ export default function ConversationsPage() {
   }, [conversations, openConv, selectedConv]);
 
   const handleSend = async () => {
-    if (!draft.trim() || !selectedConv || sending) return;
+    if ((!draft.trim() && !selectedFile) || !selectedConv || sending) return;
     setSending(true);
     const content = draft.trim();
+    const fileToSend = selectedFile;
     setDraft('');
+    setSelectedFile(null);
     try {
-      const res = await fetch(`${API}/messages/send`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${getToken()}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversation_id: selectedConv.id, content, message_type: 'text' }),
-      });
+      let res: Response;
+      if (fileToSend) {
+        const formData = new FormData();
+        formData.append('conversation_id', selectedConv.id);
+        formData.append('content', content);
+        formData.append('message_type', getFileMessageType(fileToSend));
+        formData.append('file', fileToSend);
+        res = await fetch(`${API}/messages/send`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${getToken()}` },
+          body: formData,
+        });
+      } else {
+        res = await fetch(`${API}/messages/send`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${getToken()}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation_id: selectedConv.id, content, message_type: 'text' }),
+        });
+      }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setTimeout(() => {
         if (currentConvId.current) fetchMsgs(currentConvId.current);
@@ -384,10 +433,42 @@ export default function ConversationsPage() {
     } catch (error: unknown) {
       console.error('[handleSend]', error);
       setDraft(content);
+      setSelectedFile(fileToSend);
       alert('Erro ao enviar. Verifique se o WhatsApp esta conectado.');
     } finally {
       setSending(false);
     }
+  };
+
+  const renderMessageContent = (msg: Message) => {
+    const mediaUrl = getMediaUrl(msg.media_url);
+    const type = msg.message_type || 'text';
+
+    if (!mediaUrl) {
+      return <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>;
+    }
+
+    return (
+      <div className="space-y-2">
+        {type === 'image' || type === 'sticker' || type === 'gif' ? (
+          <a href={mediaUrl} target="_blank" rel="noreferrer" className="block">
+            <img src={mediaUrl} alt={mediaLabel(type)} className="max-h-72 max-w-full rounded-md object-contain bg-white" />
+          </a>
+        ) : type === 'video' ? (
+          <video src={mediaUrl} controls className="max-h-80 max-w-full rounded-md bg-black" />
+        ) : type === 'audio' ? (
+          <audio src={mediaUrl} controls className="w-64 max-w-full" />
+        ) : (
+          <a href={mediaUrl} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-md bg-white/70 px-3 py-2 text-sm text-blue-700 hover:underline">
+            <FileText className="h-4 w-4" />
+            <span className="truncate">{msg.content || mediaLabel(type)}</span>
+          </a>
+        )}
+        {msg.content && !msg.content.startsWith('[') && type !== 'document' && (
+          <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
+        )}
+      </div>
+    );
   };
 
   const getName = (conversation: Conversation) =>
@@ -506,7 +587,7 @@ export default function ConversationsPage() {
                       <div key={msg.id} className={`flex ${msg.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
                         <div className={`max-w-[75%] rounded-lg px-3 py-2 shadow-sm ${msg.direction === 'out' ? 'bg-green-100 rounded-br-none' : 'bg-white rounded-bl-none'}`}>
                           {msg.is_from_ai && (<span className="text-xs text-purple-600 font-medium block mb-1">IA</span>)}
-                          <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
+                          {renderMessageContent(msg)}
                           <div className="flex items-center justify-end gap-1 mt-1">
                             <span className="text-[10px] text-gray-400">{formatTime(msg.sent_at || msg.created_at)}</span>
                             {msg.direction === 'out' && (msg.status === 'read' ? <CheckCheck className="h-3 w-3 text-blue-500" /> : <Check className="h-3 w-3 text-gray-400" />)}
@@ -520,9 +601,20 @@ export default function ConversationsPage() {
               </div>
 
               <div className="px-4 py-3 bg-white border-t border-gray-200">
+                {selectedFile && (
+                  <div className="mb-2 flex items-center justify-between rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
+                    <span className="flex min-w-0 items-center gap-2">
+                      {getFileMessageType(selectedFile) === 'video' ? <Video className="h-4 w-4" /> : getFileMessageType(selectedFile) === 'image' || getFileMessageType(selectedFile) === 'gif' || getFileMessageType(selectedFile) === 'sticker' ? <ImageIcon className="h-4 w-4" /> : <FileText className="h-4 w-4" />}
+                      <span className="truncate">{selectedFile.name}</span>
+                    </span>
+                    <button type="button" onClick={() => setSelectedFile(null)} className="ml-3 text-gray-500 hover:text-gray-800">Remover</button>
+                  </div>
+                )}
                 <div className="flex items-end gap-2">
+                  <input ref={fileInputRef} type="file" className="hidden" accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.zip,.rar,.webp" onChange={(event) => setSelectedFile(event.target.files?.[0] || null)} />
+                  <button type="button" onClick={() => fileInputRef.current?.click()} disabled={sending} className="flex-shrink-0 p-2.5 bg-gray-100 text-gray-600 rounded-full hover:bg-gray-200 disabled:opacity-50"><Paperclip className="h-5 w-5" /></button>
                   <textarea value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); handleSend(); } }} placeholder="Digite uma mensagem..." rows={1} className="flex-1 resize-none px-4 py-2.5 bg-gray-100 border border-gray-200 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 max-h-32" style={{ minHeight: '42px' }} />
-                  <button onClick={handleSend} disabled={!draft.trim() || sending} className="flex-shrink-0 p-2.5 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"><Send className="h-5 w-5" /></button>
+                  <button onClick={handleSend} disabled={(!draft.trim() && !selectedFile) || sending} className="flex-shrink-0 p-2.5 bg-blue-600 text-white rounded-full hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"><Send className="h-5 w-5" /></button>
                 </div>
               </div>
             </>

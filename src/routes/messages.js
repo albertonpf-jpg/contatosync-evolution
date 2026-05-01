@@ -1,12 +1,45 @@
 ﻿const express = require('express');
+const multer = require('multer');
 const { v4: uuidv4 } = require('uuid');
 const { executeWithRLS } = require('../config/supabase');
 const { messageSchemas, validate } = require('../utils/validation');
 const { getPagination, formatPaginationMeta, formatActivity, cleanJid } = require('../utils/helpers');
 const { success, error, notFound, asyncHandler, handleSupabaseError, paginated } = require('../utils/response');
-const { emitNewMessage } = require('../services/socketService');
+const { emitConversationUpdate, emitNewMessage } = require('../services/socketService');
+const { createStoredFile, sanitizeFileName } = require('../utils/mediaStore');
 
 const router = express.Router();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 }
+});
+
+function normalizeOutgoingMessageType(messageType, file) {
+  const requested = String(messageType || '').toLowerCase();
+  const mimetype = file?.mimetype || '';
+  const fileName = String(file?.originalname || '').toLowerCase();
+
+  if (requested === 'gif') return 'gif';
+  if (requested === 'sticker' || fileName.endsWith('.webp')) return 'sticker';
+  if (requested === 'image' || mimetype.startsWith('image/')) return mimetype === 'image/gif' ? 'gif' : 'image';
+  if (requested === 'video' || mimetype.startsWith('video/')) return 'video';
+  if (requested === 'audio' || mimetype.startsWith('audio/')) return 'audio';
+  if (file) return 'document';
+  return 'text';
+}
+
+function fallbackContentForMedia(type, originalName) {
+  if (originalName) return sanitizeFileName(originalName);
+  const labels = {
+    image: '[Imagem]',
+    audio: '[Audio]',
+    video: '[Video]',
+    gif: '[GIF]',
+    document: '[Arquivo]',
+    sticker: '[Figurinha]'
+  };
+  return labels[type] || '[Midia]';
+}
 
 /**
  * GET /api/messages
@@ -241,11 +274,13 @@ router.post('/',
  * Enviar mensagem via WhatsApp
  */
 router.post('/send',
+  upload.single('file'),
   asyncHandler(async (req, res) => {
-    const { conversation_id, content, message_type } = req.body;
+    const { conversation_id, content = '', message_type } = req.body;
+    const outgoingType = normalizeOutgoingMessageType(message_type, req.file);
 
-    if (!conversation_id || !content) {
-      return error(res, 'conversation_id e content são obrigatórios', 400);
+    if (!conversation_id || (!content.trim() && !req.file)) {
+      return error(res, 'conversation_id e content ou arquivo são obrigatórios', 400);
     }
 
     // 1. Buscar conversa
@@ -291,8 +326,31 @@ router.post('/send',
     const jidToSend = conversation.jid || (conversation.phone + '@s.whatsapp.net');
 
     try {
-      const sendResult = await baileysService.sendTextMessage(activeSessionName, jidToSend, content);
       const now = new Date().toISOString();
+      const messageContent = content.trim();
+      let storedMedia = null;
+      let sendResult;
+
+      if (req.file) {
+        storedMedia = createStoredFile(req.file.buffer, {
+          clientId: req.user.id,
+          messageType: outgoingType,
+          mimetype: req.file.mimetype,
+          originalName: req.file.originalname
+        });
+        sendResult = await baileysService.sendMediaMessage(activeSessionName, jidToSend, {
+          path: storedMedia.path,
+          mimetype: storedMedia.mimetype,
+          originalName: storedMedia.originalName,
+          fileName: storedMedia.originalName,
+          caption: messageContent,
+          messageType: outgoingType,
+          ptt: outgoingType === 'audio'
+        });
+      } else {
+        sendResult = await baileysService.sendTextMessage(activeSessionName, jidToSend, messageContent);
+      }
+      const finalContent = messageContent || fallbackContentForMedia(outgoingType, storedMedia?.originalName);
 
       // 4. Salvar mensagem
       const { data: newMessage, error: msgError } = await executeWithRLS(req.user.id, (client) =>
@@ -303,8 +361,9 @@ router.post('/send',
             conversation_id: conversation.id,
             client_id: req.user.id,
             contact_id: conversation.contact_id,
-            content,
-            message_type: message_type || 'text',
+            content: finalContent,
+            message_type: outgoingType,
+            media_url: storedMedia?.publicPath || '',
             direction: 'out',
             status: 'sent',
             is_from_ai: false,
@@ -331,8 +390,18 @@ router.post('/send',
       );
 
       if (newMessage) emitNewMessage(req.user.id, newMessage);
+      emitConversationUpdate(req.user.id, {
+        id: conversation.id,
+        conversation_id: conversation.id,
+        contact_id: conversation.contact_id,
+        phone: conversation.phone,
+        jid: conversation.jid,
+        status: conversation.status || 'active',
+        last_message_at: now,
+        updated_at: now
+      });
 
-      success(res, newMessage || { content, direction: 'out', sent_at: now }, 'Mensagem enviada com sucesso');
+      success(res, newMessage || { content: finalContent, direction: 'out', sent_at: now, media_url: storedMedia?.publicPath || '' }, 'Mensagem enviada com sucesso');
     } catch (baileysError) {
       console.error('Erro ao enviar via Baileys:', baileysError.message);
       return error(res, 'Erro ao enviar: ' + baileysError.message, 500);

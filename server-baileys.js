@@ -40,12 +40,13 @@ try {
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3003;
+const FALLBACK_PUBLIC_BASE_URL = 'https://web-production-50297.up.railway.app';
 
 function getPublicBaseUrl() {
   const explicit = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL;
   if (explicit) return explicit.replace(/\/api\/?$/, '').replace(/\/+$/, '');
   if (process.env.RAILWAY_PUBLIC_DOMAIN) return 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN.replace(/\/+$/, '');
-  return '';
+  return FALLBACK_PUBLIC_BASE_URL;
 }
 
 function toPublicMediaUrl(mediaUrl) {

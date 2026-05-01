@@ -13,12 +13,13 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 }
 });
+const FALLBACK_PUBLIC_BASE_URL = 'https://web-production-50297.up.railway.app';
 
 function getPublicBaseUrl(req) {
   const explicit = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL;
   if (explicit) return explicit.replace(/\/api\/?$/, '').replace(/\/+$/, '');
   if (process.env.RAILWAY_PUBLIC_DOMAIN) return 'https://' + process.env.RAILWAY_PUBLIC_DOMAIN.replace(/\/+$/, '');
-  return `${req.protocol}://${req.get('host')}`;
+  return `${req.protocol}://${req.get('host')}` || FALLBACK_PUBLIC_BASE_URL;
 }
 
 function toPublicMediaUrl(req, mediaUrl) {

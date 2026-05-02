@@ -34,6 +34,8 @@ function fileSizeOrZero(filePath) {
   }
 }
 
+const MAX_SENT_MESSAGE_CACHE = 200;
+
 class BaileysService {
   constructor() {
     this.sessions = new Map();
@@ -46,6 +48,25 @@ class BaileysService {
     }
     console.log('Baileys sessions dir: ' + this.authDir);
     this.startHeartbeat();
+  }
+
+  _rememberSentMessage(sessionName, key, message) {
+    const id = typeof key === 'string' ? key : key?.id;
+    if (!id || !message) return;
+    const session = this.sessions.get(sessionName);
+    if (!session) return;
+    if (!session.sentMessages) session.sentMessages = new Map();
+    session.sentMessages.set(id, message);
+    while (session.sentMessages.size > MAX_SENT_MESSAGE_CACHE) {
+      const oldestKey = session.sentMessages.keys().next().value;
+      session.sentMessages.delete(oldestKey);
+    }
+  }
+
+  _getSentMessage(sessionName, key) {
+    const id = key?.id || key;
+    if (!id) return undefined;
+    return this.sessions.get(sessionName)?.sentMessages?.get(id);
   }
 
   startHeartbeat() {
@@ -74,7 +95,8 @@ class BaileysService {
       socket: null, saveCreds: null, status: 'connecting',
       qrCode: null, createdAt: new Date(),
       lidToPhone: new Map(),
-      contactsStore: new Map()
+      contactsStore: new Map(),
+      sentMessages: new Map()
     });
     this._connectSession(sessionName, webhookUrl).catch(err => {
       console.error('Erro background ' + sessionName + ':', err.message);
@@ -151,7 +173,13 @@ class BaileysService {
         maxMsgRetryCount: 3, retryRequestDelayMs: 250,
         shouldIgnoreJid: () => false, linkPreviewImageThumbnailWidth: 192,
         transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
-        getMessage: async (key) => { return { conversation: 'hello' }; }
+        getMessage: async (key) => {
+          const cachedMessage = this._getSentMessage(sessionName, key);
+          if (!cachedMessage) {
+            console.warn('[BAILEYS] getMessage sem cache id=' + (key?.id || 'unknown'));
+          }
+          return cachedMessage;
+        }
       });
 
       const session = this.sessions.get(sessionName);
@@ -240,10 +268,11 @@ class BaileysService {
       sock.ev.on('creds.update', saveCreds);
 
       sock.ev.on('messages.upsert', async (m) => {
-        if (m.type !== 'notify') return;
         const messages = m.messages || [];
         for (const msg of messages) {
-          if (!msg.key.fromMe && msg.message) {
+          if (msg.key.fromMe && msg.message) {
+            this._rememberSentMessage(sessionName, msg.key, msg.message);
+          } else if (m.type === 'notify' && msg.message) {
             await this._processIncomingMessage(sessionName, msg);
           }
         }
@@ -299,6 +328,7 @@ class BaileysService {
     }
     const jid = jidOrPhone.includes('@') ? jidOrPhone : jidOrPhone.replace(/\D/g, '') + '@s.whatsapp.net';
     const result = await session.socket.sendMessage(jid, { text: message });
+    this._rememberSentMessage(sessionName, result?.key, result?.message || { conversation: message });
     return { success: true, messageId: result.key.id, to: jid, message, timestamp: new Date() };
   }
 
@@ -340,6 +370,7 @@ class BaileysService {
 
     console.log('[MEDIA SEND] type=' + type + ' mime=' + mimetype + ' size=' + buffer.length + ' to=' + jid);
     const result = await session.socket.sendMessage(jid, payload);
+    this._rememberSentMessage(sessionName, result?.key, result?.message);
     console.log('[MEDIA SEND] sent id=' + (result?.key?.id || 'unknown') + ' type=' + type + ' mime=' + mimetype);
     return { success: true, messageId: result.key.id, to: jid, messageType: type, timestamp: new Date() };
   }

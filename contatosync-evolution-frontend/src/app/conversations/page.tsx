@@ -151,7 +151,17 @@ function getFileMessageType(file: File): string {
   return 'document';
 }
 
-function encodeWav(chunks: Float32Array[], sampleRate: number): Blob {
+function getPcmPeak(chunks: Float32Array[]): number {
+  let peak = 0;
+  for (const chunk of chunks) {
+    for (let i = 0; i < chunk.length; i += 1) {
+      peak = Math.max(peak, Math.abs(chunk[i]));
+    }
+  }
+  return peak;
+}
+
+function encodeWav(chunks: Float32Array[], sampleRate: number, gain = 1): Blob {
   const sampleCount = chunks.reduce((total, chunk) => total + chunk.length, 0);
   const buffer = new ArrayBuffer(44 + sampleCount * 2);
   const view = new DataView(buffer);
@@ -180,7 +190,7 @@ function encodeWav(chunks: Float32Array[], sampleRate: number): Blob {
 
   for (const chunk of chunks) {
     for (let i = 0; i < chunk.length; i += 1) {
-      const sample = Math.max(-1, Math.min(1, chunk[i]));
+      const sample = Math.max(-1, Math.min(1, chunk[i] * gain));
       view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
       offset += 2;
     }
@@ -516,8 +526,15 @@ export default function ConversationsPage() {
   const startRecording = async () => {
     if (recording || sending) return;
     try {
+      const permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      permissionStream.getTracks().forEach(track => track.stop());
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = devices.filter(device => device.kind === 'audioinput');
+      const physicalInput = audioInputs.find(device => !['default', 'communications'].includes(device.deviceId));
+      const deviceConstraint = physicalInput?.deviceId ? { deviceId: { exact: physicalInput.deviceId } } : {};
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
+          ...deviceConstraint,
           channelCount: 1,
           echoCancellation: false,
           noiseSuppression: false,
@@ -552,9 +569,15 @@ export default function ConversationsPage() {
     if (!recording) return;
     const chunks = recordingPcmChunksRef.current;
     if (chunks.length > 0) {
-      const blob = encodeWav(chunks, recordingSampleRateRef.current);
-      const file = new File([blob], `audio-${Date.now()}.wav`, { type: 'audio/wav' });
-      setSelectedFile(file);
+      const peak = getPcmPeak(chunks);
+      if (peak < 0.001) {
+        alert('Nenhum som foi capturado pelo microfone. Verifique o microfone selecionado no navegador e grave novamente.');
+      } else {
+        const gain = Math.min(12, 0.85 / peak);
+        const blob = encodeWav(chunks, recordingSampleRateRef.current, gain);
+        const file = new File([blob], `audio-${Date.now()}.wav`, { type: 'audio/wav' });
+        setSelectedFile(file);
+      }
     }
 
     recordingProcessorRef.current?.disconnect();

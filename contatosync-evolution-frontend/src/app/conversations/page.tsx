@@ -151,6 +151,20 @@ function getFileMessageType(file: File): string {
   return 'document';
 }
 
+function getRecordingMimeType(): string {
+  const preferredTypes = [
+    'audio/webm;codecs=opus',
+    'audio/ogg;codecs=opus',
+    'audio/webm'
+  ];
+  return preferredTypes.find(type => MediaRecorder.isTypeSupported(type)) || '';
+}
+
+function getRecordingExtension(mimeType: string): string {
+  if (mimeType.includes('ogg')) return 'ogg';
+  return 'webm';
+}
+
 function mediaLabel(type: string): string {
   const labels: Record<string, string> = {
     image: 'Imagem',
@@ -473,21 +487,32 @@ export default function ConversationsPage() {
   const startRecording = async () => {
     if (recording || sending) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
       recordingStreamRef.current = stream;
       recordingChunksRef.current = [];
-      const preferredTypes = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'];
-      const mimeType = preferredTypes.find(type => MediaRecorder.isTypeSupported(type)) || '';
-      const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+      const mimeType = getRecordingMimeType();
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType, audioBitsPerSecond: 64000 } : { audioBitsPerSecond: 64000 }
+      );
       mediaRecorderRef.current = recorder;
       recorder.ondataavailable = event => {
         if (event.data.size > 0) recordingChunksRef.current.push(event.data);
       };
+      recorder.onerror = event => {
+        console.error('[recording]', event);
+      };
       recorder.onstop = () => {
-        const blob = new Blob(recordingChunksRef.current, { type: mimeType });
+        const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || mimeType || 'audio/webm' });
         if (blob.size > 0) {
-          const extension = mimeType.includes('mp4') ? 'm4a' : 'webm';
-          const file = new File([blob], `audio-${Date.now()}.${extension}`, { type: mimeType });
+          const extension = getRecordingExtension(blob.type);
+          const file = new File([blob], `audio-${Date.now()}.${extension}`, { type: blob.type });
           setSelectedFile(file);
         }
         stream.getTracks().forEach(track => track.stop());
@@ -496,7 +521,7 @@ export default function ConversationsPage() {
         recordingChunksRef.current = [];
         setRecording(false);
       };
-      recorder.start();
+      recorder.start(250);
       setRecording(true);
     } catch (error) {
       console.error('[startRecording]', error);
@@ -506,6 +531,7 @@ export default function ConversationsPage() {
 
   const stopRecording = () => {
     if (mediaRecorderRef.current?.state === 'recording') {
+      mediaRecorderRef.current.requestData();
       mediaRecorderRef.current.stop();
     }
   };

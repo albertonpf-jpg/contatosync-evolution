@@ -14,7 +14,8 @@ const {
   downloadMediaMessage,
   downloadContentFromMessage,
   extractMessageContent,
-  getContentType
+  getContentType,
+  proto
 } = require('@whiskeysockets/baileys');
 
 function makeSilentLogger() {
@@ -35,6 +36,7 @@ function fileSizeOrZero(filePath) {
 }
 
 const MAX_SENT_MESSAGE_CACHE = 200;
+const SENT_MESSAGE_CACHE_DIR = 'sent-message-cache';
 
 class BaileysService {
   constructor() {
@@ -61,12 +63,59 @@ class BaileysService {
       const oldestKey = session.sentMessages.keys().next().value;
       session.sentMessages.delete(oldestKey);
     }
+    this._persistSentMessage(sessionName, id, message);
   }
 
   _getSentMessage(sessionName, key) {
     const id = key?.id || key;
     if (!id) return undefined;
-    return this.sessions.get(sessionName)?.sentMessages?.get(id);
+    const session = this.sessions.get(sessionName);
+    const cached = session?.sentMessages?.get(id);
+    if (cached) return cached;
+    const persisted = this._loadPersistedSentMessage(sessionName, id);
+    if (persisted && session) {
+      if (!session.sentMessages) session.sentMessages = new Map();
+      session.sentMessages.set(id, persisted);
+    }
+    return persisted;
+  }
+
+  _sentMessageCacheDir(sessionName) {
+    return path.join(this.authDir, SENT_MESSAGE_CACHE_DIR, sanitizeFileName(sessionName || 'session'));
+  }
+
+  _persistSentMessage(sessionName, id, message) {
+    try {
+      const cacheDir = this._sentMessageCacheDir(sessionName);
+      if (!fs.existsSync(cacheDir)) fs.mkdirSync(cacheDir, { recursive: true });
+      const filePath = path.join(cacheDir, sanitizeFileName(id) + '.bin');
+      const encoded = proto.Message.encode(proto.Message.fromObject(message)).finish();
+      fs.writeFileSync(filePath, encoded);
+
+      const files = fs.readdirSync(cacheDir)
+        .filter(name => name.endsWith('.bin'))
+        .map(name => {
+          const fullPath = path.join(cacheDir, name);
+          return { fullPath, mtimeMs: fs.statSync(fullPath).mtimeMs };
+        })
+        .sort((a, b) => b.mtimeMs - a.mtimeMs);
+      for (const stale of files.slice(MAX_SENT_MESSAGE_CACHE)) {
+        try { fs.unlinkSync(stale.fullPath); } catch (err) {}
+      }
+    } catch (err) {
+      console.warn('[BAILEYS] falha ao persistir mensagem enviada id=' + id + ': ' + err.message);
+    }
+  }
+
+  _loadPersistedSentMessage(sessionName, id) {
+    try {
+      const filePath = path.join(this._sentMessageCacheDir(sessionName), sanitizeFileName(id) + '.bin');
+      if (!fs.existsSync(filePath)) return undefined;
+      return proto.Message.decode(fs.readFileSync(filePath));
+    } catch (err) {
+      console.warn('[BAILEYS] falha ao ler mensagem enviada id=' + id + ': ' + err.message);
+      return undefined;
+    }
   }
 
   startHeartbeat() {
@@ -361,7 +410,7 @@ class BaileysService {
     } else if (type === 'video' || type === 'gif') {
       payload = { video: buffer, mimetype, caption, gifPlayback: type === 'gif' || mimetype === 'image/gif' };
     } else if (type === 'audio') {
-      payload = { audio: { url: mediaPath }, mimetype, ptt: !!media.ptt };
+      payload = { audio: buffer, mimetype, ptt: !!media.ptt };
     } else if (type === 'sticker') {
       payload = { sticker: buffer, mimetype };
     } else {

@@ -720,8 +720,8 @@ app.post('/internal/messages/process', async function(req, res) {
 
     if (!contact) {
       var newContactId = uuidv4();
-      // Se é LID não resolvido, salvar digitsOnlyPhone mas nome via pushName
-      var contactPhoneToSave = storedPhone || digitsOnlyPhone;
+      // Se é LID não resolvido, não salvar o LID como telefone real.
+      var contactPhoneToSave = storedPhone || (isLid ? '' : digitsOnlyPhone);
       var contactNameToSave = pushName || (storedPhone ? ('Contato ' + storedPhone) : 'Contato WhatsApp');
       var { data: newContact, error: contactError } = await supabaseAdmin
         .from('evolution_contacts')
@@ -798,8 +798,8 @@ app.post('/internal/messages/process', async function(req, res) {
     var conversationCreated = false;
     if (!conversation) {
       var newConvId = uuidv4();
-      // Usar storedPhone (real) ou digitsOnlyPhone (pode ser LID — será corrigido quando resolver)
-      var convPhoneToSave = storedPhone || digitsOnlyPhone;
+      // Usar telefone real quando existir; para LID não resolvido, manter telefone vazio até resolver.
+      var convPhoneToSave = storedPhone || (isLid ? '' : digitsOnlyPhone);
       var { data: newConv, error: convError } = await supabaseAdmin
         .from('evolution_conversations')
         .insert([{

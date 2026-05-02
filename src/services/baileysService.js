@@ -279,6 +279,17 @@ class BaileysService {
         }
       });
 
+      sock.ev.on('chats.phoneNumberShare', async ({ lid, jid }) => {
+        try {
+          const resolvedPhone = await this._rememberLidMapping(sessionName, lid, jid, 'chats.phoneNumberShare');
+          if (resolvedPhone) {
+            console.log('[LID SHARE] ' + this._normalizeLidJid(lid) + ' -> ' + resolvedPhone);
+          }
+        } catch (err) {
+          console.error('[LID SHARE] erro ao persistir telefone real:', err.message);
+        }
+      });
+
       sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
         const s = this.sessions.get(sessionName);
@@ -597,6 +608,19 @@ class BaileysService {
             ...conv,
             evolution_contacts: { phone: realPhone }
           });
+        }
+        const contactIdsFromJid = [...new Set((jidConversations || []).map(conv => conv.contact_id).filter(Boolean))];
+        if (!realPhoneContact && contactIdsFromJid.length > 0) {
+          const { data: jidContacts, error: jidContactErr } = await supabaseAdmin
+            .from('evolution_contacts')
+            .update({ phone: realPhone, updated_at: now })
+            .eq('client_id', sessionRow.client_id)
+            .in('id', contactIdsFromJid)
+            .select('*');
+          if (jidContactErr) throw jidContactErr;
+          for (const contact of (jidContacts || [])) {
+            emitContactUpdate(sessionRow.client_id, contact);
+          }
         }
       }
       for (const conv of (updatedConversations || [])) {

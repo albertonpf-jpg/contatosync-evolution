@@ -420,7 +420,8 @@ class BaileysService {
     console.log('[MEDIA SEND] type=' + type + ' mime=' + mimetype + ' ptt=' + !!media.ptt + ' size=' + buffer.length + ' to=' + jid);
     const result = await session.socket.sendMessage(jid, payload);
     this._rememberSentMessage(sessionName, result?.key, result?.message);
-    console.log('[MEDIA SEND] sent id=' + (result?.key?.id || 'unknown') + ' type=' + type + ' mime=' + mimetype);
+    const sentAudioMime = result?.message?.audioMessage?.mimetype || '';
+    console.log('[MEDIA SEND] sent id=' + (result?.key?.id || 'unknown') + ' type=' + type + ' mime=' + mimetype + (sentAudioMime ? ' waMime=' + sentAudioMime : ''));
     return { success: true, messageId: result.key.id, to: jid, messageType: type, timestamp: new Date() };
   }
 
@@ -450,7 +451,7 @@ class BaileysService {
     const size = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
     if (!size) throw new Error('conversao de audio gerou arquivo vazio');
     console.log('[MEDIA SEND] audio converted to ogg/opus size=' + size);
-    return { path: outputPath, mimetype: 'audio/ogg' };
+    return { path: outputPath, mimetype: 'audio/ogg; codecs=opus' };
   }
 
   getAllSessions() {

@@ -226,6 +226,9 @@ class BaileysService {
           const cachedMessage = this._getSentMessage(sessionName, key);
           if (!cachedMessage) {
             console.warn('[BAILEYS] getMessage sem cache id=' + (key?.id || 'unknown'));
+          } else {
+            const contentType = getContentType(cachedMessage);
+            console.log('[BAILEYS] getMessage cache hit id=' + (key?.id || 'unknown') + ' type=' + (contentType || 'unknown'));
           }
           return cachedMessage;
         }
@@ -410,7 +413,9 @@ class BaileysService {
     } else if (type === 'video' || type === 'gif') {
       payload = { video: buffer, mimetype, caption, gifPlayback: type === 'gif' || mimetype === 'image/gif' };
     } else if (type === 'audio') {
+      const seconds = await this._getAudioDurationSeconds(mediaPath);
       payload = { audio: buffer, mimetype, ptt: !!media.ptt };
+      if (seconds) payload.seconds = seconds;
     } else if (type === 'sticker') {
       payload = { sticker: buffer, mimetype };
     } else {
@@ -418,11 +423,32 @@ class BaileysService {
     }
 
     console.log('[MEDIA SEND] type=' + type + ' mime=' + mimetype + ' ptt=' + !!media.ptt + ' size=' + buffer.length + ' to=' + jid);
-    const result = await session.socket.sendMessage(jid, payload);
+    const sendOptions = type === 'audio' && media.ptt ? { mediaTypeOverride: 'ptt' } : undefined;
+    const result = await session.socket.sendMessage(jid, payload, sendOptions);
     this._rememberSentMessage(sessionName, result?.key, result?.message);
-    const sentAudioMime = result?.message?.audioMessage?.mimetype || '';
-    console.log('[MEDIA SEND] sent id=' + (result?.key?.id || 'unknown') + ' type=' + type + ' mime=' + mimetype + (sentAudioMime ? ' waMime=' + sentAudioMime : ''));
+    const sentAudio = result?.message?.audioMessage;
+    const sentAudioDetails = sentAudio
+      ? ' waMime=' + (sentAudio.mimetype || '')
+        + ' waPtt=' + !!sentAudio.ptt
+        + ' waSeconds=' + (sentAudio.seconds || 0)
+        + ' waLength=' + (sentAudio.fileLength?.toString?.() || sentAudio.fileLength || 0)
+        + ' directPath=' + (sentAudio.directPath ? 'yes' : 'no')
+        + ' mediaKey=' + (sentAudio.mediaKey ? 'yes' : 'no')
+      : '';
+    console.log('[MEDIA SEND] sent id=' + (result?.key?.id || 'unknown') + ' type=' + type + ' mime=' + mimetype + sentAudioDetails);
     return { success: true, messageId: result.key.id, to: jid, messageType: type, timestamp: new Date() };
+  }
+
+  async _getAudioDurationSeconds(filePath) {
+    try {
+      const metadata = await require('music-metadata').parseFile(filePath, { duration: true });
+      const duration = Number(metadata?.format?.duration || 0);
+      if (!Number.isFinite(duration) || duration <= 0) return undefined;
+      return Math.max(1, Math.round(duration));
+    } catch (err) {
+      console.warn('[MEDIA SEND] falha ao calcular duracao do audio: ' + err.message);
+      return undefined;
+    }
   }
 
   async _convertAudioForWhatsApp(inputPath) {
@@ -433,10 +459,13 @@ class BaileysService {
         '-y',
         '-i', inputPath,
         '-vn',
+        '-map_metadata', '-1',
+        '-avoid_negative_ts', 'make_zero',
         '-c:a', 'libopus',
         '-application', 'voip',
         '-frame_duration', '20',
-        '-b:a', '32k',
+        '-vbr', 'on',
+        '-compression_level', '10',
         '-ar', '48000',
         '-ac', '1',
         '-f', 'ogg',

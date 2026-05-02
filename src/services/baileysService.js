@@ -145,7 +145,6 @@ class BaileysService {
       qrCode: null, createdAt: new Date(),
       lidToPhone: new Map(),
       contactsStore: new Map(),
-      phoneNumberRequests: new Map(),
       sentMessages: new Map()
     });
     this._connectSession(sessionName, webhookUrl).catch(err => {
@@ -288,6 +287,23 @@ class BaileysService {
           }
         } catch (err) {
           console.error('[LID SHARE] erro ao persistir telefone real:', err.message);
+        }
+      });
+
+      sock.ws.on('CB:message', async (node) => {
+        try {
+          const from = node?.attrs?.from || '';
+          const senderPn = node?.attrs?.sender_pn || node?.attrs?.participant_pn || '';
+          if (from.endsWith('@lid') && senderPn) {
+            const resolvedPhone = await this._rememberLidMapping(sessionName, from, senderPn, 'message.node.sender_pn');
+            if (resolvedPhone) {
+              console.log('[LID NODE] ' + from + ' -> ' + resolvedPhone);
+            }
+          } else if (from.endsWith('@lid')) {
+            console.log('[LID NODE] sem sender_pn para ' + from + ' attrs=' + Object.keys(node?.attrs || {}).join(','));
+          }
+        } catch (err) {
+          console.error('[LID NODE] erro capturando sender_pn:', err.message);
         }
       });
 
@@ -636,26 +652,6 @@ class BaileysService {
     } catch (dbErr) { console.error('Erro persistindo resolucao LID:', dbErr.message); }
   }
 
-  async _requestPhoneNumberIfNeeded(sessionName, lidJid, lidNum) {
-    const session = this.sessions.get(sessionName);
-    if (!session?.socket || !lidJid || !lidNum) return;
-    if (!session.phoneNumberRequests) session.phoneNumberRequests = new Map();
-
-    const now = Date.now();
-    const lastRequestAt = session.phoneNumberRequests.get(lidJid) || session.phoneNumberRequests.get(lidNum) || 0;
-    const requestIntervalMs = 24 * 60 * 60 * 1000;
-    if (lastRequestAt && now - lastRequestAt < requestIntervalMs) return;
-
-    try {
-      await session.socket.sendMessage(lidJid, { requestPhoneNumber: true });
-      session.phoneNumberRequests.set(lidJid, now);
-      session.phoneNumberRequests.set(lidNum, now);
-      console.log('[LID REQUEST] pedido de telefone enviado para ' + lidJid);
-    } catch (err) {
-      console.error('[LID REQUEST] falhou para ' + lidJid + ': ' + err.message);
-    }
-  }
-
   async _processIncomingMessage(sessionName, message) {
     try {
       const remoteJid = message.key?.remoteJid || '';
@@ -778,7 +774,6 @@ class BaileysService {
 
         // Fallback
         if (!phone) {
-          await this._requestPhoneNumberIfNeeded(sessionName, remoteJid, lidNum);
           phone = lidNum;
           console.log('[LID FALLBACK] ' + remoteJid + ' -> usando LID: ' + phone);
         }

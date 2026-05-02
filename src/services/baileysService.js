@@ -410,14 +410,14 @@ class BaileysService {
     } else if (type === 'video' || type === 'gif') {
       payload = { video: buffer, mimetype, caption, gifPlayback: type === 'gif' || mimetype === 'image/gif' };
     } else if (type === 'audio') {
-      payload = { audio: buffer, mimetype, ptt: !!media.ptt };
+      payload = { audio: { url: mediaPath }, mimetype, ptt: !!media.ptt };
     } else if (type === 'sticker') {
       payload = { sticker: buffer, mimetype };
     } else {
       payload = { document: buffer, mimetype, fileName, caption };
     }
 
-    console.log('[MEDIA SEND] type=' + type + ' mime=' + mimetype + ' size=' + buffer.length + ' to=' + jid);
+    console.log('[MEDIA SEND] type=' + type + ' mime=' + mimetype + ' ptt=' + !!media.ptt + ' size=' + buffer.length + ' to=' + jid);
     const result = await session.socket.sendMessage(jid, payload);
     this._rememberSentMessage(sessionName, result?.key, result?.message);
     console.log('[MEDIA SEND] sent id=' + (result?.key?.id || 'unknown') + ' type=' + type + ' mime=' + mimetype);

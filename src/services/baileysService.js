@@ -396,7 +396,7 @@ class BaileysService {
     const fileName = sanitizeFileName(media.fileName || media.originalName || 'arquivo');
     const type = this._normalizeOutgoingMediaType(media.messageType, mimetype, fileName);
     console.log('[MEDIA SEND] source path=' + mediaPath + ' exists=' + fs.existsSync(mediaPath) + ' size=' + fileSizeOrZero(mediaPath));
-    if (type === 'audio' && mimetype !== 'audio/mpeg') {
+    if (type === 'audio' && !mimetype.startsWith('audio/ogg')) {
       const converted = await this._convertAudioForWhatsApp(mediaPath);
       mediaPath = converted.path;
       mimetype = converted.mimetype;
@@ -410,7 +410,7 @@ class BaileysService {
     } else if (type === 'video' || type === 'gif') {
       payload = { video: buffer, mimetype, caption, gifPlayback: type === 'gif' || mimetype === 'image/gif' };
     } else if (type === 'audio') {
-      payload = { audio: { url: mediaPath }, mimetype, ptt: !!media.ptt };
+      payload = { audio: buffer, mimetype, ptt: !!media.ptt };
     } else if (type === 'sticker') {
       payload = { sticker: buffer, mimetype };
     } else {
@@ -427,17 +427,19 @@ class BaileysService {
 
   async _convertAudioForWhatsApp(inputPath) {
     if (!ffmpegPath) throw new Error('ffmpeg nao disponivel para converter audio');
-    const outputPath = inputPath.replace(/\.[^.]+$/, '') + '-whatsapp.mp3';
+    const outputPath = inputPath.replace(/\.[^.]+$/, '') + '-whatsapp.ogg';
     await new Promise((resolve, reject) => {
       execFile(ffmpegPath, [
         '-y',
         '-i', inputPath,
         '-vn',
-        '-c:a', 'libmp3lame',
-        '-b:a', '64k',
-        '-ar', '44100',
+        '-c:a', 'libopus',
+        '-application', 'voip',
+        '-frame_duration', '20',
+        '-b:a', '32k',
+        '-ar', '48000',
         '-ac', '1',
-        '-f', 'mp3',
+        '-f', 'ogg',
         outputPath
       ], (error, _stdout, stderr) => {
         if (error) {
@@ -450,8 +452,8 @@ class BaileysService {
     });
     const size = fs.existsSync(outputPath) ? fs.statSync(outputPath).size : 0;
     if (!size) throw new Error('conversao de audio gerou arquivo vazio');
-    console.log('[MEDIA SEND] audio converted to mp3 size=' + size);
-    return { path: outputPath, mimetype: 'audio/mpeg' };
+    console.log('[MEDIA SEND] audio converted to ogg/opus size=' + size);
+    return { path: outputPath, mimetype: 'audio/ogg; codecs=opus' };
   }
 
   getAllSessions() {

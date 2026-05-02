@@ -161,42 +161,18 @@ function getPcmPeak(chunks: Float32Array[]): number {
   return peak;
 }
 
-function encodeWav(chunks: Float32Array[], sampleRate: number, gain = 1): Blob {
-  const sampleCount = chunks.reduce((total, chunk) => total + chunk.length, 0);
-  const buffer = new ArrayBuffer(44 + sampleCount * 2);
-  const view = new DataView(buffer);
-  let offset = 0;
+function getRecordingMimeType(): string {
+  const preferredTypes = [
+    'audio/webm;codecs=opus',
+    'audio/ogg;codecs=opus',
+    'audio/webm'
+  ];
+  return preferredTypes.find(type => MediaRecorder.isTypeSupported(type)) || '';
+}
 
-  const writeString = (value: string) => {
-    for (let i = 0; i < value.length; i += 1) {
-      view.setUint8(offset + i, value.charCodeAt(i));
-    }
-    offset += value.length;
-  };
-
-  writeString('RIFF');
-  view.setUint32(offset, 36 + sampleCount * 2, true); offset += 4;
-  writeString('WAVE');
-  writeString('fmt ');
-  view.setUint32(offset, 16, true); offset += 4;
-  view.setUint16(offset, 1, true); offset += 2;
-  view.setUint16(offset, 1, true); offset += 2;
-  view.setUint32(offset, sampleRate, true); offset += 4;
-  view.setUint32(offset, sampleRate * 2, true); offset += 4;
-  view.setUint16(offset, 2, true); offset += 2;
-  view.setUint16(offset, 16, true); offset += 2;
-  writeString('data');
-  view.setUint32(offset, sampleCount * 2, true); offset += 4;
-
-  for (const chunk of chunks) {
-    for (let i = 0; i < chunk.length; i += 1) {
-      const sample = Math.max(-1, Math.min(1, chunk[i] * gain));
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-      offset += 2;
-    }
-  }
-
-  return new Blob([buffer], { type: 'audio/wav' });
+function getRecordingExtension(mimeType: string): string {
+  if (mimeType.includes('ogg')) return 'ogg';
+  return 'webm';
 }
 
 function mediaLabel(type: string): string {
@@ -245,7 +221,6 @@ export default function ConversationsPage() {
   const recordingSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const recordingProcessorRef = useRef<ScriptProcessorNode | null>(null);
   const recordingPcmChunksRef = useRef<Float32Array[]>([]);
-  const recordingSampleRateRef = useRef(48000);
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const prevMsgCount = useRef(0);
   const currentConvId = useRef<string | null>(null);
@@ -536,28 +511,43 @@ export default function ConversationsPage() {
         audio: {
           ...deviceConstraint,
           channelCount: 1,
-          echoCancellation: false,
-          noiseSuppression: false,
+          echoCancellation: true,
+          noiseSuppression: true,
           autoGainControl: true
         }
       });
       recordingStreamRef.current = stream;
       recordingChunksRef.current = [];
       recordingPcmChunksRef.current = [];
+      const mimeType = getRecordingMimeType();
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType, audioBitsPerSecond: 32000 } : { audioBitsPerSecond: 32000 }
+      );
 
       const audioContext = new AudioContext();
       const source = audioContext.createMediaStreamSource(stream);
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
-      recordingSampleRateRef.current = audioContext.sampleRate;
+      const silentOutput = audioContext.createGain();
+      silentOutput.gain.value = 0;
       processor.onaudioprocess = event => {
         recordingPcmChunksRef.current.push(new Float32Array(event.inputBuffer.getChannelData(0)));
       };
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) recordingChunksRef.current.push(event.data);
+      };
+      recorder.onerror = event => {
+        console.error('[recording]', event);
+      };
 
       source.connect(processor);
-      processor.connect(audioContext.destination);
+      processor.connect(silentOutput);
+      silentOutput.connect(audioContext.destination);
       audioContextRef.current = audioContext;
       recordingSourceRef.current = source;
       recordingProcessorRef.current = processor;
+      mediaRecorderRef.current = recorder;
+      recorder.start(250);
       setRecording(true);
     } catch (error) {
       console.error('[startRecording]', error);
@@ -568,16 +558,27 @@ export default function ConversationsPage() {
   const stopRecording = () => {
     if (!recording) return;
     const chunks = recordingPcmChunksRef.current;
-    if (chunks.length > 0) {
-      const peak = getPcmPeak(chunks);
-      if (peak < 0.001) {
-        alert('Nenhum som foi capturado pelo microfone. Verifique o microfone selecionado no navegador e grave novamente.');
-      } else {
-        const gain = Math.min(12, 0.85 / peak);
-        const blob = encodeWav(chunks, recordingSampleRateRef.current, gain);
-        const file = new File([blob], `audio-${Date.now()}.wav`, { type: 'audio/wav' });
-        setSelectedFile(file);
-      }
+    const recorder = mediaRecorderRef.current;
+    const peak = getPcmPeak(chunks);
+    if (recorder) {
+      recorder.onstop = () => {
+        const type = recorder?.mimeType || 'audio/webm';
+        const blob = new Blob(recordingChunksRef.current, { type });
+        if (peak < 0.001) {
+          alert('Nenhum som foi capturado pelo microfone. Verifique o microfone selecionado no navegador e grave novamente.');
+        } else if (blob.size > 0) {
+          const extension = getRecordingExtension(type);
+          const file = new File([blob], `audio-${Date.now()}.${extension}`, { type });
+          setSelectedFile(file);
+        }
+        recordingChunksRef.current = [];
+      };
+    }
+    if (recorder?.state === 'recording') {
+      recorder.requestData();
+      recorder.stop();
+    } else if (peak < 0.001) {
+      alert('Nenhum som foi capturado pelo microfone. Verifique o microfone selecionado no navegador e grave novamente.');
     }
 
     recordingProcessorRef.current?.disconnect();
@@ -588,7 +589,6 @@ export default function ConversationsPage() {
     recordingSourceRef.current = null;
     audioContextRef.current = null;
     recordingStreamRef.current = null;
-    recordingChunksRef.current = [];
     recordingPcmChunksRef.current = [];
     mediaRecorderRef.current = null;
     setRecording(false);

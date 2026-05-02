@@ -8,6 +8,44 @@ const { emitConversationUpdate } = require('../services/socketService');
 
 const router = express.Router();
 
+function normalizePhone(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function isRealBrazilPhone(value) {
+  const digits = normalizePhone(value);
+  return digits.startsWith('55') && digits.length >= 12 && digits.length <= 13;
+}
+
+function hydrateConversationPhone(conversation) {
+  if (!conversation) return conversation;
+  const contactPhone = conversation.evolution_contacts?.phone;
+
+  if (isRealBrazilPhone(contactPhone) && !isRealBrazilPhone(conversation.phone)) {
+    return {
+      ...conversation,
+      phone: normalizePhone(contactPhone),
+      evolution_contacts: {
+        ...conversation.evolution_contacts,
+        phone: normalizePhone(contactPhone)
+      }
+    };
+  }
+
+  if (isRealBrazilPhone(conversation.phone) && conversation.evolution_contacts) {
+    return {
+      ...conversation,
+      phone: normalizePhone(conversation.phone),
+      evolution_contacts: {
+        ...conversation.evolution_contacts,
+        phone: isRealBrazilPhone(contactPhone) ? normalizePhone(contactPhone) : normalizePhone(conversation.phone)
+      }
+    };
+  }
+
+  return conversation;
+}
+
 /**
  * GET /api/conversations
  * Listar conversas do cliente com paginação e filtros
@@ -67,8 +105,9 @@ router.get('/',
     }
 
     const pagination = formatPaginationMeta(count, currentPage, currentLimit);
+    const hydratedConversations = (conversations || []).map(hydrateConversationPhone);
 
-    paginated(res, conversations, pagination, 'Conversas recuperadas com sucesso');
+    paginated(res, hydratedConversations, pagination, 'Conversas recuperadas com sucesso');
   })
 );
 
@@ -98,6 +137,8 @@ router.get('/:id',
       return notFound(res, 'Conversa não encontrada');
     }
 
+    const hydratedConversation = hydrateConversationPhone(conversation);
+
     // Buscar mensagens da conversa
     const { data: messages, error: msgError } = await executeWithRLS(req.user.id, (client) =>
       client
@@ -116,7 +157,7 @@ router.get('/:id',
     const sortedMessages = messages.reverse();
 
     success(res, {
-      conversation,
+      conversation: hydratedConversation,
       messages: sortedMessages
     }, 'Conversa recuperada com sucesso');
   })

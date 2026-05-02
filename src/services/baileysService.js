@@ -161,7 +161,7 @@ class BaileysService {
   }
 
   _jidToDigits(jid) {
-    return (jid || '').split('@')[0].replace(/\D/g, '');
+    return (jid || '').split('@')[0].split(':')[0].replace(/\D/g, '');
   }
 
   _normalizeLidJid(value) {
@@ -195,6 +195,36 @@ class BaileysService {
     return phoneDigits;
   }
 
+  async _ingestContactsForLidMapping(sessionName, contacts, source, mergeExisting) {
+    const session = this.sessions.get(sessionName);
+    if (!session) return { mapped: 0, stored: 0 };
+    if (!session.lidToPhone) session.lidToPhone = new Map();
+    if (!session.contactsStore) session.contactsStore = new Map();
+
+    let mapped = 0;
+    let stored = 0;
+    for (const contact of (contacts || [])) {
+      const id = contact.id || contact.jid || '';
+      const normalizedLid = contact.lid ? this._normalizeLidJid(contact.lid) : (id.endsWith('@lid') ? this._normalizeLidJid(id) : '');
+      const nextContact = mergeExisting && id ? { ...(session.contactsStore.get(id) || {}), ...contact, id } : { ...contact, id };
+
+      if (id) {
+        session.contactsStore.set(id, nextContact);
+        stored++;
+      }
+      if (contact.phoneNumber) session.contactsStore.set(contact.phoneNumber, nextContact);
+      if (normalizedLid) session.contactsStore.set(normalizedLid, nextContact);
+
+      const phoneJid = this._extractPhoneJid(contact.phoneNumber) || this._extractPhoneJid(id);
+      if (phoneJid && normalizedLid) {
+        const resolved = await this._rememberLidMapping(sessionName, normalizedLid, phoneJid, source);
+        if (resolved) mapped++;
+      }
+    }
+
+    return { mapped, stored };
+  }
+
   async _connectSession(sessionName, webhookUrl = null) {
     try {
       const sessionDir = path.join(this.authDir, sessionName);
@@ -218,7 +248,12 @@ class BaileysService {
         browser: ['ContatoSync Evolution', 'Desktop', '1.0.0'],
         connectTimeoutMs: 120000, defaultQueryTimeoutMs: 60000,
         keepAliveIntervalMs: 10000, markOnlineOnConnect: false,
-        syncFullHistory: false, shouldSyncHistoryMessage: () => false,
+        syncFullHistory: true,
+        shouldSyncHistoryMessage: (msg) => [
+          proto.HistorySync.HistorySyncType.INITIAL_BOOTSTRAP,
+          proto.HistorySync.HistorySyncType.RECENT,
+          proto.HistorySync.HistorySyncType.PUSH_NAME
+        ].includes(msg?.syncType),
         maxMsgRetryCount: 3, retryRequestDelayMs: 250,
         shouldIgnoreJid: () => false, linkPreviewImageThumbnailWidth: 192,
         transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
@@ -239,44 +274,18 @@ class BaileysService {
 
       // ── CAPTURA DE CONTATOS — alimenta lidToPhone e contactsStore ──
       sock.ev.on('contacts.upsert', async (contacts) => {
+        const result = await this._ingestContactsForLidMapping(sessionName, contacts, 'contacts.upsert', false);
         const s = this.sessions.get(sessionName);
-        if (!s) return;
-        if (!s.lidToPhone) s.lidToPhone = new Map();
-        if (!s.contactsStore) s.contactsStore = new Map();
-
-        for (const contact of contacts) {
-          if (contact.id) s.contactsStore.set(contact.id, contact);
-          if (contact.phoneNumber) s.contactsStore.set(contact.phoneNumber, contact);
-          if (contact.lid) s.contactsStore.set(this._normalizeLidJid(contact.lid), contact);
-
-          const phoneJid = this._extractPhoneJid(contact.phoneNumber) || this._extractPhoneJid(contact.id);
-          const lidJid = contact.lid || (contact.id && contact.id.endsWith('@lid') ? contact.id : '');
-          if (phoneJid && lidJid) {
-            await this._rememberLidMapping(sessionName, lidJid, phoneJid, 'contacts.upsert');
-          }
-        }
-        console.log('[LID MAP] Total: ' + s.lidToPhone.size + ' | Store: ' + s.contactsStore.size);
+        console.log('[LID MAP] upsert mapped=' + result.mapped + ' stored=' + result.stored + ' | Total: ' + (s?.lidToPhone?.size || 0) + ' | Store: ' + (s?.contactsStore?.size || 0));
       });
 
       sock.ev.on('contacts.update', async (updates) => {
-        const s = this.sessions.get(sessionName);
-        if (!s) return;
-        if (!s.lidToPhone) s.lidToPhone = new Map();
-        if (!s.contactsStore) s.contactsStore = new Map();
-        for (const contact of updates) {
-          if (contact.id) {
-            const existing = s.contactsStore.get(contact.id) || {};
-            s.contactsStore.set(contact.id, { ...existing, ...contact });
-          }
-          if (contact.phoneNumber) s.contactsStore.set(contact.phoneNumber, { ...(s.contactsStore.get(contact.phoneNumber) || {}), ...contact });
-          if (contact.lid) s.contactsStore.set(this._normalizeLidJid(contact.lid), { ...(s.contactsStore.get(this._normalizeLidJid(contact.lid)) || {}), ...contact });
+        await this._ingestContactsForLidMapping(sessionName, updates, 'contacts.update', true);
+      });
 
-          const phoneJid = this._extractPhoneJid(contact.phoneNumber) || this._extractPhoneJid(contact.id);
-          const lidJid = contact.lid || (contact.id && contact.id.endsWith('@lid') ? contact.id : '');
-          if (phoneJid && lidJid) {
-            await this._rememberLidMapping(sessionName, lidJid, phoneJid, 'contacts.update');
-          }
-        }
+      sock.ev.on('messaging-history.set', async ({ contacts = [], syncType, progress }) => {
+        const result = await this._ingestContactsForLidMapping(sessionName, contacts, 'history.sync', true);
+        console.log('[LID HISTORY] syncType=' + syncType + ' progress=' + progress + ' contacts=' + contacts.length + ' mapped=' + result.mapped);
       });
 
       sock.ev.on('chats.phoneNumberShare', async ({ lid, jid }) => {

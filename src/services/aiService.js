@@ -189,6 +189,317 @@ function extractJsonLdImages(html, pageUrl) {
   return images.filter(Boolean);
 }
 
+function flattenJsonLdNodes(value) {
+  const nodes = [];
+  const visit = (item) => {
+    if (!item) return;
+    if (Array.isArray(item)) {
+      item.forEach(visit);
+      return;
+    }
+    if (typeof item !== 'object') return;
+    nodes.push(item);
+    if (Array.isArray(item['@graph'])) item['@graph'].forEach(visit);
+    if (Array.isArray(item.itemListElement)) item.itemListElement.forEach(entry => visit(entry.item || entry));
+  };
+  visit(value);
+  return nodes;
+}
+
+function parseJsonLdScripts(html) {
+  const items = [];
+  const scriptRegex = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = scriptRegex.exec(html))) {
+    try {
+      items.push(JSON.parse(match[1].trim()));
+    } catch (error) {
+      // Ignore invalid JSON-LD and keep parsing other scripts.
+    }
+  }
+  return items;
+}
+
+function getJsonLdType(node) {
+  const type = node?.['@type'];
+  return Array.isArray(type) ? type.map(String).join(' ').toLowerCase() : String(type || '').toLowerCase();
+}
+
+function extractJsonLdProducts(html, pageUrl) {
+  const products = [];
+  for (const parsed of parseJsonLdScripts(html)) {
+    for (const node of flattenJsonLdNodes(parsed)) {
+      if (!getJsonLdType(node).includes('product')) continue;
+      const rawImages = Array.isArray(node.image) ? node.image : [node.image];
+      const images = rawImages
+        .map(image => typeof image === 'string' ? image : image?.url)
+        .map(image => resolvePageUrl(pageUrl, image))
+        .filter(Boolean);
+      const offers = Array.isArray(node.offers) ? node.offers[0] : node.offers;
+      const price = offers?.price || offers?.lowPrice || offers?.highPrice || node.price;
+      const availability = String(offers?.availability || '').split('/').pop();
+      products.push({
+        url: resolvePageUrl(pageUrl, node.url || offers?.url || pageUrl),
+        title: stripHtml(node.name || ''),
+        description: stripHtml(node.description || ''),
+        price: price ? formatCurrencyBRL(price) : '',
+        stock: availability || null,
+        variations: [],
+        images: [...new Set(images)].slice(0, 5)
+      });
+    }
+  }
+  return products.filter(product => product.title || product.images.length);
+}
+
+function stripHtml(value) {
+  return decodeHtml(String(value || '').replace(/<[^>]+>/g, ' '));
+}
+
+function normalizeSearchText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function getSearchTokens(value) {
+  return normalizeSearchText(value)
+    .split(' ')
+    .filter(token => token.length >= 3 && !['produto', 'produtos', 'preco', 'valor', 'foto', 'imagem', 'quero', 'tem', 'voce', 'voces', 'para', 'com'].includes(token));
+}
+
+function formatCurrencyBRL(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '';
+  return 'R$ ' + number.toFixed(2).replace('.', ',');
+}
+
+function getFacilZapImageUrl(image) {
+  if (!image) return '';
+  const value = String(image).replace(/\\\//g, '/');
+  if (/^https?:\/\//i.test(value)) return value;
+  return 'https://arquivos.facilzap.app.br/' + value.replace(/^\/+/, '');
+}
+
+function getFacilZapPrice(product) {
+  return product?.precos_produto?.promocional
+    || product?.precos_produto?.preco_a_partir?.preco
+    || product?.precos_produto?.padrao
+    || product?.preco
+    || null;
+}
+
+function getFacilZapVariations(product) {
+  const variations = product?.variacoes && typeof product.variacoes === 'object'
+    ? Object.values(product.variacoes)
+    : [];
+  return variations
+    .map(variation => variation?.nome || variation?.subgrupo)
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
+function getProductScore(product, messageTokens) {
+  if (!messageTokens.length) return 0;
+  const haystack = normalizeSearchText([
+    product.title,
+    product.description,
+    product.variations?.join(' ')
+  ].join(' '));
+  return messageTokens.reduce((score, token) => score + (haystack.includes(token) ? 1 : 0), 0);
+}
+
+function dedupeProducts(products) {
+  const seen = new Set();
+  return products.filter(product => {
+    const key = String(product.id || product.url || product.title || '').toLowerCase();
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function getAttribute(tag, name) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return decodeHtml(tag.match(new RegExp(`${escaped}\\s*=\\s*["']([^"']+)["']`, 'i'))?.[1] || '');
+}
+
+function extractPriceNearHtml(fragment) {
+  const text = stripHtml(fragment);
+  return text.match(/(?:R\$\s*)?\d{1,5}(?:[.,]\d{2})/i)?.[0] || '';
+}
+
+function extractTitleNearHtml(fragment, fallback = '') {
+  const heading = fragment.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i)?.[1]
+    || fragment.match(/class=["'][^"']*(?:title|titulo|name|nome|product)[^"']*["'][^>]*>([\s\S]*?)<\//i)?.[1]
+    || fallback;
+  return stripHtml(heading).slice(0, 120);
+}
+
+function extractGenericHtmlProducts(html, pageUrl, message) {
+  const products = [];
+  const imgRegex = /<img\b[^>]*>/gi;
+  const messageTokens = getSearchTokens(message);
+  let match;
+  while ((match = imgRegex.exec(html))) {
+    const tag = match[0];
+    const src = getAttribute(tag, 'src')
+      || getAttribute(tag, 'data-src')
+      || getAttribute(tag, 'data-original')
+      || getAttribute(tag, 'data-lazy')
+      || getAttribute(tag, 'data-lazy-src');
+    const imageUrl = resolvePageUrl(pageUrl, src);
+    if (!imageUrl || /logo|banner|categoria|category|icon|sprite|placeholder|sem_foto/i.test(imageUrl)) continue;
+
+    const start = Math.max(0, match.index - 1200);
+    const end = Math.min(html.length, match.index + 1800);
+    const fragment = html.slice(start, end);
+    const hasProductSignal = /produto|product|price|pre[cç]o|valor|comprar|add-to-cart|cart|sku|variant|varia[cç][aã]o|R\$/i.test(fragment);
+    if (!hasProductSignal) continue;
+
+    const alt = getAttribute(tag, 'alt') || getAttribute(tag, 'title');
+    const title = extractTitleNearHtml(fragment, alt);
+    if (!title || /logo|banner|categoria|menu|icone|icon/i.test(title)) continue;
+
+    const hrefMatches = [...fragment.matchAll(/<a\b[^>]+href=["']([^"']+)["'][^>]*>/gi)];
+    const href = hrefMatches.length ? hrefMatches[hrefMatches.length - 1][1] : '';
+    const price = extractPriceNearHtml(fragment);
+    const description = stripHtml(fragment).slice(0, 300);
+    const product = {
+      url: resolvePageUrl(pageUrl, href || pageUrl),
+      title,
+      description,
+      price,
+      stock: null,
+      variations: [],
+      images: [imageUrl],
+      score: 0
+    };
+    product.score = getProductScore(product, messageTokens);
+    products.push(product);
+  }
+
+  return dedupeProducts(products)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+}
+
+async function enrichProductsFromPages(products, message) {
+  const enriched = [];
+  for (const product of products.slice(0, 6)) {
+    if (!product.url || !/^https?:\/\//i.test(product.url)) {
+      enriched.push(product);
+      continue;
+    }
+    try {
+      const response = await fetch(product.url, {
+        headers: { 'User-Agent': 'ContatoSyncBot/1.0 (+https://contatosync-evolution.vercel.app)' },
+        signal: AbortSignal.timeout(6000)
+      });
+      if (!response.ok) {
+        enriched.push(product);
+        continue;
+      }
+      const html = await response.text();
+      const jsonProducts = extractJsonLdProducts(html, product.url);
+      const pageProduct = jsonProducts[0];
+      if (pageProduct) {
+        enriched.push({
+          ...product,
+          ...pageProduct,
+          title: pageProduct.title || product.title,
+          description: pageProduct.description || product.description,
+          price: pageProduct.price || product.price,
+          images: pageProduct.images?.length ? pageProduct.images : product.images,
+          score: getProductScore({ ...product, ...pageProduct }, getSearchTokens(message))
+        });
+      } else {
+        enriched.push(product);
+      }
+    } catch (error) {
+      enriched.push(product);
+    }
+  }
+  return enriched;
+}
+
+async function fetchFacilZapProductsFromHtml(html, pageUrl, message) {
+  const endpoint = html.match(/const\s+urlCarregarSecoesProdutos\s*=\s*`([^`]+)`/i)?.[1]
+    || html.match(/const\s+urlCarregarSecoesProdutos\s*=\s*['"]([^'"]+)['"]/i)?.[1];
+  if (!endpoint) return [];
+
+  const categoryMatch = html.match(/const\s+categoriasAtivasCatalogo\s*=\s*(\[[\s\S]*?\]);/i);
+  let categories = [];
+  if (categoryMatch?.[1]) {
+    try {
+      categories = JSON.parse(categoryMatch[1]);
+    } catch (error) {
+      categories = [];
+    }
+  }
+
+  const messageTokens = getSearchTokens(message);
+  const matchingCategories = categories
+    .filter(category => getProductScore({ title: category.nome }, messageTokens) > 0)
+    .map(category => String(category.id))
+    .slice(0, 4);
+
+  const body = {
+    secoes: ['lancamentos', 'mais_vendidos', 'promocoes', 'destaques'],
+    categorias: matchingCategories
+  };
+
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      'User-Agent': 'ContatoSyncBot/1.0 (+https://contatosync-evolution.vercel.app)'
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10000)
+  });
+
+  if (!response.ok) return [];
+  const data = await response.json();
+  const catalogBase = html.match(/const\s+baseUrlCatalogo\s*=\s*`([^`]+)`/i)?.[1]
+    || new URL('/c/varejo/{PATH}', pageUrl).toString();
+
+  const products = [];
+  for (const list of Object.values(data)) {
+    if (!Array.isArray(list)) continue;
+    for (const product of list) {
+      const images = [
+        ...(Array.isArray(product.imagens) ? product.imagens : []),
+        ...(product.imagens_variacoes && typeof product.imagens_variacoes === 'object' ? Object.values(product.imagens_variacoes).flat() : [])
+      ].map(getFacilZapImageUrl).filter(Boolean);
+      const price = getFacilZapPrice(product);
+      const variations = getFacilZapVariations(product);
+      products.push({
+        id: product.id,
+        url: String(catalogBase).replace('{PATH}', 'produto/' + product.id),
+        title: product.nome || 'Produto',
+        description: stripHtml(product.descricao || ''),
+        price: price ? formatCurrencyBRL(price) : '',
+        stock: Number.isFinite(Number(product.total_estoque)) ? Number(product.total_estoque) : null,
+        variations,
+        images: [...new Set(images)].slice(0, 5),
+        score: 0
+      });
+    }
+  }
+
+  const uniqueProducts = dedupeProducts(products)
+    .map(product => ({ ...product, score: getProductScore(product, messageTokens) }))
+    .sort((a, b) => b.score - a.score);
+
+  return uniqueProducts.slice(0, 10);
+}
+
 async function fetchProductContext(message, sourceUrls = []) {
   const urls = normalizeSourceUrls([message, ...sourceUrls]);
   if (urls.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
@@ -205,6 +516,29 @@ async function fetchProductContext(message, sourceUrls = []) {
       });
       if (!response.ok) continue;
       const html = await response.text();
+      const facilZapProducts = await fetchFacilZapProductsFromHtml(html, url, message);
+      if (facilZapProducts.length > 0) {
+        for (const product of facilZapProducts) {
+          for (const image of product.images || []) {
+            if (!imageUrls.includes(image)) imageUrls.push(image);
+          }
+          products.push(product);
+        }
+        continue;
+      }
+      const jsonLdProducts = extractJsonLdProducts(html, url);
+      const genericProducts = jsonLdProducts.length > 0
+        ? jsonLdProducts
+        : await enrichProductsFromPages(extractGenericHtmlProducts(html, url, message), message);
+      if (genericProducts.length > 0) {
+        for (const product of genericProducts) {
+          for (const image of product.images || []) {
+            if (!imageUrls.includes(image)) imageUrls.push(image);
+          }
+          products.push(product);
+        }
+        continue;
+      }
       const title = getTitleFromHtml(html);
       const description = getMetaContent(html, 'og:description') || getMetaContent(html, 'description');
       const candidateImages = [
@@ -226,6 +560,9 @@ async function fetchProductContext(message, sourceUrls = []) {
   const contextText = products.map((product, index) => [
     `Produto/link ${index + 1}: ${product.url}`,
     product.title ? `Titulo: ${product.title}` : '',
+    product.price ? `Preco: ${product.price}` : '',
+    product.stock !== null && product.stock !== undefined ? `Estoque informado: ${product.stock}` : '',
+    product.variations?.length ? `Variacoes: ${product.variations.join(', ')}` : '',
     product.description ? `Descricao: ${product.description}` : '',
     product.images?.length ? `Imagens encontradas: ${product.images.slice(0, 5).join(', ')}` : ''
   ].filter(Boolean).join('\n')).join('\n\n');
@@ -234,8 +571,12 @@ async function fetchProductContext(message, sourceUrls = []) {
   for (const product of products) {
     for (const image of (product.images || []).slice(0, 5)) {
       productCards.push({
-        title: product.title || 'Produto',
-        description: product.description || '',
+        title: String(product.title || 'Produto').slice(0, 60),
+        description: [
+          product.price ? `Preco: ${product.price}` : '',
+          product.variations?.length ? `Variacoes: ${product.variations.slice(0, 4).join(', ')}` : '',
+          product.description || ''
+        ].filter(Boolean).join('\n').slice(0, 180),
         url: product.url,
         imageUrl: image
       });
@@ -390,7 +731,7 @@ async function buildOpenAIInputContent({ apiKey, message, media, config }) {
   if (productContext.contextText) {
     content.push({
       type: 'input_text',
-      text: `${productContext.contextText}\n\nSe essas informacoes forem de produto, responda com dados uteis e objetivos. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`
+      text: `${productContext.contextText}\n\nUse essas informacoes para responder com nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`
     });
   }
 

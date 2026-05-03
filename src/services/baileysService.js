@@ -547,6 +547,24 @@ class BaileysService {
     return { success: true, messageId: message.key.id, to: jid, messageType: 'carousel', cards: interactiveCards.length, timestamp: new Date() };
   }
 
+  async sendRemoteImageMessage(sessionName, jidOrPhone, imageUrl, caption = '') {
+    const session = this.sessions.get(sessionName);
+    if (!session) throw new Error('Sessao nao encontrada: ' + sessionName);
+    if (session.status !== 'connected') {
+      if (session.socket?.user?.id) { session.status = 'connected'; }
+      else { throw new Error('Sessao nao conectada. Status: ' + session.status); }
+    }
+
+    const jid = jidOrPhone.includes('@') ? jidOrPhone : jidOrPhone.replace(/\D/g, '') + '@s.whatsapp.net';
+    const imageBuffer = await this._downloadRemoteBuffer(imageUrl);
+    const result = await session.socket.sendMessage(jid, {
+      image: imageBuffer,
+      caption: String(caption || '').slice(0, 900)
+    });
+    this._rememberSentMessage(sessionName, result?.key, result?.message);
+    return { success: true, messageId: result.key.id, to: jid, messageType: 'image', timestamp: new Date() };
+  }
+
   async _downloadRemoteBuffer(url) {
     const response = await fetch(url, {
       headers: { 'User-Agent': 'ContatoSyncBot/1.0' },

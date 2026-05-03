@@ -189,7 +189,12 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       console.warn('[AI AUTO] Falha ao enviar carrossel nativo, enviando imagens simples: ' + carouselError.message);
       for (const card of aiResult.product_cards.slice(0, 5)) {
         try {
-          await baileysService.sendTextMessage(sessionName, jid, `${card.title || 'Produto'}\n${card.url || ''}`.trim());
+          await baileysService.sendRemoteImageMessage(
+            sessionName,
+            jid,
+            card.imageUrl,
+            `${card.title || 'Produto'}\n${card.description || ''}\n${card.url || ''}`.trim()
+          );
         } catch (fallbackError) {
           console.warn('[AI AUTO] Falha no fallback do card: ' + fallbackError.message);
         }

@@ -390,6 +390,12 @@ function getSearchTokens(value) {
       'ainda',
       'tiver',
       'tiverem',
+      'pode',
+      'poderia',
+      'quais',
+      'qual',
+      'site',
+      'loja',
       'quero',
       'manda',
       'mande',
@@ -416,6 +422,7 @@ function getSearchTokens(value) {
       'tem',
       'voce',
       'voces',
+      'voc',
       'para',
       'com',
       'que'
@@ -535,7 +542,27 @@ function getFacilZapProductListEndpoint(html) {
     || '';
 }
 
-function getFacilZapProductsPageUrl(pageUrl) {
+function getFacilZapProductsPageUrl(pageUrl, html = '') {
+  const catalogBase = html.match(/const\s+baseUrlCatalogo\s*=\s*`([^`]+)`/i)?.[1]
+    || html.match(/const\s+baseUrlCatalogo\s*=\s*['"]([^'"]+)['"]/i)?.[1]
+    || '';
+  if (catalogBase && catalogBase.includes('{PATH}')) {
+    return catalogBase.replace('{PATH}', 'produtos');
+  }
+
+  const actionUrl = html.match(/<form[^>]+action=["']([^"']+\/c\/[^"']+\/\d+)["']/i)?.[1]
+    || html.match(/https?:\/\/[^"'\s]+\/c\/[^"'\s]+\/\d+/i)?.[0]
+    || '';
+  if (actionUrl) {
+    try {
+      const url = new URL(actionUrl, pageUrl);
+      const match = url.pathname.match(/^\/c\/([^/]+)\/(\d+)/);
+      if (match) return `${url.origin}/c/${match[1]}/produtos/${match[2]}`;
+    } catch (error) {
+      // Keep the URL-path fallback below.
+    }
+  }
+
   try {
     const url = new URL(pageUrl);
     const match = url.pathname.match(/^\/c\/([^/]+)\/(\d+)/);
@@ -781,7 +808,7 @@ async function fetchFacilZapProductsFromHtml(html, pageUrl, message) {
   let catalogPageUrl = pageUrl;
   let listEndpoint = getFacilZapProductListEndpoint(catalogHtml);
   if (!listEndpoint) {
-    const productsPageUrl = getFacilZapProductsPageUrl(pageUrl);
+    const productsPageUrl = getFacilZapProductsPageUrl(pageUrl, catalogHtml);
     if (productsPageUrl && productsPageUrl !== pageUrl) {
       try {
         const response = await fetch(productsPageUrl, {
@@ -888,6 +915,7 @@ async function fetchProductContext(message, sourceUrls = []) {
 
   const products = [];
   const imageUrls = [];
+  console.log('[AI PRODUCT] Buscando catalogo | query: ' + normalizeSearchText(message).slice(0, 120) + ' | fontes: ' + urls.join(', '));
   for (const url of urls) {
     try {
       const response = await fetch(url, {
@@ -938,6 +966,7 @@ async function fetchProductContext(message, sourceUrls = []) {
   }
 
   const relevantProducts = getRelevantProducts(products, message);
+  console.log('[AI PRODUCT] Resultado catalogo | produtos_coletados: ' + products.length + ' | produtos_relevantes: ' + relevantProducts.length);
 
   if (relevantProducts.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
 

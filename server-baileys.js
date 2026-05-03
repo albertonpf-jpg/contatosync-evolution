@@ -55,7 +55,7 @@ function toPublicMediaUrl(mediaUrl) {
   return baseUrl ? baseUrl + (mediaUrl.startsWith('/') ? mediaUrl : '/' + mediaUrl) : mediaUrl;
 }
 
-async function sendAIAutoReply({ sessionName, clientId, conversation, contact, jid, inboundContent }) {
+async function sendAIAutoReply({ sessionName, clientId, conversation, contact, jid, inboundContent, media }) {
   if (!inboundContent || !String(inboundContent).trim()) return;
 
   var { supabaseAdmin } = require('./src/config/supabase');
@@ -69,7 +69,8 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
     clientId: clientId,
     message: inboundContent,
     conversation: conversation,
-    contact: contact
+    contact: contact,
+    media: media
   });
 
   if (aiResult.skipped) {
@@ -688,6 +689,7 @@ app.post('/internal/messages/process', async function(req, res) {
     var whatsappMessageId = req.body.whatsappMessageId;
     var pushName = req.body.pushName;
     var mediaUrl = req.body.mediaUrl || '';
+    var mediaPath = req.body.mediaPath || '';
     var mediaMimeType = req.body.mediaMimeType || '';
     var mediaFileName = req.body.mediaFileName || '';
     var publicMediaUrl = toPublicMediaUrl(mediaUrl);
@@ -1112,7 +1114,7 @@ app.post('/internal/messages/process', async function(req, res) {
     }
 
     var aiAutoReplyQueued = false;
-    if ((messageType || 'text') === 'text' && content && String(content).trim()) {
+    if (content && String(content).trim()) {
       aiAutoReplyQueued = true;
       setImmediate(function() {
         sendAIAutoReply({
@@ -1121,7 +1123,14 @@ app.post('/internal/messages/process', async function(req, res) {
           conversation: { ...conversation },
           contact: { ...contact },
           jid: jid,
-          inboundContent: content
+          inboundContent: content,
+          media: {
+            messageType: messageType || 'text',
+            url: publicMediaUrl,
+            path: mediaPath,
+            mimeType: mediaMimeType,
+            fileName: mediaFileName
+          }
         }).catch(function(aiError) {
           console.error('[AI AUTO] Erro ao responder conversa ' + conversation.id + ':', aiError.message);
         });

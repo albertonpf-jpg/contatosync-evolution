@@ -1,5 +1,12 @@
 const { v4: uuidv4 } = require('uuid');
 const { isWithinWorkingHours } = require('../utils/helpers');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { promisify } = require('util');
+const { execFile } = require('child_process');
+
+const execFileAsync = promisify(execFile);
 
 function normalizeList(value) {
   if (!value) return [];
@@ -60,12 +67,212 @@ function getOpenAIText(data) {
   return '';
 }
 
-async function callOpenAI({ apiKey, config, input, systemPrompt }) {
+function getMediaKind(media = {}) {
+  const type = String(media.messageType || '').toLowerCase();
+  const mime = String(media.mimeType || media.mimetype || '').toLowerCase();
+  if (type === 'image' || type === 'sticker' || mime.startsWith('image/')) return 'image';
+  if (type === 'audio' || mime.startsWith('audio/')) return 'audio';
+  if (type === 'video' || type === 'gif' || mime.startsWith('video/')) return 'video';
+  if (type === 'document' || mime === 'application/pdf') return 'document';
+  return type || 'file';
+}
+
+function getMediaDescription(media = {}) {
+  const parts = [
+    `Tipo da midia: ${media.messageType || 'arquivo'}`,
+    `Arquivo: ${media.fileName || 'sem nome'}`,
+    `MIME: ${media.mimeType || 'nao informado'}`
+  ];
+  if (media.url) parts.push(`URL interna: ${media.url}`);
+  return parts.join('\n');
+}
+
+function getMimeTypeFromPath(filePath, fallback = 'application/octet-stream') {
+  const ext = path.extname(filePath || '').toLowerCase();
+  const map = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.pdf': 'application/pdf',
+    '.txt': 'text/plain',
+    '.csv': 'text/csv',
+    '.json': 'application/json',
+    '.md': 'text/markdown'
+  };
+  return map[ext] || fallback;
+}
+
+function fileToDataUrl(filePath, mimeType) {
+  const data = fs.readFileSync(filePath);
+  return `data:${mimeType || getMimeTypeFromPath(filePath)};base64,${data.toString('base64')}`;
+}
+
+function fileToBase64(filePath) {
+  return fs.readFileSync(filePath).toString('base64');
+}
+
+function canReadTextFile(filePath, mimeType) {
+  const ext = path.extname(filePath || '').toLowerCase();
+  const mime = String(mimeType || '').toLowerCase();
+  return ['.txt', '.csv', '.json', '.md', '.log', '.xml'].includes(ext)
+    || mime.startsWith('text/')
+    || ['application/json', 'application/xml'].includes(mime);
+}
+
+async function convertMediaToMp3(filePath) {
+  const ffmpegPath = require('ffmpeg-static');
+  if (!ffmpegPath) throw new Error('ffmpeg-static indisponivel');
+  const outputPath = path.join(os.tmpdir(), `contatosync-ai-${Date.now()}-${Math.random().toString(16).slice(2)}.mp3`);
+  await execFileAsync(ffmpegPath, [
+    '-y',
+    '-i', filePath,
+    '-vn',
+    '-acodec', 'libmp3lame',
+    '-ar', '16000',
+    '-ac', '1',
+    outputPath
+  ], { timeout: 120000 });
+  return outputPath;
+}
+
+async function extractVideoFrame(filePath) {
+  const ffmpegPath = require('ffmpeg-static');
+  if (!ffmpegPath) throw new Error('ffmpeg-static indisponivel');
+  const outputPath = path.join(os.tmpdir(), `contatosync-frame-${Date.now()}-${Math.random().toString(16).slice(2)}.jpg`);
+  await execFileAsync(ffmpegPath, [
+    '-y',
+    '-ss', '00:00:01',
+    '-i', filePath,
+    '-frames:v', '1',
+    '-q:v', '3',
+    outputPath
+  ], { timeout: 120000 });
+  return outputPath;
+}
+
+async function transcribeOpenAIMedia({ apiKey, filePath, mimeType }) {
+  if (!filePath || !fs.existsSync(filePath)) return '';
+  let uploadPath = filePath;
+  let tempPath = '';
+  const cleanMime = String(mimeType || '').toLowerCase();
+  const supported = ['audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/webm', 'video/mp4', 'video/webm'];
+
+  if (!supported.some(item => cleanMime.startsWith(item)) && !['.mp3', '.mp4', '.mpeg', '.mpga', '.m4a', '.wav', '.webm'].includes(path.extname(filePath).toLowerCase())) {
+    tempPath = await convertMediaToMp3(filePath);
+    uploadPath = tempPath;
+  }
+
+  try {
+    const stat = fs.statSync(uploadPath);
+    if (stat.size > 25 * 1024 * 1024) {
+      return 'O audio/video foi recebido, mas e maior que 25 MB e nao foi transcrito automaticamente.';
+    }
+
+    const buffer = fs.readFileSync(uploadPath);
+    const form = new FormData();
+    form.append('model', 'gpt-4o-mini-transcribe');
+    form.append('response_format', 'json');
+    form.append('file', new Blob([buffer]), path.basename(uploadPath));
+
+    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data?.error?.message || `OpenAI transcricao respondeu HTTP ${response.status}`);
+    return data.text || '';
+  } finally {
+    if (tempPath) fs.promises.unlink(tempPath).catch(() => {});
+  }
+}
+
+async function buildOpenAIInputContent({ apiKey, message, media }) {
+  const content = [{
+    type: 'input_text',
+    text: message && String(message).trim()
+      ? String(message)
+      : 'O cliente enviou uma midia sem texto. Analise a midia e responda de forma util no atendimento.'
+  }];
+
+  if (!media || (!media.path && !media.url)) return content;
+
+  const kind = getMediaKind(media);
+  const mimeType = media.mimeType || media.mimetype || getMimeTypeFromPath(media.path || '', 'application/octet-stream');
+  content.push({ type: 'input_text', text: `Dados da midia recebida:\n${getMediaDescription(media)}` });
+
+  if (kind === 'image' && media.path && fs.existsSync(media.path)) {
+    content.push({ type: 'input_image', image_url: fileToDataUrl(media.path, mimeType), detail: 'auto' });
+    return content;
+  }
+
+  if (kind === 'image' && media.url && /^https?:\/\//i.test(media.url)) {
+    content.push({ type: 'input_image', image_url: media.url, detail: 'auto' });
+    return content;
+  }
+
+  if ((kind === 'audio' || kind === 'video') && media.path && fs.existsSync(media.path)) {
+    const transcript = await transcribeOpenAIMedia({ apiKey, filePath: media.path, mimeType });
+    content.push({
+      type: 'input_text',
+      text: transcript
+        ? `Transcricao do ${kind === 'video' ? 'audio do video' : 'audio'}:\n${transcript}`
+        : `Nao foi possivel transcrever o ${kind}.`
+    });
+
+    if (kind === 'video') {
+      let framePath = '';
+      try {
+        framePath = await extractVideoFrame(media.path);
+        content.push({ type: 'input_image', image_url: fileToDataUrl(framePath, 'image/jpeg'), detail: 'low' });
+      } catch (frameError) {
+        content.push({ type: 'input_text', text: `Nao foi possivel extrair frame do video: ${frameError.message}` });
+      } finally {
+        if (framePath) fs.promises.unlink(framePath).catch(() => {});
+      }
+    }
+    return content;
+  }
+
+  if (kind === 'document' && media.path && fs.existsSync(media.path)) {
+    const stat = fs.statSync(media.path);
+    if (mimeType === 'application/pdf' && stat.size <= 50 * 1024 * 1024) {
+      content.push({
+        type: 'input_file',
+        filename: media.fileName || path.basename(media.path),
+        ...(media.url && /^https?:\/\//i.test(media.url)
+          ? { file_url: media.url }
+          : { file_data: fileToBase64(media.path) })
+      });
+      return content;
+    }
+
+    if (canReadTextFile(media.path, mimeType) && stat.size <= 1024 * 1024) {
+      content.push({
+        type: 'input_text',
+        text: `Conteudo do arquivo ${media.fileName || path.basename(media.path)}:\n${fs.readFileSync(media.path, 'utf8').slice(0, 20000)}`
+      });
+      return content;
+    }
+  }
+
+  content.push({ type: 'input_text', text: 'A midia foi recebida, mas esse tipo de arquivo nao pode ser analisado diretamente. Responda considerando o nome, tipo e legenda informados.' });
+  return content;
+}
+
+async function callOpenAI({ apiKey, config, input, systemPrompt, media }) {
   const startedAt = Date.now();
+  const inputContent = Array.isArray(input)
+    ? input
+    : await buildOpenAIInputContent({ apiKey, message: input, media });
   const body = {
     model: config.model || 'gpt-4o-mini',
     instructions: systemPrompt,
-    input,
+    input: Array.isArray(inputContent)
+      ? [{ role: 'user', content: inputContent }]
+      : inputContent,
     max_output_tokens: config.max_tokens || 500
   };
 
@@ -204,7 +411,7 @@ async function logAIResult(supabase, payload) {
   console.warn('[AI] Falha ao gravar log no schema atual:', error.message);
 }
 
-async function generateAIResponse({ supabase, clientId, message, conversation, contact }) {
+async function generateAIResponse({ supabase, clientId, message, conversation, contact, media }) {
   const { config, client } = await getAISetup(supabase, clientId);
 
   if (!config || !config.enabled) {
@@ -246,8 +453,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
 
   try {
     const result = provider === 'claude'
-      ? await callClaude({ apiKey, config: effectiveConfig, input: message, systemPrompt })
-      : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt });
+      ? await callClaude({ apiKey, config: effectiveConfig, input: media ? `${message || ''}\n\nMidia recebida:\n${getMediaDescription(media)}` : message, systemPrompt })
+      : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media });
 
     await logAIResult(supabase, {
       client_id: clientId,

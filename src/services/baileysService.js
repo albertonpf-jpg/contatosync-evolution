@@ -817,6 +817,7 @@ class BaileysService {
         pushName: message.pushName,
         isLid: isLid,
         mediaUrl: mediaInfo?.publicPath || '',
+        mediaPath: mediaInfo?.path || '',
         mediaMimeType: mediaInfo?.mimetype || '',
         mediaFileName: mediaInfo?.originalName || ''
       });

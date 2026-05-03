@@ -139,6 +139,21 @@ function buildAIUnavailableResponse(config) {
     || 'No momento nao consegui processar a resposta automatica. Um atendente vai continuar o atendimento assim que possivel.';
 }
 
+function buildOutsideWorkingHoursResponse(config) {
+  return String(config?.fallback_message || '').trim()
+    || 'No momento estamos fora do horario de atendimento, mas sua mensagem foi recebida.';
+}
+
+function buildDailyLimitResponse(config) {
+  return String(config?.fallback_message || '').trim()
+    || 'No momento nao consegui processar mais respostas automaticas. Sua mensagem foi recebida.';
+}
+
+function buildAIProviderErrorResponse(config) {
+  return String(config?.fallback_message || '').trim()
+    || 'No momento tive uma instabilidade para gerar a resposta automatica. Sua mensagem foi recebida.';
+}
+
 function getTokenUsageFromOpenAI(data) {
   const usage = data?.usage || {};
   return {
@@ -1553,14 +1568,6 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     return { skipped: true, reason: 'Mensagem sem texto' };
   }
 
-  if (!isWithinWorkingHours(config, config.timezone || 'America/Sao_Paulo')) {
-    return { skipped: true, reason: 'Fora do horario de funcionamento' };
-  }
-
-  if (includesAnyKeyword(message, config.blacklist_keywords)) {
-    return { skipped: true, reason: 'Palavra bloqueada detectada' };
-  }
-
   const provider = getProviderForModel(config.model || client?.ai_model);
   const effectiveConfig = {
     ...config,
@@ -1569,6 +1576,46 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   };
   const systemPrompt = buildSystemPrompt(effectiveConfig, contact, conversation);
   const conversationHistory = await getConversationMessagesFromStart(supabase, clientId, conversation?.id);
+
+  if (!isWithinWorkingHours(config, config.timezone || 'America/Sao_Paulo')) {
+    const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+    if (productContext.lookupAttempted) {
+      const productCards = productContext.productCards || [];
+      return {
+        skipped: false,
+        response: productCards.length > 0
+          ? buildProductCardsResponse(productCards)
+          : buildOutsideWorkingHoursResponse(effectiveConfig),
+        provider: 'catalog',
+        model: productCards.length > 0 ? 'catalog_lookup' : 'outside_working_hours',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: productContext.imageUrls || [],
+        product_cards: productCards,
+        product_lookup_attempted: true,
+        product_search_text: productContext.searchText || message
+      };
+    }
+    return {
+      skipped: false,
+      response: buildOutsideWorkingHoursResponse(effectiveConfig),
+      provider: 'system',
+      model: 'outside_working_hours',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: []
+    };
+  }
+
+  if (includesAnyKeyword(message, config.blacklist_keywords)) {
+    return { skipped: true, reason: 'Palavra bloqueada detectada' };
+  }
+
   const todayUsage = await countTodayUsage(supabase, clientId);
   const dailyLimit = config.daily_limit === null || config.daily_limit === undefined ? 50 : Number(config.daily_limit);
   if (dailyLimit > 0 && todayUsage >= dailyLimit) {
@@ -1593,7 +1640,18 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         product_search_text: productContext.searchText || message
       };
     }
-    return { skipped: true, reason: 'Limite diario atingido' };
+    return {
+      skipped: false,
+      response: buildDailyLimitResponse(effectiveConfig),
+      provider: 'system',
+      model: 'daily_limit_reached',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: []
+    };
   }
 
   const apiKey = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
@@ -1710,7 +1768,40 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       };
     }
 
-    throw error;
+    const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+    const productCards = productContext.productCards || [];
+    if (productContext.lookupAttempted) {
+      console.log('[AI] Erro no provedor, usando busca deterministica do catalogo | erro: ' + error.message + ' | cards: ' + productCards.length);
+      return {
+        skipped: false,
+        response: productCards.length > 0
+          ? buildProductCardsResponse(productCards)
+          : buildAIProviderErrorResponse(effectiveConfig),
+        provider: 'catalog',
+        model: productCards.length > 0 ? 'catalog_lookup' : 'provider_error_fallback',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: productContext.imageUrls || [],
+        product_cards: productCards,
+        product_lookup_attempted: true,
+        product_search_text: productContext.searchText || message
+      };
+    }
+
+    return {
+      skipped: false,
+      response: buildAIProviderErrorResponse(effectiveConfig),
+      provider,
+      model: 'provider_error_fallback',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: []
+    };
   }
 }
 

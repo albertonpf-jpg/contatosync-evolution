@@ -65,14 +65,27 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
   var { getIO } = require('./src/services/socketService');
   var { generateAIResponse } = require('./src/services/aiService');
 
-  var aiResult = await generateAIResponse({
-    supabase: supabaseAdmin,
-    clientId: clientId,
-    message: inboundContent,
-    conversation: { ...conversation, conversation_created: conversationCreated === true },
-    contact: contact,
-    media: media
-  });
+  var aiResult;
+  try {
+    aiResult = await generateAIResponse({
+      supabase: supabaseAdmin,
+      clientId: clientId,
+      message: inboundContent,
+      conversation: { ...conversation, conversation_created: conversationCreated === true },
+      contact: contact,
+      media: media
+    });
+  } catch (generateError) {
+    console.error('[AI AUTO] Falha ao gerar resposta, usando fallback seguro | conv: ' + conversation.id + ' | erro: ' + generateError.message);
+    aiResult = {
+      skipped: false,
+      response: 'No momento tive uma instabilidade para gerar a resposta automatica. Sua mensagem foi recebida.',
+      provider: 'system',
+      model: 'safe_fallback',
+      total_tokens: 0,
+      product_cards: []
+    };
+  }
 
   if (aiResult.skipped) {
     console.log('[AI AUTO] Ignorado: ' + aiResult.reason + ' | conv: ' + conversation.id);
@@ -237,6 +250,7 @@ function enqueueAIAutoReply(payload) {
   var existing = aiReplyTimers.get(key);
   var nextContent = String(payload.inboundContent || '').trim();
   if (existing) {
+    existing.version = (existing.version || 0) + 1;
     if (nextContent) existing.messages.push(nextContent);
     if (payload.media && (payload.media.path || payload.media.url)) existing.media = payload.media;
     existing.payload = { ...existing.payload, ...payload, inboundContent: existing.messages.join('\n') };
@@ -246,13 +260,17 @@ function enqueueAIAutoReply(payload) {
       messages: nextContent ? [nextContent] : [],
       media: payload.media,
       payload: payload,
-      timer: null
+      timer: null,
+      version: 1
     };
     aiReplyTimers.set(key, existing);
   }
 
+  var scheduledVersion = existing.version;
   getAIReplyDelayMs(payload.clientId).then(function(delayMs) {
+    if (aiReplyTimers.get(key) !== existing || existing.version !== scheduledVersion) return;
     existing.timer = setTimeout(function() {
+      if (aiReplyTimers.get(key) !== existing || existing.version !== scheduledVersion) return;
       aiReplyTimers.delete(key);
       var finalPayload = {
         ...existing.payload,

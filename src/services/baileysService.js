@@ -20,6 +20,42 @@ const {
   proto
 } = require('@whiskeysockets/baileys');
 
+const PRIVACY_MODE_TS_OFFSET = 77980457;
+
+function getPrivacyModeTs() {
+  return String(Math.floor(Date.now() / 1000) - PRIVACY_MODE_TS_OFFSET);
+}
+
+function buildInteractiveAdditionalNodes(jid) {
+  const bizNode = {
+    tag: 'biz',
+    attrs: {
+      actual_actors: '2',
+      host_storage: '2',
+      privacy_mode_ts: getPrivacyModeTs()
+    },
+    content: [
+      {
+        tag: 'interactive',
+        attrs: { type: 'native_flow', v: '1' },
+        content: [
+          {
+            tag: 'native_flow',
+            attrs: { v: '9', name: 'mixed' }
+          }
+        ]
+      },
+      {
+        tag: 'quality_control',
+        attrs: { source_type: 'third_party' }
+      }
+    ]
+  };
+
+  if (String(jid || '').endsWith('@g.us')) return [bizNode];
+  return [{ tag: 'bot', attrs: { biz_bot: '1' } }, bizNode];
+}
+
 function makeSilentLogger() {
   const noop = () => {};
   return {
@@ -570,27 +606,24 @@ class BaileysService {
       }));
     }
 
+    const interactiveMessage = InteractiveMessage.create({
+      body: InteractiveMessage.Body.create({
+        text: String(options.body || 'Produtos encontrados').slice(0, 900)
+      }),
+      carouselMessage: InteractiveMessage.CarouselMessage.create({
+        cards: interactiveCards,
+        messageVersion: 1
+      })
+    });
+
     const message = generateWAMessageFromContent(jid, {
-      viewOnceMessage: {
-        message: {
-          messageContextInfo: {
-            deviceListMetadata: {},
-            deviceListMetadataVersion: 2
-          },
-          interactiveMessage: InteractiveMessage.create({
-            body: InteractiveMessage.Body.create({
-              text: String(options.body || 'Produtos encontrados').slice(0, 900)
-            }),
-            carouselMessage: InteractiveMessage.CarouselMessage.create({
-              cards: interactiveCards,
-              messageVersion: 1
-            })
-          })
-        }
-      }
+      interactiveMessage
     }, { userJid: session.socket.user?.id });
 
-    await session.socket.relayMessage(jid, message.message, { messageId: message.key.id });
+    await session.socket.relayMessage(jid, message.message, {
+      messageId: message.key.id,
+      additionalNodes: buildInteractiveAdditionalNodes(jid)
+    });
     this._rememberSentMessage(sessionName, message.key, message.message);
     return { success: true, messageId: message.key.id, to: jid, messageType: 'carousel', cards: interactiveCards.length, timestamp: new Date() };
   }

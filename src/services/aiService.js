@@ -381,6 +381,34 @@ function getSpecificProductTokens(tokens) {
   return tokens.filter(token => !generic.has(token));
 }
 
+const PRODUCT_COLOR_TOKENS = [
+    'amarelo',
+    'azul',
+    'bege',
+    'branco',
+    'cinza',
+    'dourado',
+    'grafite',
+    'laranja',
+    'lilas',
+    'marrom',
+    'preto',
+    'rosa',
+    'roxo',
+    'verde',
+    'vermelho',
+    'vinho'
+];
+
+function getColorTokens(tokens) {
+  const colors = new Set(PRODUCT_COLOR_TOKENS);
+  return tokens.filter(token => colors.has(token));
+}
+
+function getTitleColorTokens(title) {
+  return PRODUCT_COLOR_TOKENS.filter(color => includesToken(title, color));
+}
+
 function getTokenVariants(token) {
   const variants = [token];
   if (token.endsWith('s') && token.length > 4) variants.push(token.slice(0, -1));
@@ -446,9 +474,15 @@ function getProductScore(product, messageTokens) {
 function getRelevantProducts(products, message) {
   const messageTokens = getSearchTokens(message);
   const specificTokens = getSpecificProductTokens(messageTokens);
+  const colorTokens = getColorTokens(messageTokens);
   const uniqueProducts = dedupeProducts(products)
     .map(product => {
       const title = normalizeSearchText(product.title || '');
+      const titleColors = getTitleColorTokens(title);
+      const titleAndVariations = normalizeSearchText([
+        product.title,
+        product.variations?.join(' ')
+      ].join(' '));
       const haystack = normalizeSearchText([
         product.title,
         product.description,
@@ -458,7 +492,9 @@ function getRelevantProducts(products, message) {
         ...product,
         score: getProductScore(product, messageTokens),
         _titleMatches: countTokenMatches(title, messageTokens),
-        _specificMatches: countTokenMatches(haystack, specificTokens)
+        _specificMatches: countTokenMatches(haystack, specificTokens),
+        _colorMatches: countTokenMatches(titleAndVariations, colorTokens),
+        _hasConflictingTitleColor: colorTokens.length > 0 && titleColors.some(color => !colorTokens.includes(color))
       };
     })
     .sort((a, b) => b.score - a.score);
@@ -470,6 +506,8 @@ function getRelevantProducts(products, message) {
   const matched = uniqueProducts.filter(product => {
     if (product.score <= 0) return false;
     if (minSpecificMatches > 0 && product._specificMatches < minSpecificMatches) return false;
+    if (colorTokens.length > 0 && product._colorMatches < colorTokens.length) return false;
+    if (product._hasConflictingTitleColor) return false;
     if (bestScore >= 6 && product.score < Math.ceil(bestScore * 0.7)) return false;
     if (messageTokens.length >= 3 && product._titleMatches === 0 && product._specificMatches < 2) return false;
     return true;

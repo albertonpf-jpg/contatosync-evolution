@@ -81,9 +81,39 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
 
   var now = new Date().toISOString();
   var hasProductCards = Array.isArray(aiResult.product_cards) && aiResult.product_cards.length > 0;
+  var productMediaSent = false;
+  if (hasProductCards) {
+    try {
+      await baileysService.sendCarouselMessage(sessionName, jid, {
+        body: 'Fotos do produto encontradas na loja:',
+        cards: aiResult.product_cards
+      });
+      productMediaSent = true;
+      console.log('[AI AUTO] Carrossel de produtos enviado | conv: ' + conversation.id + ' | cards: ' + aiResult.product_cards.length);
+    } catch (carouselError) {
+      console.warn('[AI AUTO] Falha ao enviar carrossel nativo, enviando imagens simples: ' + carouselError.message);
+      for (const card of aiResult.product_cards.slice(0, 5)) {
+        try {
+          await baileysService.sendRemoteImageMessage(
+            sessionName,
+            jid,
+            card.imageUrl,
+            `${card.title || 'Produto'}\n${card.description || ''}\n${card.url || ''}`.trim()
+          );
+          productMediaSent = true;
+        } catch (fallbackError) {
+          console.warn('[AI AUTO] Falha no fallback do card: ' + fallbackError.message);
+        }
+      }
+    }
+  }
+
   var aiText = String(aiResult.response || '').trim();
   if (!aiText && hasProductCards) {
     aiText = 'Encontrei estas opcoes na loja. Vou te enviar as fotos e detalhes abaixo.';
+  }
+  if (hasProductCards && !productMediaSent) {
+    aiText = 'Encontrei o produto, mas nao consegui enviar as fotos automaticamente agora. Vou chamar um atendente para ajudar.';
   }
   var sendResult = await baileysService.sendTextMessage(sessionName, jid, aiText);
 
@@ -180,30 +210,6 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       provider: aiResult.provider,
       timestamp: now
     });
-  }
-
-  if (hasProductCards) {
-    try {
-      await baileysService.sendCarouselMessage(sessionName, jid, {
-        body: 'Fotos do produto encontradas na loja:',
-        cards: aiResult.product_cards
-      });
-      console.log('[AI AUTO] Carrossel de produtos enviado | conv: ' + conversation.id + ' | cards: ' + aiResult.product_cards.length);
-    } catch (carouselError) {
-      console.warn('[AI AUTO] Falha ao enviar carrossel nativo, enviando imagens simples: ' + carouselError.message);
-      for (const card of aiResult.product_cards.slice(0, 5)) {
-        try {
-          await baileysService.sendRemoteImageMessage(
-            sessionName,
-            jid,
-            card.imageUrl,
-            `${card.title || 'Produto'}\n${card.description || ''}\n${card.url || ''}`.trim()
-          );
-        } catch (fallbackError) {
-          console.warn('[AI AUTO] Falha no fallback do card: ' + fallbackError.message);
-        }
-      }
-    }
   }
 
   console.log('[AI AUTO] Resposta enviada | conv: ' + conversation.id + ' | model: ' + aiResult.model);

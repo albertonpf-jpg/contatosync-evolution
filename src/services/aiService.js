@@ -72,6 +72,26 @@ function removeImageUrlsFromResponse(text) {
     .trim();
 }
 
+function normalizeProductMediaResponse(text, productCards = []) {
+  let response = removeImageUrlsFromResponse(text);
+  if (!Array.isArray(productCards) || productCards.length === 0) return response;
+
+  const asksPermission = /posso\s+(te\s+)?(mandar|enviar|mostrar)|quer\s+que\s+eu\s+(mande|envie|mostre)|quer\s+ver\s+(as\s+)?fotos|deseja\s+(que\s+eu\s+)?(ver|receber|as\s+fotos)/i.test(response);
+  if (asksPermission || !response) {
+    const first = productCards[0];
+    return [
+      `Encontrei ${first?.title || 'o produto'} na loja.`,
+      first?.description || '',
+      'Estou enviando as fotos agora.'
+    ].filter(Boolean).join('\n');
+  }
+
+  return response
+    .replace(/(?:posso|quer que eu|deseja que eu)[^.!?\n]*(?:foto|imagem|imagens|fotos)[^.!?\n]*[.!?]?/gi, 'Estou enviando as fotos agora.')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function getTokenUsageFromOpenAI(data) {
   const usage = data?.usage || {};
   return {
@@ -721,7 +741,36 @@ async function transcribeOpenAIMedia({ apiKey, filePath, mimeType }) {
   }
 }
 
-async function buildOpenAIInputContent({ apiKey, message, media, config }) {
+function formatConversationHistory(messages = []) {
+  if (!Array.isArray(messages) || messages.length === 0) return '';
+  const fullHistory = messages.map(item => {
+    const author = item.direction === 'out' || item.is_from_ai ? 'Atendente/IA' : 'Cliente';
+    return `${author}: ${String(item.content || '').slice(0, 600)}`;
+  }).join('\n');
+
+  if (fullHistory.length <= 30000) return fullHistory;
+
+  const firstMessages = messages.slice(0, 12).map(item => {
+    const author = item.direction === 'out' || item.is_from_ai ? 'Atendente/IA' : 'Cliente';
+    return `${author}: ${String(item.content || '').slice(0, 600)}`;
+  }).join('\n');
+  const recentMessages = messages.slice(-45).map(item => {
+    const author = item.direction === 'out' || item.is_from_ai ? 'Atendente/IA' : 'Cliente';
+    return `${author}: ${String(item.content || '').slice(0, 600)}`;
+  }).join('\n');
+
+  return [
+    'Inicio da conversa:',
+    firstMessages,
+    '',
+    'Historico intermediario omitido por limite de contexto. Preserve nomes, preferencias e combinados do inicio acima.',
+    '',
+    'Mensagens mais recentes:',
+    recentMessages
+  ].join('\n');
+}
+
+async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory }) {
   const configuredSources = [
     config?.product_catalog_url,
     ...(Array.isArray(config?.product_source_urls) ? config.product_source_urls : []),
@@ -737,10 +786,18 @@ async function buildOpenAIInputContent({ apiKey, message, media, config }) {
       : 'O cliente enviou uma midia sem texto. Analise a midia e responda de forma util no atendimento.'
   }];
 
+  const historyText = formatConversationHistory(conversationHistory);
+  if (historyText) {
+    content.push({
+      type: 'input_text',
+      text: `Historico da conversa desde a primeira mensagem disponivel:\n${historyText}\n\nUse esse historico para nao repetir perguntas, nao pedir de novo dados ja informados e manter o contexto do atendimento desde o inicio.`
+    });
+  }
+
   if (productContext.contextText) {
     content.push({
       type: 'input_text',
-      text: `${productContext.contextText}\n\nUse essas informacoes para responder com nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como midia/carrossel fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`
+      text: `${productContext.contextText}\n\nUse essas informacoes para responder com nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, diga que esta enviando agora. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como midia/carrossel fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`
     });
   }
 
@@ -809,11 +866,11 @@ async function buildOpenAIInputContent({ apiKey, message, media, config }) {
   return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
 }
 
-async function callOpenAI({ apiKey, config, input, systemPrompt, media }) {
+async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversationHistory }) {
   const startedAt = Date.now();
   const builtInput = Array.isArray(input)
     ? { content: input, productImages: [] }
-    : await buildOpenAIInputContent({ apiKey, message: input, media, config });
+    : await buildOpenAIInputContent({ apiKey, message: input, media, config, conversationHistory });
   const body = {
     model: config.model || 'gpt-4o-mini',
     instructions: systemPrompt,
@@ -964,6 +1021,20 @@ async function logAIResult(supabase, payload) {
   console.warn('[AI] Falha ao gravar log no schema atual:', error.message);
 }
 
+async function getConversationMessagesFromStart(supabase, clientId, conversationId) {
+  if (!conversationId) return [];
+  const { data, error } = await supabase
+    .from('evolution_messages')
+    .select('content, direction, is_from_ai, created_at')
+    .eq('client_id', clientId)
+    .eq('conversation_id', conversationId)
+    .order('created_at', { ascending: true })
+    .limit(1000);
+
+  if (error || !Array.isArray(data)) return [];
+  return data.filter(item => String(item.content || '').trim());
+}
+
 async function generateAIResponse({ supabase, clientId, message, conversation, contact, media }) {
   const { config, client, integrations } = await getAISetup(supabase, clientId);
 
@@ -1004,13 +1075,25 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     model: config.model || client?.ai_model || (provider === 'claude' ? 'claude-3-haiku' : 'gpt-4o-mini')
   };
   const systemPrompt = buildSystemPrompt(effectiveConfig, contact, conversation);
+  const conversationHistory = await getConversationMessagesFromStart(supabase, clientId, conversation?.id);
 
   try {
     const result = provider === 'claude'
-      ? await callClaude({ apiKey, config: effectiveConfig, input: media ? `${message || ''}\n\nMidia recebida:\n${getMediaDescription(media)}` : message, systemPrompt })
-      : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media });
+      ? await callClaude({
+          apiKey,
+          config: effectiveConfig,
+          input: [
+            formatConversationHistory(conversationHistory) ? `Historico recente:\n${formatConversationHistory(conversationHistory)}` : '',
+            media ? `${message || ''}\n\nMidia recebida:\n${getMediaDescription(media)}` : message
+          ].filter(Boolean).join('\n\n'),
+          systemPrompt
+        })
+      : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media, conversationHistory });
 
-    result.response = removeImageUrlsFromResponse(suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation));
+    result.response = normalizeProductMediaResponse(
+      suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation),
+      result.product_cards
+    );
 
     await logAIResult(supabase, {
       client_id: clientId,

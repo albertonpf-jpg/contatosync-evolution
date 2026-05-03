@@ -1,10 +1,11 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
-const { executeWithRLS } = require('../config/supabase');
+const { executeWithRLS, supabaseAdmin } = require('../config/supabase');
 const { aiConfigSchemas, validate } = require('../utils/validation');
 const { isWithinWorkingHours, getPagination, formatPaginationMeta, formatActivity } = require('../utils/helpers');
 const { success, error, notFound, asyncHandler, handleSupabaseError, paginated } = require('../utils/response');
 const { emitConfigUpdate, emitAIResponse } = require('../services/socketService');
+const { generateAIResponse } = require('../services/aiService');
 
 const router = express.Router();
 
@@ -171,47 +172,40 @@ router.post('/test',
         .single()
     );
 
-    const apiKey = config.model.includes('claude') ? client.claude_api_key : client.openai_api_key;
+    const apiKey = String(config.model || '').includes('claude') ? client?.claude_api_key : client?.openai_api_key;
 
     if (!apiKey) {
       return error(res, 'API key não configurada', 400);
     }
 
     try {
-      // TODO: Implementar chamada real para API de IA
-      // Por agora, simular resposta
+      const aiResult = await generateAIResponse({
+        supabase: supabaseAdmin,
+        clientId: req.user.id,
+        message,
+        conversation: {
+          id: null,
+          contact_name: 'Teste manual',
+          phone: phone || ''
+        },
+        contact: {
+          name: 'Teste manual',
+          phone: phone || ''
+        }
+      });
 
-      const mockResponse = {
-        response: "Esta é uma resposta de teste da IA. A mensagem recebida foi processada com sucesso.",
-        model: config.model,
-        tokens_used: 45,
-        confidence: 0.95,
-        processing_time_ms: 1200
+      if (aiResult.skipped) {
+        return error(res, aiResult.reason || 'IA nao respondeu ao teste', 400);
+      }
+
+      const aiResponse = {
+        response: aiResult.response,
+        model: aiResult.model,
+        provider: aiResult.provider,
+        tokens_used: aiResult.total_tokens || 0,
+        processing_time_ms: aiResult.processing_time_ms
       };
 
-      // Log da atividade
-      const logData = {
-        id: uuidv4(),
-        client_id: req.user.id,
-        model_used: config.model,
-        prompt_tokens: 20,
-        completion_tokens: 25,
-        total_tokens: mockResponse.tokens_used,
-        cost_usd: 0.001, // Calcular custo real baseado no modelo
-        ai_response: mockResponse.response,
-        confidence_score: mockResponse.confidence,
-        processing_time_ms: mockResponse.processing_time_ms,
-        status: 'success',
-        created_at: new Date().toISOString()
-      };
-
-      await executeWithRLS(req.user.id, (client) =>
-        client
-          .from('evolution_ai_log')
-          .insert([logData])
-      );
-
-      // Log da atividade
       await executeWithRLS(req.user.id, (client) =>
         client
           .from('evolution_activities')
@@ -220,13 +214,14 @@ router.post('/test',
             client_id: req.user.id,
             related_phone: phone || '',
             ...formatActivity('ai_test', 'Teste de IA realizado', {
-              model: config.model,
-              tokens: mockResponse.tokens_used
+              model: aiResult.model,
+              provider: aiResult.provider,
+              tokens: aiResult.total_tokens || 0
             })
           }])
       );
 
-      success(res, mockResponse, 'Resposta de IA gerada com sucesso');
+      return success(res, aiResponse, 'Resposta de IA gerada com sucesso');
 
     } catch (aiError) {
       // Log do erro
@@ -243,7 +238,7 @@ router.post('/test',
           }])
       );
 
-      return error(res, 'Erro ao gerar resposta de IA', 500);
+      return error(res, 'Erro ao gerar resposta de IA', 500, { message: aiError.message });
     }
   })
 );

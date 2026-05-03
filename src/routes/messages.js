@@ -111,7 +111,7 @@ router.get('/',
       }
 
       if (is_ai_response !== undefined) {
-        baseQuery = baseQuery.eq('is_ai_response', is_ai_response === 'true');
+        baseQuery = baseQuery.eq('is_from_ai', is_ai_response === 'true');
       }
 
       if (search) {
@@ -225,7 +225,7 @@ router.post('/',
       direction,
       sender_type: sender_type || (direction === 'incoming' ? 'contact' : 'client'),
       status: 'received',
-      is_ai_response: is_ai_response || false,
+      is_from_ai: is_ai_response || false,
       ai_model_used: ai_model_used || '',
       ai_confidence: ai_confidence || null,
       sent_at,
@@ -686,7 +686,7 @@ router.get('/stats',
         .from('evolution_messages')
         .select('*', { count: 'exact', head: true })
         .eq('client_id', req.user.id)
-        .eq('is_ai_response', true)
+        .eq('is_from_ai', true)
         .gte('sent_at', dateFilter.toISOString())
     );
 

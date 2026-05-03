@@ -55,6 +55,130 @@ function toPublicMediaUrl(mediaUrl) {
   return baseUrl ? baseUrl + (mediaUrl.startsWith('/') ? mediaUrl : '/' + mediaUrl) : mediaUrl;
 }
 
+async function sendAIAutoReply({ sessionName, clientId, conversation, contact, jid, inboundContent }) {
+  if (!inboundContent || !String(inboundContent).trim()) return;
+
+  var { supabaseAdmin } = require('./src/config/supabase');
+  var { v4: uuidv4 } = require('uuid');
+  var baileysService = require('./src/services/baileysService');
+  var { getIO } = require('./src/services/socketService');
+  var { generateAIResponse } = require('./src/services/aiService');
+
+  var aiResult = await generateAIResponse({
+    supabase: supabaseAdmin,
+    clientId: clientId,
+    message: inboundContent,
+    conversation: conversation,
+    contact: contact
+  });
+
+  if (aiResult.skipped) {
+    console.log('[AI AUTO] Ignorado: ' + aiResult.reason + ' | conv: ' + conversation.id);
+    return;
+  }
+
+  var now = new Date().toISOString();
+  var aiText = aiResult.response;
+  var sendResult = await baileysService.sendMessage(sessionName, jid, aiText);
+
+  var { data: newMessage, error: messageError } = await supabaseAdmin
+    .from('evolution_messages')
+    .insert([{
+      id: uuidv4(),
+      conversation_id: conversation.id,
+      client_id: clientId,
+      contact_id: contact.id,
+      content: aiText,
+      message_type: 'text',
+      direction: 'out',
+      status: 'sent',
+      is_from_ai: true,
+      ai_model_used: aiResult.model || null,
+      ai_confidence: null,
+      whatsapp_message_id: sendResult?.messageId || null,
+      sent_at: now,
+      created_at: now
+    }])
+    .select('*')
+    .single();
+
+  if (messageError) {
+    throw new Error('IA enviou no WhatsApp, mas falhou ao salvar mensagem: ' + messageError.message);
+  }
+
+  var totalMessages = (conversation.total_messages || 0) + 1;
+  await supabaseAdmin
+    .from('evolution_conversations')
+    .update({
+      total_messages: totalMessages,
+      last_message_at: now,
+      updated_at: now
+    })
+    .eq('id', conversation.id);
+
+  await supabaseAdmin
+    .from('evolution_activities')
+    .insert([{
+      id: uuidv4(),
+      client_id: clientId,
+      related_phone: conversation.phone || contact.phone || '',
+      related_conversation_id: conversation.id,
+      activity_type: 'ai_response_sent',
+      description: 'IA respondeu automaticamente para ' + (contact.name || conversation.contact_name || 'contato'),
+      metadata: {
+        model: aiResult.model,
+        provider: aiResult.provider,
+        tokens: aiResult.total_tokens || 0
+      },
+      created_at: now
+    }]);
+
+  var socketIO = getIO();
+  if (socketIO) {
+    var targetRoom = 'client_' + clientId;
+    var phone = conversation.phone || contact.phone || '';
+    socketIO.to(targetRoom).emit('new_message', {
+      ...newMessage,
+      conversation_id: conversation.id,
+      contact_id: contact.id,
+      contact_name: contact.name,
+      phone: phone,
+      evolution_contacts: { name: contact.name, phone: phone },
+      direction: 'out',
+      status: 'sent',
+      is_from_ai: true,
+      timestamp: now
+    });
+    socketIO.to(targetRoom).emit('conversation_updated', {
+      id: conversation.id,
+      conversation_id: conversation.id,
+      contact_id: contact.id,
+      contact_name: contact.name,
+      phone: phone,
+      jid: jid,
+      status: conversation.status || 'active',
+      priority: conversation.priority || 'normal',
+      lead_stage: conversation.lead_stage || 'new',
+      unread_count: conversation.unread_count || 0,
+      total_messages: totalMessages,
+      last_message_at: now,
+      updated_at: now,
+      evolution_contacts: { name: contact.name, phone: phone },
+      timestamp: now
+    });
+    socketIO.to(targetRoom).emit('ai_response', {
+      conversation_id: conversation.id,
+      message_id: newMessage.id,
+      response: aiText,
+      model: aiResult.model,
+      provider: aiResult.provider,
+      timestamp: now
+    });
+  }
+
+  console.log('[AI AUTO] Resposta enviada | conv: ' + conversation.id + ' | model: ' + aiResult.model);
+}
+
 // Socket.IO com CORS
 const io = socketIo(server, {
   cors: {
@@ -987,7 +1111,24 @@ app.post('/internal/messages/process', async function(req, res) {
       console.error('[SOCKET] Erro ao emitir:', socketErr.message);
     }
 
-    res.json({ success: true, conversation_id: conversation.id, contact_id: contact.id });
+    var aiAutoReplyQueued = false;
+    if ((messageType || 'text') === 'text' && content && String(content).trim()) {
+      aiAutoReplyQueued = true;
+      setImmediate(function() {
+        sendAIAutoReply({
+          sessionName: sessionName,
+          clientId: session.client_id,
+          conversation: { ...conversation },
+          contact: { ...contact },
+          jid: jid,
+          inboundContent: content
+        }).catch(function(aiError) {
+          console.error('[AI AUTO] Erro ao responder conversa ' + conversation.id + ':', aiError.message);
+        });
+      });
+    }
+
+    res.json({ success: true, conversation_id: conversation.id, contact_id: contact.id, ai_auto_reply_queued: aiAutoReplyQueued });
 
   } catch (error) {
     console.error('Erro processando mensagem:', error);

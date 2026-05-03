@@ -63,6 +63,15 @@ function suppressRepeatedGreeting(text, greetingMessage, conversation) {
   return response || text;
 }
 
+function removeImageUrlsFromResponse(text) {
+  return String(text || '')
+    .replace(/https?:\/\/\S+\.(?:png|jpe?g|webp|gif)(?:\?\S*)?/gi, '')
+    .replace(/https?:\/\/(?:arquivos\.facilzap\.app\.br|facilzap\.app\.br\/cdn-cgi\/image)\/\S+/gi, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function getTokenUsageFromOpenAI(data) {
   const usage = data?.usage || {};
   return {
@@ -564,7 +573,7 @@ async function fetchProductContext(message, sourceUrls = []) {
     product.stock !== null && product.stock !== undefined ? `Estoque informado: ${product.stock}` : '',
     product.variations?.length ? `Variacoes: ${product.variations.join(', ')}` : '',
     product.description ? `Descricao: ${product.description}` : '',
-    product.images?.length ? `Imagens encontradas: ${product.images.slice(0, 5).join(', ')}` : ''
+    product.images?.length ? `Imagens disponiveis para envio: ${product.images.slice(0, 5).length}` : ''
   ].filter(Boolean).join('\n')).join('\n\n');
 
   const productCards = [];
@@ -731,7 +740,7 @@ async function buildOpenAIInputContent({ apiKey, message, media, config }) {
   if (productContext.contextText) {
     content.push({
       type: 'input_text',
-      text: `${productContext.contextText}\n\nUse essas informacoes para responder com nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`
+      text: `${productContext.contextText}\n\nUse essas informacoes para responder com nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como midia/carrossel fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`
     });
   }
 
@@ -1001,7 +1010,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       ? await callClaude({ apiKey, config: effectiveConfig, input: media ? `${message || ''}\n\nMidia recebida:\n${getMediaDescription(media)}` : message, systemPrompt })
       : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media });
 
-    result.response = suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation);
+    result.response = removeImageUrlsFromResponse(suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation));
 
     await logAIResult(supabase, {
       client_id: clientId,

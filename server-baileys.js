@@ -80,7 +80,11 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
   }
 
   var now = new Date().toISOString();
-  var aiText = aiResult.response;
+  var hasProductCards = Array.isArray(aiResult.product_cards) && aiResult.product_cards.length > 0;
+  var aiText = String(aiResult.response || '').trim();
+  if (!aiText && hasProductCards) {
+    aiText = 'Encontrei estas opcoes na loja. Vou te enviar as fotos e detalhes abaixo.';
+  }
   var sendResult = await baileysService.sendTextMessage(sessionName, jid, aiText);
 
   var { data: newMessage, error: messageError } = await supabaseAdmin
@@ -178,7 +182,7 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
     });
   }
 
-  if (Array.isArray(aiResult.product_cards) && aiResult.product_cards.length > 0) {
+  if (hasProductCards) {
     try {
       await baileysService.sendCarouselMessage(sessionName, jid, {
         body: 'Fotos do produto encontradas na loja:',

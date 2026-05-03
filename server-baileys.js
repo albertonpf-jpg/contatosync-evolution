@@ -112,6 +112,9 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       ? 'Enviei as fotos do produto acima. Seguem os detalhes que encontrei na loja.'
       : 'Encontrei estas opcoes na loja, mas nao consegui enviar as fotos automaticamente agora.';
   }
+  if (hasProductCards && productMediaSent) {
+    aiText = 'Enviei acima as opcoes que encontrei para o que voce pediu. Se quiser, posso verificar tamanhos, cores ou disponibilidade.';
+  }
   if (hasProductCards && !productMediaSent) {
     aiText = 'Encontrei o produto, mas nao consegui enviar as fotos automaticamente agora. Vou chamar um atendente para ajudar.';
   }

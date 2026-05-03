@@ -339,7 +339,27 @@ function getProductScore(product, messageTokens) {
     product.description,
     product.variations?.join(' ')
   ].join(' '));
-  return messageTokens.reduce((score, token) => score + (haystack.includes(token) ? 1 : 0), 0);
+  let score = messageTokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0);
+  const title = normalizeSearchText(product.title || '');
+  const description = normalizeSearchText(product.description || '');
+  for (const token of messageTokens) {
+    if (title.includes(token)) score += 3;
+    if (description.includes(token)) score += 1;
+  }
+  return score;
+}
+
+function getRelevantProducts(products, message) {
+  const messageTokens = getSearchTokens(message);
+  const uniqueProducts = dedupeProducts(products)
+    .map(product => ({ ...product, score: getProductScore(product, messageTokens) }))
+    .sort((a, b) => b.score - a.score);
+
+  if (messageTokens.length === 0) return uniqueProducts.slice(0, 6);
+
+  const matched = uniqueProducts.filter(product => product.score > 0);
+  if (matched.length > 0) return matched.slice(0, 6);
+  return [];
 }
 
 function dedupeProducts(products) {
@@ -522,11 +542,7 @@ async function fetchFacilZapProductsFromHtml(html, pageUrl, message) {
     }
   }
 
-  const uniqueProducts = dedupeProducts(products)
-    .map(product => ({ ...product, score: getProductScore(product, messageTokens) }))
-    .sort((a, b) => b.score - a.score);
-
-  return uniqueProducts.slice(0, 10);
+  return getRelevantProducts(products, message).slice(0, 10);
 }
 
 async function fetchProductContext(message, sourceUrls = []) {
@@ -584,9 +600,11 @@ async function fetchProductContext(message, sourceUrls = []) {
     }
   }
 
-  if (products.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
+  const relevantProducts = getRelevantProducts(products, message);
 
-  const contextText = products.map((product, index) => [
+  if (relevantProducts.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
+
+  const contextText = relevantProducts.map((product, index) => [
     `Produto/link ${index + 1}: ${product.url}`,
     product.title ? `Titulo: ${product.title}` : '',
     product.price ? `Preco: ${product.price}` : '',
@@ -597,10 +615,13 @@ async function fetchProductContext(message, sourceUrls = []) {
   ].filter(Boolean).join('\n')).join('\n\n');
 
   const productCards = [];
-  for (const product of products) {
-    for (const image of (product.images || []).slice(0, 5)) {
+  for (const product of relevantProducts.slice(0, 6)) {
+    const images = (product.images || []).slice(0, 2);
+    for (let index = 0; index < images.length; index += 1) {
+      const image = images[index];
+      const suffix = images.length > 1 ? ` - foto ${index + 1}` : '';
       productCards.push({
-        title: String(product.title || 'Produto').slice(0, 60),
+        title: String((product.title || 'Produto') + suffix).slice(0, 60),
         description: [
           product.price ? `Preco: ${product.price}` : '',
           product.variations?.length ? `Variacoes: ${product.variations.slice(0, 4).join(', ')}` : '',
@@ -614,7 +635,7 @@ async function fetchProductContext(message, sourceUrls = []) {
 
   return {
     contextText: `Informacoes coletadas da loja virtual:\n${contextText}`,
-    imageUrls: imageUrls.slice(0, 5),
+    imageUrls: relevantProducts.flatMap(product => product.images || []).slice(0, 5),
     productCards: productCards.slice(0, 10)
   };
 }

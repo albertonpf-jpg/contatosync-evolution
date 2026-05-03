@@ -145,6 +145,7 @@ export default function AIConfigPage() {
       setError(null);
       const updated = await apiService.updateAIConfig({
         ...config,
+        working_days: [1, 2, 3, 4, 5, 6, 7],
         trigger_keywords: textToList(triggerText),
         blacklist_keywords: textToList(blacklistText)
       });

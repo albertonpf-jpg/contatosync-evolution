@@ -490,6 +490,7 @@ class BaileysService {
     const cards = Array.isArray(options.cards) ? options.cards.slice(0, 10) : [];
     if (cards.length === 0) throw new Error('Nenhum card informado para carrossel');
 
+    const InteractiveMessage = proto.Message.InteractiveMessage;
     const interactiveCards = [];
     for (const card of cards) {
       const imageBuffer = await this._downloadRemoteBuffer(card.imageUrl);
@@ -508,18 +509,32 @@ class BaileysService {
           })
         });
       }
-      interactiveCards.push(proto.Message.InteractiveMessage.fromObject({
-        header: {
+      if (buttons.length === 0) {
+        buttons.push({
+          name: 'quick_reply',
+          buttonParamsJson: JSON.stringify({
+            display_text: 'Tenho interesse',
+            id: 'product_interest'
+          })
+        });
+      }
+      interactiveCards.push(InteractiveMessage.create({
+        header: InteractiveMessage.Header.create({
           title: String(card.title || 'Produto').slice(0, 60),
           hasMediaAttachment: true,
           imageMessage
-        },
-        body: {
+        }),
+        body: InteractiveMessage.Body.create({
           text: String(card.description || card.title || 'Veja este produto').slice(0, 900)
-        },
-        nativeFlowMessage: {
-          buttons
-        }
+        }),
+        footer: InteractiveMessage.Footer.create({
+          text: 'ContatoSync'
+        }),
+        nativeFlowMessage: InteractiveMessage.NativeFlowMessage.create({
+          buttons,
+          messageParamsJson: JSON.stringify({ from: 'contatosync_product_carousel' }),
+          messageVersion: 1
+        })
       }));
     }
 
@@ -530,13 +545,20 @@ class BaileysService {
             deviceListMetadata: {},
             deviceListMetadataVersion: 2
           },
-          interactiveMessage: proto.Message.InteractiveMessage.fromObject({
-            body: { text: String(options.body || 'Produtos encontrados').slice(0, 900) },
-            footer: { text: 'ContatoSync' },
-            carouselMessage: {
+          interactiveMessage: InteractiveMessage.create({
+            header: InteractiveMessage.Header.create({
+              hasMediaAttachment: false
+            }),
+            body: InteractiveMessage.Body.create({
+              text: String(options.body || 'Produtos encontrados').slice(0, 900)
+            }),
+            footer: InteractiveMessage.Footer.create({
+              text: 'ContatoSync'
+            }),
+            carouselMessage: InteractiveMessage.CarouselMessage.create({
               cards: interactiveCards,
               messageVersion: 1
-            }
+            })
           })
         }
       }

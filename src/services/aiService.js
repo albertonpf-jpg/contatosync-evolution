@@ -82,12 +82,12 @@ function normalizeProductMediaResponse(text, productCards = []) {
     return [
       `Encontrei ${first?.title || 'o produto'} na loja.`,
       first?.description || '',
-      'Estou enviando as fotos agora.'
+      'Enviei as fotos do produto acima.'
     ].filter(Boolean).join('\n');
   }
 
   return response
-    .replace(/(?:posso|quer que eu|deseja que eu)[^.!?\n]*(?:foto|imagem|imagens|fotos)[^.!?\n]*[.!?]?/gi, 'Estou enviando as fotos agora.')
+    .replace(/(?:posso|quer que eu|deseja que eu)[^.!?\n]*(?:foto|imagem|imagens|fotos)[^.!?\n]*[.!?]?/gi, 'Enviei as fotos do produto acima.')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -797,7 +797,7 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
   if (productContext.contextText) {
     content.push({
       type: 'input_text',
-      text: `${productContext.contextText}\n\nUse essas informacoes para responder com nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, diga que esta enviando agora. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como midia/carrossel fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`
+      text: `${productContext.contextText}\n\nUse essas informacoes para responder com nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`
     });
   }
 

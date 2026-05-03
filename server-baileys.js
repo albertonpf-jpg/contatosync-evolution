@@ -89,28 +89,28 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
         cards: aiResult.product_cards
       });
       productMediaSent = true;
-      console.log('[AI AUTO] Carrossel de produtos enviado | conv: ' + conversation.id + ' | cards: ' + aiResult.product_cards.length);
+      console.log('[AI AUTO] Carrossel interativo de produtos enviado | conv: ' + conversation.id + ' | cards: ' + aiResult.product_cards.length);
     } catch (carouselError) {
-      console.warn('[AI AUTO] Falha ao enviar carrossel nativo, enviando imagens simples: ' + carouselError.message);
-      for (const card of aiResult.product_cards.slice(0, 5)) {
+      console.warn('[AI AUTO] Falha ao enviar carrossel interativo, tentando album de midia: ' + carouselError.message);
+      const cardsToSend = aiResult.product_cards.slice(0, 10);
+      for (let index = 0; index < cardsToSend.length; index += 1) {
+        const card = cardsToSend[index];
         try {
-          await baileysService.sendRemoteImageMessage(
-            sessionName,
-            jid,
-            card.imageUrl,
-            `${card.title || 'Produto'}\n${card.description || ''}\n${card.url || ''}`.trim()
-          );
+          await baileysService.sendRemoteImageMessage(sessionName, jid, card.imageUrl, '');
           productMediaSent = true;
-        } catch (fallbackError) {
-          console.warn('[AI AUTO] Falha no fallback do card: ' + fallbackError.message);
+        } catch (imageError) {
+          console.warn('[AI AUTO] Falha ao enviar imagem do produto: ' + imageError.message);
         }
       }
+      console.log('[AI AUTO] Fallback por album de midia enviado | conv: ' + conversation.id + ' | imagens: ' + cardsToSend.length + ' | alguma_enviada: ' + productMediaSent);
     }
   }
 
   var aiText = String(aiResult.response || '').trim();
   if (!aiText && hasProductCards) {
-    aiText = 'Encontrei estas opcoes na loja. Vou te enviar as fotos e detalhes abaixo.';
+    aiText = productMediaSent
+      ? 'Enviei as fotos do produto acima. Seguem os detalhes que encontrei na loja.'
+      : 'Encontrei estas opcoes na loja, mas nao consegui enviar as fotos automaticamente agora.';
   }
   if (hasProductCards && !productMediaSent) {
     aiText = 'Encontrei o produto, mas nao consegui enviar as fotos automaticamente agora. Vou chamar um atendente para ajudar.';

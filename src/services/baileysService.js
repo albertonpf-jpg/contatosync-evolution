@@ -499,7 +499,9 @@ class BaileysService {
         { upload: session.socket.waUploadToServer }
       );
       const buttons = [];
-      if (card.url) {
+      if (Array.isArray(card.buttons) && card.buttons.length > 0) {
+        buttons.push(...card.buttons.slice(0, 3));
+      } else if (card.url) {
         buttons.push({
           name: 'cta_url',
           buttonParamsJson: JSON.stringify({
@@ -528,7 +530,7 @@ class BaileysService {
           text: String(card.description || card.title || 'Veja este produto').slice(0, 900)
         }),
         footer: InteractiveMessage.Footer.create({
-          text: 'ContatoSync'
+          text: String(card.footer || options.footer || 'ContatoSync').slice(0, 60)
         }),
         nativeFlowMessage: InteractiveMessage.NativeFlowMessage.create({
           buttons,
@@ -547,13 +549,14 @@ class BaileysService {
           },
           interactiveMessage: InteractiveMessage.create({
             header: InteractiveMessage.Header.create({
+              title: String(options.title || '').slice(0, 60),
               hasMediaAttachment: false
             }),
             body: InteractiveMessage.Body.create({
               text: String(options.body || 'Produtos encontrados').slice(0, 900)
             }),
             footer: InteractiveMessage.Footer.create({
-              text: 'ContatoSync'
+              text: String(options.footer || 'ContatoSync').slice(0, 60)
             }),
             carouselMessage: InteractiveMessage.CarouselMessage.create({
               cards: interactiveCards,

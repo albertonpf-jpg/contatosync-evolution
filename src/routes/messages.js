@@ -7,6 +7,7 @@ const { getPagination, formatPaginationMeta, formatActivity, cleanJid } = requir
 const { success, error, notFound, asyncHandler, handleSupabaseError, paginated } = require('../utils/response');
 const { emitConversationUpdate, emitNewMessage } = require('../services/socketService');
 const { createStoredFile, sanitizeFileName } = require('../utils/mediaStore');
+const { parseCarouselCommand } = require('../utils/carouselCommand');
 
 const router = express.Router();
 const upload = multer({
@@ -355,6 +356,7 @@ router.post('/send',
     try {
       const now = new Date().toISOString();
       const messageContent = content.trim();
+      const carouselCommand = !req.file ? parseCarouselCommand(messageContent) : null;
       let storedMedia = null;
       let sendResult;
 
@@ -375,10 +377,14 @@ router.post('/send',
           messageType: outgoingType,
           ptt: outgoingType === 'audio'
         });
+      } else if (carouselCommand) {
+        sendResult = await baileysService.sendCarouselMessage(activeSessionName, jidToSend, carouselCommand);
       } else {
         sendResult = await baileysService.sendTextMessage(activeSessionName, jidToSend, messageContent);
       }
-      const finalContent = messageContent || fallbackContentForMedia(outgoingType, storedMedia?.originalName);
+      const finalContent = carouselCommand
+        ? `[Carrossel] ${carouselCommand.body}`
+        : (messageContent || fallbackContentForMedia(outgoingType, storedMedia?.originalName));
 
       // 4. Salvar mensagem
       const { data: newMessage, error: msgError } = await executeWithRLS(req.user.id, (client) =>

@@ -54,7 +54,17 @@ const defaultIntegrationForm = {
   enabled: true
 };
 
-const models = ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'claude-3-haiku', 'claude-3-sonnet'];
+const models = [
+  { value: 'gpt-5.2', label: 'GPT-5.2 (mais avancado)' },
+  { value: 'gpt-5-mini', label: 'GPT-5 mini (equilibrado)' },
+  { value: 'gpt-5-nano', label: 'GPT-5 nano (menor custo)' },
+  { value: 'gpt-4.1', label: 'GPT-4.1 (alta qualidade)' },
+  { value: 'gpt-4.1-mini', label: 'GPT-4.1 mini (rapido)' },
+  { value: 'gpt-4o', label: 'GPT-4o (multimodal)' },
+  { value: 'gpt-4o-mini', label: 'GPT-4o mini (economico)' },
+  { value: 'claude-3-haiku', label: 'Claude 3 Haiku' },
+  { value: 'claude-3-sonnet', label: 'Claude 3 Sonnet' }
+];
 
 function FieldHelp({ children }: { children: ReactNode }) {
   return <p className="mt-1 text-xs leading-5 text-gray-500">{children}</p>;
@@ -250,9 +260,9 @@ export default function AIConfigPage() {
               <label className="text-sm font-medium text-gray-700">
                 Modelo
                 <select value={config.model} onChange={event => updateConfigField('model', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
-                  {models.map(model => <option key={model} value={model}>{model}</option>)}
+                  {models.map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
                 </select>
-                <FieldHelp>Escolha o modelo que vai gerar as respostas. Use gpt-4o-mini para menor custo e boa velocidade; use modelos maiores quando precisar de respostas mais completas. O modelo precisa ser compativel com a chave cadastrada em Configuracoes.</FieldHelp>
+                <FieldHelp>Escolha o modelo que vai gerar as respostas. Para OpenAI, GPT-5 mini e GPT-5 nano sao boas opcoes iniciais por custo e velocidade; GPT-5.2 e GPT-4.1 servem para respostas mais completas. O modelo precisa ser compativel com a chave cadastrada em Configuracoes.</FieldHelp>
               </label>
               <label className="text-sm font-medium text-gray-700">
                 Temperatura

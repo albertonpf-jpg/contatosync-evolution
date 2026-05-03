@@ -91,6 +91,63 @@ router.put('/profile',
 
     const sanitizedClient = sanitizeSensitiveData(updatedClient);
 
+    const aiConfigData = {};
+    if (req.body.ai_model !== undefined) aiConfigData.model = req.body.ai_model;
+    if (req.body.ai_enabled !== undefined) aiConfigData.enabled = req.body.ai_enabled;
+    if (req.body.daily_ai_limit !== undefined) aiConfigData.daily_limit = req.body.daily_ai_limit;
+    if (req.body.working_hours_start !== undefined) aiConfigData.hour_start = req.body.working_hours_start;
+    if (req.body.working_hours_end !== undefined) aiConfigData.hour_end = req.body.working_hours_end;
+
+    if (Object.keys(aiConfigData).length > 0) {
+      const { data: currentAIConfig } = await executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_ai_config')
+          .select('id')
+          .eq('client_id', req.user.id)
+          .single()
+      );
+
+      const syncOperation = currentAIConfig
+        ? (client) => client
+          .from('evolution_ai_config')
+          .update({
+            ...aiConfigData,
+            updated_at: new Date().toISOString()
+          })
+          .eq('client_id', req.user.id)
+        : (client) => client
+          .from('evolution_ai_config')
+          .insert([{
+            id: uuidv4(),
+            client_id: req.user.id,
+            enabled: aiConfigData.enabled ?? false,
+            model: aiConfigData.model || 'gpt-4o-mini',
+            max_tokens: 500,
+            temperature: 0.7,
+            working_hours_enabled: true,
+            timezone: 'America/Sao_Paulo',
+            working_days: [1, 2, 3, 4, 5],
+            hour_start: aiConfigData.hour_start ?? 9,
+            hour_end: aiConfigData.hour_end ?? 18,
+            daily_limit: aiConfigData.daily_limit ?? 50,
+            monthly_limit: 1500,
+            system_prompt: 'Voce e um assistente virtual amigavel e prestativo.',
+            greeting_message: 'Ola! Como posso ajudar voce hoje?',
+            fallback_message: 'Desculpe, nao consegui entender. Um atendente humano entrara em contato em breve.',
+            trigger_keywords: ['preco', 'produto', 'estoque', 'delivery'],
+            blacklist_keywords: ['urgente', 'emergencia'],
+            ...aiConfigData,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          }]);
+
+      const { error: aiSyncError } = await executeWithRLS(req.user.id, syncOperation);
+
+      if (aiSyncError) {
+        console.warn('[CLIENTS] Falha ao sincronizar configuracao de IA:', aiSyncError.message);
+      }
+    }
+
     success(res, sanitizedClient, 'Perfil atualizado com sucesso');
   })
 );

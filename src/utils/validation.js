@@ -37,14 +37,14 @@ const clientSchemas = {
     google_refresh_token: Joi.string().optional().allow(''),
     icloud_username: Joi.string().max(255).optional().allow(''),
     icloud_password: Joi.string().max(255).optional().allow(''),
-    openai_api_key: Joi.string().max(255).optional().allow(''),
-    claude_api_key: Joi.string().max(255).optional().allow(''),
-    ai_model: Joi.string().max(100).default('gpt-4o-mini'),
-    ai_enabled: Joi.boolean().default(false),
-    daily_ai_limit: Joi.number().integer().min(1).max(1000).default(50),
-    auto_reply_enabled: Joi.boolean().default(true),
-    working_hours_start: Joi.number().integer().min(0).max(23).default(9),
-    working_hours_end: Joi.number().integer().min(0).max(23).default(18)
+    openai_api_key: Joi.string().max(4096).optional().allow(''),
+    claude_api_key: Joi.string().max(4096).optional().allow(''),
+    ai_model: Joi.string().max(100).optional(),
+    ai_enabled: Joi.boolean().optional(),
+    daily_ai_limit: Joi.number().integer().min(1).max(1000).optional(),
+    auto_reply_enabled: Joi.boolean().optional(),
+    working_hours_start: Joi.number().integer().min(0).max(23).optional(),
+    working_hours_end: Joi.number().integer().min(0).max(23).optional()
   })
 };
 
@@ -140,8 +140,8 @@ const integrationSchemas = {
     integration_type: Joi.string().max(100).required(),
     integration_name: Joi.string().max(255).required(),
     api_endpoint: Joi.string().max(500).optional().allow(''),
-    api_key: Joi.string().max(255).optional().allow(''),
-    api_secret: Joi.string().max(255).optional().allow(''),
+    api_key: Joi.string().max(4096).optional().allow(''),
+    api_secret: Joi.string().max(4096).optional().allow(''),
     config: Joi.object().optional(),
     enabled: Joi.boolean().default(true)
   }),
@@ -149,8 +149,8 @@ const integrationSchemas = {
   update: Joi.object({
     integration_name: Joi.string().max(255).optional(),
     api_endpoint: Joi.string().max(500).optional().allow(''),
-    api_key: Joi.string().max(255).optional().allow(''),
-    api_secret: Joi.string().max(255).optional().allow(''),
+    api_key: Joi.string().max(4096).optional().allow(''),
+    api_secret: Joi.string().max(4096).optional().allow(''),
     config: Joi.object().optional(),
     enabled: Joi.boolean().optional()
   })

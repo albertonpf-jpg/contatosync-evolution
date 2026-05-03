@@ -170,7 +170,33 @@ function shouldUseConfiguredProductSources(message) {
     'tamanho',
     'variacao',
     'variação',
-    'cor '
+    'cor ',
+    'vestido',
+    'vestidos',
+    'conjunto',
+    'conjuntos',
+    'blusa',
+    'blusas',
+    'body',
+    'bodys',
+    'calca',
+    'calÃ§a',
+    'calcas',
+    'calÃ§as',
+    'cropped',
+    'croppeds',
+    'croped',
+    'macacao',
+    'macacÃ£o',
+    'jardineira',
+    'saia',
+    'saias',
+    'short',
+    'shorts',
+    'camiseta',
+    'camisetas',
+    'tshirt',
+    't-shirt'
   ].some(term => text.includes(term));
 }
 
@@ -334,6 +360,8 @@ function getSearchTokens(value) {
       'ficou',
       'faltou',
       'ainda',
+      'tiver',
+      'tiverem',
       'quero',
       'manda',
       'mande',
@@ -361,7 +389,8 @@ function getSearchTokens(value) {
       'voce',
       'voces',
       'para',
-      'com'
+      'com',
+      'que'
     ].includes(token))
     .filter(token => !/^\d+$/.test(token));
 }
@@ -412,6 +441,14 @@ function getTitleColorTokens(title) {
 function getTokenVariants(token) {
   const variants = [token];
   if (token.endsWith('s') && token.length > 4) variants.push(token.slice(0, -1));
+  if (!token.endsWith('s') && token.length > 3) variants.push(token + 's');
+  if (token === 'calca') variants.push('calcas');
+  if (token === 'calcas') variants.push('calca');
+  if (token === 'macacao') variants.push('macacoes');
+  if (token === 'macacoes') variants.push('macacao');
+  if (token === 'tshirt') variants.push('tshirts', 't shirt');
+  if (token === 'cropped') variants.push('croppeds', 'croped');
+  if (token === 'croped') variants.push('cropeds', 'cropped');
   return [...new Set(variants)];
 }
 
@@ -454,11 +491,82 @@ function getFacilZapVariations(product) {
     .slice(0, 8);
 }
 
+function getFacilZapCatalogBase(html, pageUrl) {
+  return html.match(/const\s+baseUrlCatalogo\s*=\s*`([^`]+)`/i)?.[1]
+    || html.match(/const\s+baseUrlCatalogo\s*=\s*['"]([^'"]+)['"]/i)?.[1]
+    || new URL('/c/varejo/{PATH}', pageUrl).toString();
+}
+
+function getFacilZapProductListEndpoint(html) {
+  return html.match(/const\s+urlCarregarProdutos\s*=\s*`([^`]+)`/i)?.[1]
+    || html.match(/const\s+urlCarregarProdutos\s*=\s*['"]([^'"]+)['"]/i)?.[1]
+    || '';
+}
+
+function getFacilZapProductsPageUrl(pageUrl) {
+  try {
+    const url = new URL(pageUrl);
+    const match = url.pathname.match(/^\/c\/([^/]+)\/(\d+)/);
+    if (!match) return '';
+    return `${url.origin}/c/${match[1]}/produtos/${match[2]}`;
+  } catch (error) {
+    return '';
+  }
+}
+
+function getFacilZapSectionsEndpoint(html) {
+  return html.match(/const\s+urlCarregarSecoesProdutos\s*=\s*`([^`]+)`/i)?.[1]
+    || html.match(/const\s+urlCarregarSecoesProdutos\s*=\s*['"]([^'"]+)['"]/i)?.[1]
+    || '';
+}
+
+function parseFacilZapCategories(html) {
+  const categoryMatch = html.match(/const\s+categoriasAtivasCatalogo\s*=\s*(\[[\s\S]*?\]);/i);
+  if (!categoryMatch?.[1]) return [];
+  try {
+    return JSON.parse(categoryMatch[1]);
+  } catch (error) {
+    return [];
+  }
+}
+
+function getFacilZapMatchingCategoryIds(categories, messageTokens) {
+  return categories
+    .filter(category => getProductScore({ title: category.nome, category: category.nome }, messageTokens) > 0)
+    .map(category => String(category.id))
+    .slice(0, 4);
+}
+
+function normalizeFacilZapProduct(product, catalogBase) {
+  const images = [
+    ...(Array.isArray(product.imagens) ? product.imagens : []),
+    ...(product.imagens_variacoes && typeof product.imagens_variacoes === 'object' ? Object.values(product.imagens_variacoes).flat() : [])
+  ].map(getFacilZapImageUrl).filter(Boolean);
+  const price = getFacilZapPrice(product);
+  const variations = getFacilZapVariations(product);
+  return {
+    id: product.id,
+    url: String(catalogBase).replace('{PATH}', 'produto/' + product.id),
+    title: product.nome || 'Produto',
+    description: stripHtml(product.descricao || ''),
+    price: price ? formatCurrencyBRL(price) : '',
+    stock: Number.isFinite(Number(product.total_estoque)) ? Number(product.total_estoque) : null,
+    category: product.categoria_nome || product.categoria || '',
+    categoryName: product.categoria_nome || '',
+    variations,
+    images: [...new Set(images)].slice(0, 5),
+    score: 0
+  };
+}
+
 function getProductScore(product, messageTokens) {
   if (!messageTokens.length) return 0;
   const haystack = normalizeSearchText([
     product.title,
     product.description,
+    product.category,
+    product.categoryName,
+    product.categoria_nome,
     product.variations?.join(' ')
   ].join(' '));
   let score = messageTokens.reduce((total, token) => total + (includesToken(haystack, token) ? 1 : 0), 0);
@@ -481,11 +589,17 @@ function getRelevantProducts(products, message) {
       const titleColors = getTitleColorTokens(title);
       const titleAndVariations = normalizeSearchText([
         product.title,
+        product.category,
+        product.categoryName,
+        product.categoria_nome,
         product.variations?.join(' ')
       ].join(' '));
       const haystack = normalizeSearchText([
         product.title,
         product.description,
+        product.category,
+        product.categoryName,
+        product.categoria_nome,
         product.variations?.join(' ')
       ].join(' '));
       return {
@@ -631,68 +745,105 @@ async function enrichProductsFromPages(products, message) {
 }
 
 async function fetchFacilZapProductsFromHtml(html, pageUrl, message) {
-  const endpoint = html.match(/const\s+urlCarregarSecoesProdutos\s*=\s*`([^`]+)`/i)?.[1]
-    || html.match(/const\s+urlCarregarSecoesProdutos\s*=\s*['"]([^'"]+)['"]/i)?.[1];
-  if (!endpoint) return [];
-
-  const categoryMatch = html.match(/const\s+categoriasAtivasCatalogo\s*=\s*(\[[\s\S]*?\]);/i);
-  let categories = [];
-  if (categoryMatch?.[1]) {
-    try {
-      categories = JSON.parse(categoryMatch[1]);
-    } catch (error) {
-      categories = [];
+  let catalogHtml = html;
+  let catalogPageUrl = pageUrl;
+  let listEndpoint = getFacilZapProductListEndpoint(catalogHtml);
+  if (!listEndpoint) {
+    const productsPageUrl = getFacilZapProductsPageUrl(pageUrl);
+    if (productsPageUrl && productsPageUrl !== pageUrl) {
+      try {
+        const response = await fetch(productsPageUrl, {
+          headers: { 'User-Agent': 'ContatoSyncBot/1.0 (+https://contatosync-evolution.vercel.app)' },
+          signal: AbortSignal.timeout(8000)
+        });
+        if (response.ok) {
+          catalogHtml = await response.text();
+          catalogPageUrl = productsPageUrl;
+          listEndpoint = getFacilZapProductListEndpoint(catalogHtml);
+        }
+      } catch (error) {
+        listEndpoint = '';
+      }
     }
   }
 
-  const messageTokens = getSearchTokens(message);
-  const matchingCategories = categories
-    .filter(category => getProductScore({ title: category.nome }, messageTokens) > 0)
-    .map(category => String(category.id))
-    .slice(0, 4);
-
-  const body = {
-    secoes: ['lancamentos', 'mais_vendidos', 'promocoes', 'destaques'],
-    categorias: matchingCategories
-  };
-
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
-      'User-Agent': 'ContatoSyncBot/1.0 (+https://contatosync-evolution.vercel.app)'
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10000)
-  });
-
-  if (!response.ok) return [];
-  const data = await response.json();
-  const catalogBase = html.match(/const\s+baseUrlCatalogo\s*=\s*`([^`]+)`/i)?.[1]
-    || new URL('/c/varejo/{PATH}', pageUrl).toString();
-
   const products = [];
-  for (const list of Object.values(data)) {
-    if (!Array.isArray(list)) continue;
-    for (const product of list) {
-      const images = [
-        ...(Array.isArray(product.imagens) ? product.imagens : []),
-        ...(product.imagens_variacoes && typeof product.imagens_variacoes === 'object' ? Object.values(product.imagens_variacoes).flat() : [])
-      ].map(getFacilZapImageUrl).filter(Boolean);
-      const price = getFacilZapPrice(product);
-      const variations = getFacilZapVariations(product);
-      products.push({
-        id: product.id,
-        url: String(catalogBase).replace('{PATH}', 'produto/' + product.id),
-        title: product.nome || 'Produto',
-        description: stripHtml(product.descricao || ''),
-        price: price ? formatCurrencyBRL(price) : '',
-        stock: Number.isFinite(Number(product.total_estoque)) ? Number(product.total_estoque) : null,
-        variations,
-        images: [...new Set(images)].slice(0, 5),
-        score: 0
+  const catalogBase = getFacilZapCatalogBase(catalogHtml, catalogPageUrl);
+  const categories = parseFacilZapCategories(catalogHtml);
+  const messageTokens = getSearchTokens(message);
+  const matchingCategories = getFacilZapMatchingCategoryIds(categories, messageTokens);
+
+  if (listEndpoint) {
+    const categoriesToLoad = matchingCategories.length > 0 ? matchingCategories : ['todas'];
+    const seenIds = new Set();
+    const searchId = `contatosync-${Date.now().toString(36)}`;
+    for (const categoryId of categoriesToLoad) {
+      for (let page = 1; page <= 12; page += 1) {
+        const url = listEndpoint
+          .replace('{PAGE}', String(page))
+          .replace('{CATEGORY}', categoryId);
+        const requestUrl = `${url}${url.includes('?') ? '&' : '?'}search_id=${encodeURIComponent(searchId)}&mobile=0`;
+        let data;
+        try {
+          const response = await fetch(requestUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              'User-Agent': 'ContatoSyncBot/1.0 (+https://contatosync-evolution.vercel.app)'
+            },
+            body: JSON.stringify({ pagina_especifica: 'todos_produtos' }),
+            signal: AbortSignal.timeout(10000)
+          });
+          if (!response.ok) break;
+          data = await response.json();
+        } catch (error) {
+          break;
+        }
+        if (data?.acao === 'sem_mais_produtos') break;
+        if (data?.acao) break;
+        const list = Array.isArray(data) ? data : Object.values(data || {});
+        if (list.length === 0) break;
+        let newProducts = 0;
+        for (const product of list) {
+          if (!product?.id || seenIds.has(String(product.id))) continue;
+          seenIds.add(String(product.id));
+          newProducts += 1;
+          products.push(normalizeFacilZapProduct(product, catalogBase));
+        }
+        if (newProducts === 0) break;
+      }
+    }
+  }
+
+  const sectionsEndpoint = getFacilZapSectionsEndpoint(catalogHtml) || getFacilZapSectionsEndpoint(html);
+  if (sectionsEndpoint) {
+    const body = {
+      secoes: ['lancamentos', 'mais_vendidos', 'promocoes', 'destaques'],
+      categorias: matchingCategories
+    };
+    try {
+      const response = await fetch(sectionsEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'User-Agent': 'ContatoSyncBot/1.0 (+https://contatosync-evolution.vercel.app)'
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000)
       });
+      if (response.ok) {
+        const data = await response.json();
+        for (const list of Object.values(data)) {
+          if (!Array.isArray(list)) continue;
+          for (const product of list) {
+            products.push(normalizeFacilZapProduct(product, catalogBase));
+          }
+        }
+      }
+    } catch (error) {
+      // The full product list above is the primary source. Sections are only a fallback.
     }
   }
 

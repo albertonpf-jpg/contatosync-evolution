@@ -42,6 +42,14 @@ function getFallbackModel(provider, model) {
   return value === 'gpt-4o-mini' ? '' : 'gpt-4o-mini';
 }
 
+function isUsableProviderApiKey(provider, apiKey) {
+  const value = String(apiKey || '').trim();
+  if (!value || value === '***') return false;
+  if (provider === 'openai') return /^sk-[A-Za-z0-9_-]{20,}$/.test(value);
+  if (provider === 'claude') return /^sk-ant-[A-Za-z0-9_-]{20,}$/.test(value);
+  return value.length >= 20;
+}
+
 function buildSystemPrompt(config, contact, conversation) {
   const basePrompt = config.system_prompt || 'Voce e um assistente virtual de atendimento via WhatsApp. Responda em portugues do Brasil, com clareza e objetividade.';
   const totalMessages = Number(conversation?.total_messages || 0);
@@ -124,6 +132,11 @@ function buildProductCardsResponse(productCards = []) {
     first?.description || '',
     'Enviei as fotos correspondentes acima.'
   ].filter(Boolean).join('\n');
+}
+
+function buildAIUnavailableResponse(config) {
+  return String(config?.fallback_message || '').trim()
+    || 'No momento nao consegui processar a resposta automatica. Um atendente vai continuar o atendimento assim que possivel.';
 }
 
 function getTokenUsageFromOpenAI(data) {
@@ -1555,12 +1568,16 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   }
 
   const apiKey = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
-  if (!apiKey || apiKey === '***') {
+  if (!isUsableProviderApiKey(provider, apiKey)) {
     const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
-    if (productContext.lookupAttempted && productContext.productCards?.length) {
+    if (productContext.lookupAttempted) {
+      const productCards = productContext.productCards || [];
+      console.log('[AI] API key invalida ou ausente, usando busca deterministica do catalogo | provider: ' + provider + ' | cards: ' + productCards.length);
       return {
         skipped: false,
-        response: buildProductCardsResponse(productContext.productCards),
+        response: productCards.length > 0
+          ? buildProductCardsResponse(productCards)
+          : buildProductLookupEmptyResponse(productContext.searchText || message),
         provider: 'catalog',
         model: 'catalog_lookup',
         prompt_tokens: 0,
@@ -1568,12 +1585,23 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         total_tokens: 0,
         processing_time_ms: 0,
         product_images: productContext.imageUrls || [],
-        product_cards: productContext.productCards,
+        product_cards: productCards,
         product_lookup_attempted: true,
         product_search_text: productContext.searchText || message
       };
     }
-    return { skipped: true, reason: 'API key nao configurada' };
+    return {
+      skipped: false,
+      response: buildAIUnavailableResponse(effectiveConfig),
+      provider,
+      model: 'api_key_unavailable',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: []
+    };
   }
 
   try {
@@ -1615,6 +1643,43 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       status: 'error',
       error_message: error.message
     });
+
+    const apiKeyError = /incorrect api key|invalid api key|api key.*invalid|401/i.test(String(error.message || ''));
+    if (apiKeyError) {
+      const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+      const productCards = productContext.productCards || [];
+      if (productContext.lookupAttempted) {
+        console.log('[AI] API key rejeitada pelo provedor, usando busca deterministica do catalogo | cards: ' + productCards.length);
+        return {
+          skipped: false,
+          response: productCards.length > 0
+            ? buildProductCardsResponse(productCards)
+            : buildProductLookupEmptyResponse(productContext.searchText || message),
+          provider: 'catalog',
+          model: 'catalog_lookup',
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          processing_time_ms: 0,
+          product_images: productContext.imageUrls || [],
+          product_cards: productCards,
+          product_lookup_attempted: true,
+          product_search_text: productContext.searchText || message
+        };
+      }
+      return {
+        skipped: false,
+        response: buildAIUnavailableResponse(effectiveConfig),
+        provider,
+        model: 'api_key_unavailable',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: []
+      };
+    }
 
     throw error;
   }

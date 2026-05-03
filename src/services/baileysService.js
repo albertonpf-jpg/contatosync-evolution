@@ -489,6 +489,9 @@ class BaileysService {
     const jid = jidOrPhone.includes('@') ? jidOrPhone : jidOrPhone.replace(/\D/g, '') + '@s.whatsapp.net';
     const cards = Array.isArray(options.cards) ? options.cards.slice(0, 10) : [];
     if (cards.length === 0) throw new Error('Nenhum card informado para carrossel');
+    if (cards.length === 1) {
+      cards.push({ ...cards[0], title: (cards[0].title || 'Produto') + ' - foto 2' });
+    }
 
     const InteractiveMessage = proto.Message.InteractiveMessage;
     const interactiveCards = [];
@@ -498,39 +501,66 @@ class BaileysService {
         { image: imageBuffer },
         { upload: session.socket.waUploadToServer }
       );
-      const buttons = [];
+      let buttons = [];
       if (Array.isArray(card.buttons) && card.buttons.length > 0) {
-        buttons.push(...card.buttons.slice(0, 3));
+        buttons = card.buttons.slice(0, 3);
       } else if (card.url) {
-        buttons.push({
+        buttons = [{
           name: 'cta_url',
           buttonParamsJson: JSON.stringify({
             display_text: 'Ver produto',
             url: card.url,
             merchant_url: card.url
           })
-        });
+        }];
       }
       if (buttons.length === 0) {
-        buttons.push({
+        buttons = [{
           name: 'quick_reply',
           buttonParamsJson: JSON.stringify({
             display_text: 'Tenho interesse',
             id: 'product_interest'
           })
-        });
+        }];
+      }
+      if (interactiveCards.length > 0) {
+        const firstCardButtons = interactiveCards[0].nativeFlowMessage?.buttons || [];
+        const firstButtonType = firstCardButtons[0]?.name;
+        if (firstButtonType === 'cta_url' && buttons[0]?.name !== 'cta_url') {
+          const firstButtonParams = JSON.parse(firstCardButtons[0]?.buttonParamsJson || '{}');
+          const fallbackUrl = card.url || firstButtonParams.url || firstButtonParams.merchant_url;
+          if (!fallbackUrl) throw new Error('Cards de carrossel com botao URL precisam ter URL em todos os cards');
+          buttons = [{
+            name: 'cta_url',
+            buttonParamsJson: JSON.stringify({
+              display_text: 'Ver produto',
+              url: fallbackUrl,
+              merchant_url: fallbackUrl
+            })
+          }];
+        }
+        if (firstButtonType !== 'cta_url') {
+          buttons = buttons
+            .filter(button => button.name === firstButtonType)
+            .slice(0, firstCardButtons.length);
+          while (buttons.length < firstCardButtons.length) {
+            buttons.push({
+              name: firstButtonType || 'quick_reply',
+              buttonParamsJson: JSON.stringify({
+                display_text: 'Opcao ' + (buttons.length + 1),
+                id: 'product_option_' + interactiveCards.length + '_' + buttons.length
+              })
+            });
+          }
+        }
       }
       interactiveCards.push(InteractiveMessage.create({
         header: InteractiveMessage.Header.create({
-          title: String(card.title || 'Produto').slice(0, 60),
           hasMediaAttachment: true,
           imageMessage
         }),
         body: InteractiveMessage.Body.create({
-          text: String(card.description || card.title || 'Veja este produto').slice(0, 900)
-        }),
-        footer: InteractiveMessage.Footer.create({
-          text: String(card.footer || options.footer || 'ContatoSync').slice(0, 60)
+          text: [card.title, card.description].filter(Boolean).join('\n').slice(0, 900) || 'Veja este produto'
         }),
         nativeFlowMessage: InteractiveMessage.NativeFlowMessage.create({
           buttons,
@@ -548,15 +578,8 @@ class BaileysService {
             deviceListMetadataVersion: 2
           },
           interactiveMessage: InteractiveMessage.create({
-            header: InteractiveMessage.Header.create({
-              title: String(options.title || '').slice(0, 60),
-              hasMediaAttachment: false
-            }),
             body: InteractiveMessage.Body.create({
               text: String(options.body || 'Produtos encontrados').slice(0, 900)
-            }),
-            footer: InteractiveMessage.Footer.create({
-              text: String(options.footer || 'ContatoSync').slice(0, 60)
             }),
             carouselMessage: InteractiveMessage.CarouselMessage.create({
               cards: interactiveCards,

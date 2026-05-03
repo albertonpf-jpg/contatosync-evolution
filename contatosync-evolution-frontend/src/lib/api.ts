@@ -80,9 +80,14 @@ class ApiService {
     return response.data.data;
   }
 
+  async getClientProfile() {
+    const response = await this.api.get('/clients/profile');
+    return response.data.data;
+  }
+
   async updateProfile(data: Partial<User>): Promise<User> {
-    const response: AxiosResponse<{ user: User }> = await this.api.put('/clients/profile', data);
-    return response.data.user;
+    const response = await this.api.put('/clients/profile', data);
+    return response.data.data;
   }
 
   // Estatísticas serão implementadas quando o endpoint for criado na API
@@ -200,6 +205,62 @@ class ApiService {
 
   async updateAIConfig(data: any) {
     const response = await this.api.put('/ai/config', data);
+    return response.data.data;
+  }
+
+  async getAIStats(period = 'today') {
+    const response = await this.api.get('/ai/stats', { params: { period } });
+    return response.data.data;
+  }
+
+  async testAI(data: { message: string; phone?: string }) {
+    const response = await this.api.post('/ai/test', data);
+    return response.data.data;
+  }
+
+  // Integrações
+  async getIntegrations() {
+    const response = await this.api.get('/integrations');
+    return response.data.data;
+  }
+
+  async getIntegrationTypes() {
+    const response = await this.api.get('/integrations/types');
+    return response.data.data;
+  }
+
+  async createIntegration(data: {
+    integration_type: string;
+    integration_name: string;
+    api_endpoint: string;
+    api_key?: string;
+    api_secret?: string;
+    enabled?: boolean;
+    config?: Record<string, unknown>;
+  }) {
+    const response = await this.api.post('/integrations', data);
+    return response.data.data;
+  }
+
+  async updateIntegration(id: string, data: {
+    integration_name?: string;
+    api_endpoint?: string;
+    api_key?: string;
+    api_secret?: string;
+    enabled?: boolean;
+    config?: Record<string, unknown>;
+  }) {
+    const response = await this.api.put(`/integrations/${id}`, data);
+    return response.data.data;
+  }
+
+  async deleteIntegration(id: string) {
+    const response = await this.api.delete(`/integrations/${id}`);
+    return response.data.data;
+  }
+
+  async testIntegration(id: string) {
+    const response = await this.api.post(`/integrations/${id}/test`);
     return response.data.data;
   }
 

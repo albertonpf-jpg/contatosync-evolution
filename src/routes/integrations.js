@@ -1,4 +1,5 @@
 const express = require('express');
+const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const { executeWithRLS } = require('../config/supabase');
 const { integrationSchemas, validate } = require('../utils/validation');
@@ -6,6 +7,35 @@ const { sanitizeSensitiveData, formatActivity } = require('../utils/helpers');
 const { success, error, notFound, conflict, asyncHandler, handleSupabaseError } = require('../utils/response');
 
 const router = express.Router();
+
+const API_TOKEN_TYPES = new Set(['facilzap', 'crm', 'ecommerce', 'email']);
+
+const buildIntegrationHeaders = (integration) => {
+  const headers = { Accept: 'application/json' };
+
+  if (integration.api_key) {
+    headers.Authorization = `Bearer ${integration.api_key}`;
+    headers['x-api-key'] = integration.api_key;
+  }
+
+  if (integration.api_secret) {
+    headers['x-api-secret'] = integration.api_secret;
+  }
+
+  return headers;
+};
+
+const validateIntegrationCredentials = (res, integration) => {
+  if (!integration.api_endpoint || !/^https?:\/\//i.test(integration.api_endpoint)) {
+    return error(res, 'Informe uma URL de API valida com http ou https', 400);
+  }
+
+  if (API_TOKEN_TYPES.has(integration.integration_type) && !integration.api_key) {
+    return error(res, 'Token/API key e obrigatorio para este tipo de integracao', 400);
+  }
+
+  return null;
+};
 
 /**
  * GET /api/integrations
@@ -47,6 +77,49 @@ router.get('/',
 );
 
 /**
+ * GET /api/integrations/types
+ * Listar tipos de integraÃ§Ãµes disponÃ­veis
+ */
+router.get('/types',
+  asyncHandler(async (req, res) => {
+    const integrationTypes = [
+      {
+        type: 'facilzap',
+        name: 'FacilZap',
+        description: 'IntegraÃ§Ã£o com API do FacilZap para envio de mensagens',
+        fields: ['api_endpoint', 'api_key']
+      },
+      {
+        type: 'webhook',
+        name: 'Webhook',
+        description: 'Webhook para receber notificaÃ§Ãµes de eventos',
+        fields: ['api_endpoint']
+      },
+      {
+        type: 'crm',
+        name: 'CRM Externo',
+        description: 'IntegraÃ§Ã£o com sistemas CRM externos',
+        fields: ['api_endpoint', 'api_key', 'api_secret']
+      },
+      {
+        type: 'ecommerce',
+        name: 'E-commerce',
+        description: 'IntegraÃ§Ã£o com plataformas de e-commerce',
+        fields: ['api_endpoint', 'api_key']
+      },
+      {
+        type: 'email',
+        name: 'E-mail Marketing',
+        description: 'IntegraÃ§Ã£o com ferramentas de e-mail marketing',
+        fields: ['api_endpoint', 'api_key']
+      }
+    ];
+
+    success(res, integrationTypes, 'Tipos de integraÃ§Ã£o disponÃ­veis');
+  })
+);
+
+/**
  * GET /api/integrations/:id
  * Obter integração específica
  */
@@ -54,7 +127,7 @@ router.get('/:id',
   asyncHandler(async (req, res) => {
     const { id } = req.params;
 
-    const { data: integration, error } = await executeWithRLS(req.user.id, (client) =>
+    const { data: integration, error: findError } = await executeWithRLS(req.user.id, (client) =>
       client
         .from('evolution_integrations')
         .select('*')
@@ -63,7 +136,7 @@ router.get('/:id',
         .single()
     );
 
-    if (error || !integration) {
+    if (findError || !integration) {
       return notFound(res, 'Integração não encontrada');
     }
 
@@ -89,6 +162,13 @@ router.post('/',
       config,
       enabled
     } = req.body;
+
+    const credentialError = validateIntegrationCredentials(res, {
+      integration_type,
+      api_endpoint,
+      api_key
+    });
+    if (credentialError) return credentialError;
 
     // Verificar se já existe integração com mesmo tipo e nome
     const { data: existingIntegration } = await executeWithRLS(req.user.id, (client) =>
@@ -162,6 +242,25 @@ router.put('/:id',
   validate(integrationSchemas.update),
   asyncHandler(async (req, res) => {
     const { id } = req.params;
+
+    const { data: currentIntegration, error: findError } = await executeWithRLS(req.user.id, (client) =>
+      client
+        .from('evolution_integrations')
+        .select('*')
+        .eq('client_id', req.user.id)
+        .eq('id', id)
+        .single()
+    );
+
+    if (findError || !currentIntegration) {
+      return notFound(res, 'IntegraÃ§Ã£o nÃ£o encontrada');
+    }
+
+    const credentialError = validateIntegrationCredentials(res, {
+      ...currentIntegration,
+      ...req.body
+    });
+    if (credentialError) return credentialError;
 
     const updateData = {
       ...req.body,
@@ -282,42 +381,33 @@ router.post('/:id/test',
       return error(res, 'Integração está desabilitada', 400);
     }
 
+    const credentialError = validateIntegrationCredentials(res, integration);
+    if (credentialError) return credentialError;
+
     try {
-      // TODO: Implementar lógica real de teste baseado no tipo de integração
-      // Por agora, simular teste
+      const startedAt = Date.now();
+      const apiResponse = await axios.request({
+        method: integration.integration_type === 'webhook' ? 'POST' : 'GET',
+        url: integration.api_endpoint,
+        headers: buildIntegrationHeaders(integration),
+        data: integration.integration_type === 'webhook' ? {
+          event: 'contatosync.integration_test',
+          timestamp: new Date().toISOString()
+        } : undefined,
+        timeout: 10000,
+        validateStatus: (status) => status >= 200 && status < 500
+      });
 
-      let testResult;
-
-      switch (integration.integration_type) {
-        case 'facilzap':
-          testResult = {
-            success: true,
-            message: 'Conexão com FacilZap estabelecida com sucesso',
-            data: {
-              endpoint: integration.api_endpoint,
-              response_time_ms: 150
-            }
-          };
-          break;
-
-        case 'webhook':
-          testResult = {
-            success: true,
-            message: 'Webhook configurado corretamente',
-            data: {
-              endpoint: integration.api_endpoint,
-              response_time_ms: 200
-            }
-          };
-          break;
-
-        default:
-          testResult = {
-            success: true,
-            message: 'Integração testada com sucesso',
-            data: {}
-          };
-      }
+      const ok = apiResponse.status >= 200 && apiResponse.status < 300;
+      const testResult = {
+        success: ok,
+        message: ok ? 'Conexao com a integracao estabelecida com sucesso' : `API respondeu com status ${apiResponse.status}`,
+        data: {
+          endpoint: integration.api_endpoint,
+          status_code: apiResponse.status,
+          response_time_ms: Date.now() - startedAt
+        }
+      };
 
       // Atualizar status e último teste
       await executeWithRLS(req.user.id, (client) =>
@@ -332,6 +422,10 @@ router.post('/:id/test',
           })
           .eq('id', id)
       );
+
+      if (!ok) {
+        return error(res, testResult.message, 400, testResult.data);
+      }
 
       success(res, testResult, 'Teste de integração concluído');
 
@@ -423,49 +517,6 @@ router.post('/:id/disable',
     const sanitizedIntegration = sanitizeSensitiveData(updatedIntegration);
 
     success(res, sanitizedIntegration, 'Integração desabilitada com sucesso');
-  })
-);
-
-/**
- * GET /api/integrations/types
- * Listar tipos de integrações disponíveis
- */
-router.get('/types',
-  asyncHandler(async (req, res) => {
-    const integrationTypes = [
-      {
-        type: 'facilzap',
-        name: 'FacilZap',
-        description: 'Integração com API do FacilZap para envio de mensagens',
-        fields: ['api_endpoint', 'api_key']
-      },
-      {
-        type: 'webhook',
-        name: 'Webhook',
-        description: 'Webhook para receber notificações de eventos',
-        fields: ['api_endpoint']
-      },
-      {
-        type: 'crm',
-        name: 'CRM Externo',
-        description: 'Integração com sistemas CRM externos',
-        fields: ['api_endpoint', 'api_key', 'api_secret']
-      },
-      {
-        type: 'ecommerce',
-        name: 'E-commerce',
-        description: 'Integração com plataformas de e-commerce',
-        fields: ['api_endpoint', 'api_key']
-      },
-      {
-        type: 'email',
-        name: 'E-mail Marketing',
-        description: 'Integração com ferramentas de e-mail marketing',
-        fields: ['api_endpoint', 'api_key']
-      }
-    ];
-
-    success(res, integrationTypes, 'Tipos de integração disponíveis');
   })
 );
 

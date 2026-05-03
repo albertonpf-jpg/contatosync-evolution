@@ -1,478 +1,210 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import {
-  Settings, User, Lock, Smartphone, Plug, Save, CheckCircle,
-  Loader2, Eye, EyeOff, Trash2, Plus, ExternalLink, AlertCircle, Globe
-} from 'lucide-react';
-import { apiService } from '@/lib/api';
+import { FormEvent, useEffect, useState } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
-import { useAuth } from '@/contexts/AuthContext';
+import { apiService } from '@/lib/api';
+import { Loader2, Save, Settings, ShieldCheck, UserRound } from 'lucide-react';
 
-interface ProfileData {
+interface ProfileForm {
   name: string;
-  email: string;
-  phone: string;
   company_name: string;
+  phone: string;
+  openai_api_key: string;
+  claude_api_key: string;
+  ai_model: string;
+  daily_ai_limit: number;
+  auto_reply_enabled: boolean;
+  working_hours_start: number;
+  working_hours_end: number;
 }
 
-interface PasswordData {
-  current_password: string;
-  new_password: string;
-  confirm_password: string;
-}
-
-interface Integration {
-  id: string;
-  name: string;
-  type: string;
-  is_active: boolean;
-  last_sync: string | null;
-  config: Record<string, any>;
-}
+const defaultForm: ProfileForm = {
+  name: '',
+  company_name: '',
+  phone: '',
+  openai_api_key: '',
+  claude_api_key: '',
+  ai_model: 'gpt-4o-mini',
+  daily_ai_limit: 50,
+  auto_reply_enabled: true,
+  working_hours_start: 9,
+  working_hours_end: 18
+};
 
 export default function SettingsPage() {
-  const { user } = useAuth();
+  const [form, setForm] = useState<ProfileForm>(defaultForm);
+  const [email, setEmail] = useState('');
+  const [plan, setPlan] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const [activeTab, setActiveTab] = useState<'profile' | 'security' | 'sessions' | 'integrations'>('profile');
-
-  // ── Profile ──
-  const [profile, setProfile] = useState<ProfileData>({ name: '', email: '', phone: '', company_name: '' });
-  const [savingProfile, setSavingProfile] = useState(false);
-  const [savedProfile, setSavedProfile] = useState(false);
-
-  // ── Password ──
-  const [passwords, setPasswords] = useState<PasswordData>({ current_password: '', new_password: '', confirm_password: '' });
-  const [showPwd, setShowPwd] = useState({ current: false, new: false, confirm: false });
-  const [savingPwd, setSavingPwd] = useState(false);
-  const [savedPwd, setSavedPwd] = useState(false);
-  const [pwdError, setPwdError] = useState('');
-
-  // ── Sessions ──
-  const [sessions, setSessions] = useState<any[]>([]);
-  const [loadingSessions, setLoadingSessions] = useState(false);
-
-  // ── Integrations ──
-  const [integrations, setIntegrations] = useState<Integration[]>([]);
-  const [showNewIntegration, setShowNewIntegration] = useState(false);
-  const [newIntegration, setNewIntegration] = useState({ name: '', type: 'facilzap', webhook_url: '', api_key: '' });
-
-  // Carregar dados do usuário
   useEffect(() => {
-    if (user) {
-      setProfile({
-        name: user.name || '',
-        email: user.email || '',
-        phone: (user as any).phone || '',
-        company_name: (user as any).company_name || '',
+    void loadSettings();
+  }, []);
+
+  const loadSettings = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const profile = await apiService.getClientProfile();
+      const client = profile.client || {};
+      const aiConfig = profile.aiConfig || {};
+
+      setEmail(client.email || '');
+      setPlan(client.plan || '');
+      setForm({
+        name: client.name || '',
+        company_name: client.company_name || '',
+        phone: client.phone || '',
+        openai_api_key: client.openai_api_key === '***' ? '' : client.openai_api_key || '',
+        claude_api_key: client.claude_api_key === '***' ? '' : client.claude_api_key || '',
+        ai_model: client.ai_model || aiConfig.model || 'gpt-4o-mini',
+        daily_ai_limit: client.daily_ai_limit || aiConfig.daily_limit || 50,
+        auto_reply_enabled: client.auto_reply_enabled ?? true,
+        working_hours_start: client.working_hours_start || aiConfig.hour_start || 9,
+        working_hours_end: client.working_hours_end || aiConfig.hour_end || 18
       });
-    }
-  }, [user]);
-
-  // Carregar sessões e integrações ao trocar de aba
-  useEffect(() => {
-    if (activeTab === 'sessions') loadSessions();
-    if (activeTab === 'integrations') loadIntegrations();
-  }, [activeTab]);
-
-  const loadSessions = async () => {
-    setLoadingSessions(true);
-    try {
-      const data = await apiService.getWhatsAppSessions();
-      setSessions(data || []);
-    } catch { setSessions([]); }
-    finally { setLoadingSessions(false); }
-  };
-
-  const loadIntegrations = async () => {
-    try {
-      const response = await (apiService as any).api?.get('/integrations');
-      setIntegrations(response?.data?.data || []);
-    } catch { setIntegrations([]); }
-  };
-
-  const handleSaveProfile = async () => {
-    setSavingProfile(true); setSavedProfile(false);
-    try {
-      await apiService.updateProfile(profile);
-      setSavedProfile(true);
-      setTimeout(() => setSavedProfile(false), 3000);
-    } catch (e: any) {
-      alert('Erro ao salvar: ' + (e?.response?.data?.message || e.message));
-    } finally { setSavingProfile(false); }
-  };
-
-  const handleSavePassword = async () => {
-    setPwdError('');
-    if (passwords.new_password !== passwords.confirm_password) {
-      setPwdError('As senhas não conferem.'); return;
-    }
-    if (passwords.new_password.length < 6) {
-      setPwdError('A nova senha deve ter no mínimo 6 caracteres.'); return;
-    }
-    setSavingPwd(true);
-    try {
-      await new Promise(r => setTimeout(r, 1000)); // endpoint futuro
-      setSavedPwd(true);
-      setPasswords({ current_password: '', new_password: '', confirm_password: '' });
-      setTimeout(() => setSavedPwd(false), 3000);
-    } catch (e: any) {
-      setPwdError(e?.response?.data?.message || 'Erro ao alterar senha.');
-    } finally { setSavingPwd(false); }
-  };
-
-  const handleDeleteSession = async (sessionName: string) => {
-    if (!confirm(`Deseja remover a sessão "${sessionName}"?`)) return;
-    try {
-      await apiService.deleteWhatsAppSession(sessionName);
-      setSessions(prev => prev.filter((s: any) => s.session_name !== sessionName));
-    } catch (e: any) {
-      alert('Erro ao remover sessão: ' + (e?.response?.data?.message || e.message));
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.message || 'Erro ao carregar configuracoes');
+    } finally {
+      setLoading(false);
     }
   };
 
-  const statusBadge = (status: string) => {
-    const map: Record<string, string> = {
-      connected: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400',
-      connecting: 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400',
-      qr_ready: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400',
-      disconnected: 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400',
-      error: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400',
-    };
-    const label: Record<string, string> = {
-      connected: 'Conectado', connecting: 'Conectando...', qr_ready: 'Aguardando QR',
-      disconnected: 'Desconectado', error: 'Erro',
-    };
+  const updateField = <K extends keyof ProfileForm>(field: K, value: ProfileForm[K]) => {
+    setForm(current => ({ ...current, [field]: value }));
+  };
+
+  const saveSettings = async (event: FormEvent) => {
+    event.preventDefault();
+
+    try {
+      setSaving(true);
+      setError(null);
+      const payload: Partial<ProfileForm> = { ...form };
+      if (!payload.openai_api_key) delete payload.openai_api_key;
+      if (!payload.claude_api_key) delete payload.claude_api_key;
+
+      await apiService.updateProfile(payload);
+      setMessage('Configuracoes salvas.');
+      await loadSettings();
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.message || 'Erro ao salvar configuracoes');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
     return (
-      <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${map[status] || map.disconnected}`}>
-        {label[status] || status}
-      </span>
+      <DashboardLayout>
+        <div className="flex min-h-96 items-center justify-center">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+        </div>
+      </DashboardLayout>
     );
-  };
-
-  const INTEGRATION_TYPES = [
-    { id: 'facilzap', name: 'FacilZap', desc: 'Catálogo, pedidos e clientes', docsUrl: 'https://facilzap.com' },
-    { id: 'webhook', name: 'Webhook genérico', desc: 'Envie eventos para qualquer URL', docsUrl: '' },
-    { id: 'zapier', name: 'Zapier', desc: 'Conecte com milhares de apps', docsUrl: 'https://zapier.com' },
-    { id: 'n8n', name: 'N8N', desc: 'Automação open-source', docsUrl: 'https://n8n.io' },
-  ];
+  }
 
   return (
     <DashboardLayout>
-      <div className="max-w-4xl mx-auto space-y-6">
-
-        {/* ── Header ── */}
+      <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-            <Settings className="w-7 h-7 text-primary-600" /> Configurações
-          </h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1 text-sm">
-            Gerencie seu perfil, segurança, sessões WhatsApp e integrações
-          </p>
+          <h1 className="text-2xl font-bold text-gray-900">Configuracoes</h1>
+          <p className="text-gray-600">Perfil, tokens de IA e comportamento operacional.</p>
         </div>
 
-        {/* ── Tabs ── */}
-        <div className="border-b border-gray-200 dark:border-gray-700 overflow-x-auto">
-          <nav className="flex gap-1 min-w-max">
-            {([
-              { id: 'profile', label: 'Perfil', icon: User },
-              { id: 'security', label: 'Segurança', icon: Lock },
-              { id: 'sessions', label: 'Sessões WhatsApp', icon: Smartphone },
-              { id: 'integrations', label: 'Integrações', icon: Plug },
-            ] as const).map(tab => (
-              <button key={tab.id} onClick={() => setActiveTab(tab.id)}
-                className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
-                  activeTab === tab.id
-                    ? 'border-primary-600 text-primary-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200'
-                }`}>
-                <tab.icon className="w-4 h-4" />{tab.label}
-              </button>
-            ))}
-          </nav>
-        </div>
-
-        {/* ══════════════════ TAB: PERFIL ══════════════════ */}
-        {activeTab === 'profile' && (
-          <div className="bg-white dark:bg-dark-card rounded-xl border border-light-border dark:border-dark-border p-6 space-y-5">
-            <h2 className="font-semibold text-gray-900 dark:text-white">Dados da Conta</h2>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-              <div>
-                <label className="text-sm font-medium text-gray-700 dark:text-gray-300 block mb-1.5">Nome completo</label>
-                <input value={profile.name} onChange={e => setProfile(p => ({ ...p, name: e.target.value }))}
-                  placeholder="Seu nome"
-                  className="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-gray-700 dark:text-gray-300 block mb-1.5">E-mail</label>
-                <input value={profile.email} onChange={e => setProfile(p => ({ ...p, email: e.target.value }))}
-                  type="email" placeholder="seu@email.com"
-                  className="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-gray-700 dark:text-gray-300 block mb-1.5">Telefone</label>
-                <input value={profile.phone} onChange={e => setProfile(p => ({ ...p, phone: e.target.value }))}
-                  placeholder="+55 11 99999-9999"
-                  className="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
-              </div>
-              <div>
-                <label className="text-sm font-medium text-gray-700 dark:text-gray-300 block mb-1.5">Nome da Empresa</label>
-                <input value={profile.company_name} onChange={e => setProfile(p => ({ ...p, company_name: e.target.value }))}
-                  placeholder="Minha Empresa Ltda"
-                  className="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
-              </div>
-            </div>
-
-            {/* Plano */}
-            <div className="p-4 bg-primary-50 dark:bg-primary-900/20 border border-primary-200 dark:border-primary-800 rounded-lg flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-primary-900 dark:text-primary-100">
-                  Plano atual: <span className="capitalize font-bold">{(user as any)?.plan || 'basic'}</span>
-                </p>
-                <p className="text-xs text-primary-700 dark:text-primary-300 mt-0.5">
-                  Status: <span className="font-medium capitalize">{(user as any)?.status || 'active'}</span>
-                </p>
-              </div>
-            </div>
-
-            <div className="flex justify-end">
-              <button onClick={handleSaveProfile} disabled={savingProfile}
-                className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
-                {savingProfile ? <Loader2 className="w-4 h-4 animate-spin" /> : savedProfile ? <CheckCircle className="w-4 h-4" /> : <Save className="w-4 h-4" />}
-                {savedProfile ? 'Salvo!' : 'Salvar Perfil'}
-              </button>
-            </div>
+        {(error || message) && (
+          <div className={`rounded-lg border p-4 text-sm ${error ? 'border-red-200 bg-red-50 text-red-700' : 'border-green-200 bg-green-50 text-green-700'}`}>
+            {error || message}
           </div>
         )}
 
-        {/* ══════════════════ TAB: SEGURANÇA ══════════════════ */}
-        {activeTab === 'security' && (
-          <div className="bg-white dark:bg-dark-card rounded-xl border border-light-border dark:border-dark-border p-6 space-y-5">
-            <h2 className="font-semibold text-gray-900 dark:text-white">Alterar Senha</h2>
-
-            {pwdError && (
-              <div className="flex items-center gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg">
-                <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0" />
-                <p className="text-sm text-red-700 dark:text-red-300">{pwdError}</p>
-              </div>
-            )}
-
-            {savedPwd && (
-              <div className="flex items-center gap-2 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
-                <CheckCircle className="w-4 h-4 text-green-600" />
-                <p className="text-sm text-green-700 dark:text-green-300">Senha alterada com sucesso!</p>
-              </div>
-            )}
-
-            {(['current_password', 'new_password', 'confirm_password'] as const).map(field => {
-              const labels = { current_password: 'Senha atual', new_password: 'Nova senha', confirm_password: 'Confirmar nova senha' };
-              const showKey = field === 'current_password' ? 'current' : field === 'new_password' ? 'new' : 'confirm';
-              return (
-                <div key={field}>
-                  <label className="text-sm font-medium text-gray-700 dark:text-gray-300 block mb-1.5">{labels[field]}</label>
-                  <div className="relative">
-                    <input
-                      type={showPwd[showKey] ? 'text' : 'password'}
-                      value={passwords[field]}
-                      onChange={e => setPasswords(p => ({ ...p, [field]: e.target.value }))}
-                      placeholder="••••••••"
-                      className="w-full px-3 py-2.5 pr-10 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none"
-                    />
-                    <button type="button" onClick={() => setShowPwd(s => ({ ...s, [showKey]: !s[showKey] }))}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
-                      {showPwd[showKey] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-
-            <div className="flex justify-end">
-              <button onClick={handleSavePassword} disabled={savingPwd}
-                className="flex items-center gap-2 px-5 py-2.5 bg-primary-600 hover:bg-primary-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
-                {savingPwd ? <Loader2 className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
-                Alterar Senha
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* ══════════════════ TAB: SESSÕES ══════════════════ */}
-        {activeTab === 'sessions' && (
-          <div className="bg-white dark:bg-dark-card rounded-xl border border-light-border dark:border-dark-border p-6">
-            <div className="flex items-center justify-between mb-5">
-              <div>
-                <h2 className="font-semibold text-gray-900 dark:text-white">Sessões WhatsApp</h2>
-                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Gerencie as conexões de WhatsApp desta conta</p>
-              </div>
-              <button onClick={() => window.location.href = '/whatsapp'}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors">
-                <Plus className="w-3.5 h-3.5" /> Nova Sessão
-              </button>
+        <form onSubmit={saveSettings} className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+          <section className="space-y-5 rounded-lg border border-gray-200 bg-white p-6">
+            <div className="flex items-center">
+              <UserRound className="mr-3 h-6 w-6 text-blue-600" />
+              <h2 className="text-lg font-semibold text-gray-900">Conta</h2>
             </div>
 
-            {loadingSessions ? (
-              <div className="flex justify-center py-8">
-                <Loader2 className="w-6 h-6 animate-spin text-primary-600" />
-              </div>
-            ) : sessions.length === 0 ? (
-              <div className="text-center py-10 text-gray-400 dark:text-gray-500">
-                <Smartphone className="w-10 h-10 mx-auto mb-2 opacity-40" />
-                <p className="text-sm">Nenhuma sessão WhatsApp cadastrada.</p>
-                <button onClick={() => window.location.href = '/whatsapp'}
-                  className="mt-3 text-xs text-primary-600 hover:underline">
-                  Ir para a página do WhatsApp →
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {sessions.map((session: any) => (
-                  <div key={session.session_name} className="flex items-center justify-between p-4 border border-gray-200 dark:border-gray-700 rounded-lg">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-2.5 h-2.5 rounded-full ${session.status === 'connected' ? 'bg-green-500' : 'bg-gray-400'}`} />
-                      <div>
-                        <p className="text-sm font-medium text-gray-900 dark:text-white">{session.session_name}</p>
-                        {session.whatsapp_phone && (
-                          <p className="text-xs text-gray-500 dark:text-gray-400">{session.whatsapp_phone}</p>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      {statusBadge(session.status)}
-                      <button onClick={() => handleDeleteSession(session.session_name)}
-                        className="p-1.5 text-gray-400 hover:text-red-600 transition-colors" title="Remover sessão">
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
+            <label className="block text-sm font-medium text-gray-700">
+              Nome
+              <input value={form.name} onChange={event => updateField('name', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+            </label>
+            <label className="block text-sm font-medium text-gray-700">
+              Empresa
+              <input value={form.company_name} onChange={event => updateField('company_name', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+            </label>
+            <label className="block text-sm font-medium text-gray-700">
+              Telefone
+              <input value={form.phone} onChange={event => updateField('phone', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+            </label>
+            <div className="rounded-lg bg-gray-50 p-4 text-sm text-gray-600">
+              <p>Email: <span className="font-medium text-gray-900">{email}</span></p>
+              <p>Plano: <span className="font-medium text-gray-900">{plan || 'basic'}</span></p>
+            </div>
+          </section>
 
-        {/* ══════════════════ TAB: INTEGRAÇÕES ══════════════════ */}
-        {activeTab === 'integrations' && (
-          <div className="space-y-6">
-            {/* Cards de integrações disponíveis */}
-            <div className="bg-white dark:bg-dark-card rounded-xl border border-light-border dark:border-dark-border p-6">
-              <h2 className="font-semibold text-gray-900 dark:text-white mb-4">Plataformas disponíveis</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {INTEGRATION_TYPES.map(type => (
-                  <div key={type.id} className="flex items-start justify-between p-4 border border-gray-200 dark:border-gray-700 rounded-lg">
-                    <div>
-                      <p className="text-sm font-semibold text-gray-900 dark:text-white">{type.name}</p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{type.desc}</p>
-                      {type.docsUrl && (
-                        <a href={type.docsUrl} target="_blank" rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-xs text-primary-600 hover:underline mt-1">
-                          <ExternalLink className="w-3 h-3" /> Documentação
-                        </a>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => { setNewIntegration(n => ({ ...n, type: type.id, name: type.name })); setShowNewIntegration(true); }}
-                      className="px-3 py-1.5 text-xs bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors flex-shrink-0 ml-3">
-                      + Conectar
-                    </button>
-                  </div>
-                ))}
-              </div>
+          <section className="space-y-5 rounded-lg border border-gray-200 bg-white p-6">
+            <div className="flex items-center">
+              <ShieldCheck className="mr-3 h-6 w-6 text-green-600" />
+              <h2 className="text-lg font-semibold text-gray-900">IA e Automacao</h2>
             </div>
 
-            {/* Formulário nova integração */}
-            {showNewIntegration && (
-              <div className="bg-white dark:bg-dark-card rounded-xl border border-primary-300 dark:border-primary-700 p-6 space-y-4">
-                <h2 className="font-semibold text-gray-900 dark:text-white">Nova integração: {newIntegration.name}</h2>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block mb-1.5">Nome da integração</label>
-                    <input value={newIntegration.name} onChange={e => setNewIntegration(n => ({ ...n, name: e.target.value }))}
-                      placeholder="Ex: FacilZap Loja Principal"
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block mb-1.5">API Key / Token</label>
-                    <input type="password" value={newIntegration.api_key} onChange={e => setNewIntegration(n => ({ ...n, api_key: e.target.value }))}
-                      placeholder="Cole a API Key aqui"
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
-                  </div>
-                  <div className="sm:col-span-2">
-                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block mb-1.5">Webhook URL (opcional)</label>
-                    <input value={newIntegration.webhook_url} onChange={e => setNewIntegration(n => ({ ...n, webhook_url: e.target.value }))}
-                      placeholder="https://..."
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
-                  </div>
-                </div>
-                <div className="flex gap-2 justify-end">
-                  <button onClick={() => setShowNewIntegration(false)}
-                    className="px-4 py-2 text-sm border border-gray-300 dark:border-gray-600 rounded-lg text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">
-                    Cancelar
-                  </button>
-                  <button
-                    onClick={() => {
-                      setIntegrations(prev => [...prev, {
-                        id: Date.now().toString(),
-                        name: newIntegration.name,
-                        type: newIntegration.type,
-                        is_active: true,
-                        last_sync: null,
-                        config: { api_key: newIntegration.api_key, webhook_url: newIntegration.webhook_url },
-                      }]);
-                      setShowNewIntegration(false);
-                      setNewIntegration({ name: '', type: 'facilzap', webhook_url: '', api_key: '' });
-                    }}
-                    className="px-4 py-2 text-sm bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors">
-                    Salvar Integração
-                  </button>
-                </div>
-              </div>
-            )}
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block text-sm font-medium text-gray-700">
+                OpenAI API key
+                <input type="password" value={form.openai_api_key} placeholder="Manter chave atual" onChange={event => updateField('openai_api_key', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+              </label>
+              <label className="block text-sm font-medium text-gray-700">
+                Claude API key
+                <input type="password" value={form.claude_api_key} placeholder="Manter chave atual" onChange={event => updateField('claude_api_key', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+              </label>
+            </div>
 
-            {/* Lista de integrações salvas */}
-            {integrations.length > 0 && (
-              <div className="bg-white dark:bg-dark-card rounded-xl border border-light-border dark:border-dark-border p-6">
-                <h2 className="font-semibold text-gray-900 dark:text-white mb-4">Integrações conectadas</h2>
-                <div className="space-y-3">
-                  {integrations.map(integration => (
-                    <div key={integration.id} className="flex items-center justify-between p-4 border border-gray-200 dark:border-gray-700 rounded-lg">
-                      <div className="flex items-center gap-3">
-                        <div className={`w-2 h-2 rounded-full ${integration.is_active ? 'bg-green-500' : 'bg-gray-400'}`} />
-                        <div>
-                          <p className="text-sm font-medium text-gray-900 dark:text-white">{integration.name}</p>
-                          <p className="text-xs text-gray-400 capitalize">{integration.type}</p>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                          integration.is_active
-                            ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                            : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
-                        }`}>
-                          {integration.is_active ? 'Ativo' : 'Inativo'}
-                        </span>
-                        <button onClick={() => setIntegrations(prev => prev.filter(i => i.id !== integration.id))}
-                          className="p-1.5 text-gray-400 hover:text-red-600 transition-colors">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="block text-sm font-medium text-gray-700">
+                Modelo padrao
+                <input value={form.ai_model} onChange={event => updateField('ai_model', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+              </label>
+              <label className="block text-sm font-medium text-gray-700">
+                Limite diario de IA
+                <input type="number" min="1" max="1000" value={form.daily_ai_limit} onChange={event => updateField('daily_ai_limit', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+              </label>
+              <label className="block text-sm font-medium text-gray-700">
+                Inicio atendimento
+                <input type="number" min="0" max="23" value={form.working_hours_start} onChange={event => updateField('working_hours_start', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+              </label>
+              <label className="block text-sm font-medium text-gray-700">
+                Fim atendimento
+                <input type="number" min="0" max="23" value={form.working_hours_end} onChange={event => updateField('working_hours_end', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+              </label>
+            </div>
 
-            {integrations.length === 0 && !showNewIntegration && (
-              <div className="text-center py-6 text-gray-400 dark:text-gray-500">
-                <Globe className="w-10 h-10 mx-auto mb-2 opacity-40" />
-                <p className="text-sm">Nenhuma integração conectada ainda.</p>
-                <p className="text-xs mt-1">Use os cards acima para conectar uma plataforma.</p>
-              </div>
-            )}
+            <label className="flex items-center gap-2 text-sm text-gray-700">
+              <input type="checkbox" checked={form.auto_reply_enabled} onChange={event => updateField('auto_reply_enabled', event.target.checked)} className="h-4 w-4" />
+              Resposta automatica habilitada
+            </label>
+
+            <button disabled={saving} className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50">
+              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+              Salvar configuracoes
+            </button>
+          </section>
+        </form>
+
+        <section className="rounded-lg border border-gray-200 bg-white p-6">
+          <div className="flex items-center">
+            <Settings className="mr-3 h-6 w-6 text-gray-600" />
+            <h2 className="text-lg font-semibold text-gray-900">Sincronia do sistema</h2>
           </div>
-        )}
-
+          <div className="mt-4 grid gap-3 text-sm text-gray-700 md:grid-cols-3">
+            <div className="rounded-lg bg-green-50 p-3 text-green-800">Dashboard usa contatos, conversas e sessoes reais.</div>
+            <div className="rounded-lg bg-blue-50 p-3 text-blue-800">IA Config salva limites, prompts e integracoes na API.</div>
+            <div className="rounded-lg bg-gray-50 p-3 text-gray-800">Configuracoes guarda chaves e perfil sem expor tokens salvos.</div>
+          </div>
+        </section>
       </div>
     </DashboardLayout>
   );

@@ -946,6 +946,12 @@ function formatConversationHistory(messages = []) {
 }
 
 function buildProductSearchText(message, conversationHistory = []) {
+  const current = String(message || '').trim();
+  const currentShouldSearch = shouldUseConfiguredProductSources(current);
+  const currentIsFollowUp = /cad[eê]|foto|fotos|imagem|imagens|manda|mande|envia|envie|quero ver|mostra|mostre/i.test(current);
+  if (!currentShouldSearch) return current;
+  if (getSpecificProductTokens(getSearchTokens(current)).length > 0) return current;
+
   const recentCustomerMessages = Array.isArray(conversationHistory)
     ? conversationHistory
       .filter(item => item && item.direction !== 'out' && !item.is_from_ai)
@@ -953,8 +959,10 @@ function buildProductSearchText(message, conversationHistory = []) {
       .map(item => String(item.content || '').trim())
       .filter(Boolean)
     : [];
-  const current = String(message || '').trim();
-  const parts = [...recentCustomerMessages, current].filter(Boolean);
+  const lastProductRequest = [...recentCustomerMessages]
+    .reverse()
+    .find(item => getSpecificProductTokens(getSearchTokens(item)).length > 0);
+  const parts = currentIsFollowUp && lastProductRequest ? [lastProductRequest, current] : [current];
   return [...new Set(parts)].join('\n');
 }
 

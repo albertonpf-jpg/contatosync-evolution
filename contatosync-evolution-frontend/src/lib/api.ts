@@ -90,7 +90,10 @@ class ApiService {
     return response.data.data;
   }
 
-  // Estatísticas serão implementadas quando o endpoint for criado na API
+  async getClientStats() {
+    const response = await this.api.get('/clients/stats');
+    return response.data.data;
+  }
 
   // Contatos
   async getContacts(page = 1, limit = 50, search = '') {

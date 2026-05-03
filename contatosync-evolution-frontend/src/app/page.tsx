@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { apiService } from '@/lib/api';
 import { MessageSquare, Users, TrendingUp, Clock, Zap, Phone } from 'lucide-react';
+import { useSocketContext } from '@/contexts/SocketContext';
 
 interface DashboardStats {
   totalContacts: number;
@@ -21,36 +22,62 @@ export default function DashboardPage() {
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { on, off } = useSocketContext();
 
-  useEffect(() => {
-    loadDashboardData();
-  }, []);
-
-  const loadDashboardData = async () => {
+  const loadDashboardData = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
 
       // Carregar dados em paralelo
-      const [contactsRes, conversationsRes, sessionsRes] = await Promise.all([
-        apiService.getContacts(1, 1).catch(() => ({ items: [], total: 0 })),
-        apiService.getConversations(1, 1).catch(() => ({ items: [], total: 0 })),
+      const [clientStats, sessionsRes] = await Promise.all([
+        apiService.getClientStats(),
         apiService.getWhatsAppSessions().catch(() => [])
       ]);
 
       setStats({
-        totalContacts: contactsRes?.total || contactsRes?.items?.length || 0,
-        activeConversations: conversationsRes?.total || conversationsRes?.items?.length || 0,
-        messagesThisMonth: 0, // TODO: implementar endpoint de estatísticas
-        connectedSessions: Array.isArray(sessionsRes) ? sessionsRes.filter(s => s?.status === 'connected').length : 0
+        totalContacts: clientStats?.contacts?.total || 0,
+        activeConversations: clientStats?.conversations?.active || 0,
+        messagesThisMonth: clientStats?.messages?.thisMonth || 0,
+        connectedSessions: Array.isArray(sessionsRes)
+          ? sessionsRes.filter(session => ['connected', 'open'].includes(session?.evolution_status || session?.status)).length
+          : 0
       });
+      setLastUpdated(new Date());
     } catch (err: any) {
       console.error('Erro ao carregar dashboard:', err);
-      setError(err.message || 'Erro ao carregar dados');
+      setError(err.response?.data?.error || err.message || 'Erro ao carregar dados');
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    void loadDashboardData();
+  }, [loadDashboardData]);
+
+  const scheduleRefresh = useCallback(() => {
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    refreshTimer.current = setTimeout(() => {
+      void loadDashboardData();
+    }, 300);
+  }, [loadDashboardData]);
+
+  useEffect(() => {
+    const events = ['new_message', 'conversation_updated', 'conversation_update', 'new_contact', 'contact_updated', 'whatsapp_status'];
+    events.forEach(event => on(event, scheduleRefresh));
+    const intervalId = setInterval(() => {
+      void loadDashboardData();
+    }, 15000);
+
+    return () => {
+      events.forEach(event => off(event, scheduleRefresh));
+      clearInterval(intervalId);
+      if (refreshTimer.current) clearTimeout(refreshTimer.current);
+    };
+  }, [loadDashboardData, off, on, scheduleRefresh]);
 
   const statCards = [
     { title: 'Total Contatos', value: stats.totalContacts, icon: Users, color: 'bg-blue-500' },
@@ -106,7 +133,7 @@ export default function DashboardPage() {
             </div>
             <div className="flex items-center gap-2 text-sm text-gray-500">
               <Clock className="h-4 w-4" />
-              <span>Atualizado agora</span>
+              <span>{lastUpdated ? `Atualizado ${lastUpdated.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : 'Atualizando'}</span>
             </div>
           </div>
         </div>

@@ -112,8 +112,67 @@ router.get('/',
 );
 
 /**
+ * GET /api/conversations/stats
+ * Estatisticas de conversas
+ */
+router.get('/stats',
+  asyncHandler(async (req, res) => {
+    const { data: statusStats } = await executeWithRLS(req.user.id, (client) =>
+      client
+        .from('evolution_conversations')
+        .select('status')
+        .eq('client_id', req.user.id)
+    );
+
+    const { data: leadStats } = await executeWithRLS(req.user.id, (client) =>
+      client
+        .from('evolution_conversations')
+        .select('lead_stage')
+        .eq('client_id', req.user.id)
+    );
+
+    const { count: unreadCount } = await executeWithRLS(req.user.id, (client) =>
+      client
+        .from('evolution_conversations')
+        .select('*', { count: 'exact', head: true })
+        .eq('client_id', req.user.id)
+        .gt('unread_count', 0)
+    );
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const { count: todayCount } = await executeWithRLS(req.user.id, (client) =>
+      client
+        .from('evolution_conversations')
+        .select('*', { count: 'exact', head: true })
+        .eq('client_id', req.user.id)
+        .gte('created_at', today.toISOString())
+    );
+
+    const statusSummary = statusStats?.reduce((acc, conv) => {
+      acc[conv.status] = (acc[conv.status] || 0) + 1;
+      return acc;
+    }, {}) || {};
+
+    const leadSummary = leadStats?.reduce((acc, conv) => {
+      acc[conv.lead_stage] = (acc[conv.lead_stage] || 0) + 1;
+      return acc;
+    }, {}) || {};
+
+    success(res, {
+      byStatus: statusSummary,
+      byLeadStage: leadSummary,
+      unreadConversations: unreadCount || 0,
+      createdToday: todayCount || 0,
+      timestamp: new Date().toISOString()
+    }, 'Estatisticas recuperadas');
+  })
+);
+
+/**
  * GET /api/conversations/:id
- * Obter conversa específica com mensagens
+ * Obter conversa especifica com mensagens
  */
 router.get('/:id',
   asyncHandler(async (req, res) => {
@@ -415,72 +474,6 @@ router.post('/:id/reopen',
     }
 
     success(res, updatedConversation, 'Conversa reaberta com sucesso');
-  })
-);
-
-/**
- * GET /api/conversations/stats
- * Estatísticas de conversas
- */
-router.get('/stats',
-  asyncHandler(async (req, res) => {
-    // Estatísticas por status
-    const { data: statusStats } = await executeWithRLS(req.user.id, (client) =>
-      client
-        .from('evolution_conversations')
-        .select('status')
-        .eq('client_id', req.user.id)
-    );
-
-    // Estatísticas por estágio de lead
-    const { data: leadStats } = await executeWithRLS(req.user.id, (client) =>
-      client
-        .from('evolution_conversations')
-        .select('lead_stage')
-        .eq('client_id', req.user.id)
-    );
-
-    // Conversas com mensagens não lidas
-    const { count: unreadCount } = await executeWithRLS(req.user.id, (client) =>
-      client
-        .from('evolution_conversations')
-        .select('*', { count: 'exact', head: true })
-        .eq('client_id', req.user.id)
-        .gt('unread_count', 0)
-    );
-
-    // Estatísticas hoje
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const { count: todayCount } = await executeWithRLS(req.user.id, (client) =>
-      client
-        .from('evolution_conversations')
-        .select('*', { count: 'exact', head: true })
-        .eq('client_id', req.user.id)
-        .gte('created_at', today.toISOString())
-    );
-
-    // Processar estatísticas
-    const statusSummary = statusStats?.reduce((acc, conv) => {
-      acc[conv.status] = (acc[conv.status] || 0) + 1;
-      return acc;
-    }, {}) || {};
-
-    const leadSummary = leadStats?.reduce((acc, conv) => {
-      acc[conv.lead_stage] = (acc[conv.lead_stage] || 0) + 1;
-      return acc;
-    }, {}) || {};
-
-    const stats = {
-      byStatus: statusSummary,
-      byLeadStage: leadSummary,
-      unreadConversations: unreadCount || 0,
-      createdToday: todayCount || 0,
-      timestamp: new Date().toISOString()
-    };
-
-    success(res, stats, 'Estatísticas recuperadas');
   })
 );
 

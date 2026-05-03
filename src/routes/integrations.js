@@ -4,7 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const { executeWithRLS } = require('../config/supabase');
 const { integrationSchemas, validate } = require('../utils/validation');
 const { sanitizeSensitiveData, formatActivity } = require('../utils/helpers');
-const { success, error, notFound, conflict, asyncHandler, handleSupabaseError } = require('../utils/response');
+const { success, error: responseError, notFound, conflict, asyncHandler, handleSupabaseError } = require('../utils/response');
 
 const router = express.Router();
 
@@ -27,11 +27,11 @@ const buildIntegrationHeaders = (integration) => {
 
 const validateIntegrationCredentials = (res, integration) => {
   if (!integration.api_endpoint || !/^https?:\/\//i.test(integration.api_endpoint)) {
-    return error(res, 'Informe uma URL de API valida com http ou https', 400);
+    return responseError(res, 'Informe uma URL de API valida com http ou https', 400);
   }
 
   if (API_TOKEN_TYPES.has(integration.integration_type) && !integration.api_key) {
-    return error(res, 'Token/API key e obrigatorio para este tipo de integracao', 400);
+    return responseError(res, 'Token/API key e obrigatorio para este tipo de integracao', 400);
   }
 
   return null;
@@ -378,7 +378,7 @@ router.post('/:id/test',
     }
 
     if (!integration.enabled) {
-      return error(res, 'Integração está desabilitada', 400);
+      return responseError(res, 'Integração está desabilitada', 400);
     }
 
     const credentialError = validateIntegrationCredentials(res, integration);
@@ -424,7 +424,7 @@ router.post('/:id/test',
       );
 
       if (!ok) {
-        return error(res, testResult.message, 400, testResult.data);
+        return responseError(res, testResult.message, 400, testResult.data);
       }
 
       success(res, testResult, 'Teste de integração concluído');
@@ -443,7 +443,7 @@ router.post('/:id/test',
           .eq('id', id)
       );
 
-      return error(res, 'Erro no teste de integração', 500, {
+      return responseError(res, 'Erro no teste de integração', 500, {
         message: testError.message
       });
     }

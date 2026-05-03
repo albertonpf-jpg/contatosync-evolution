@@ -19,6 +19,8 @@ interface AIConfig {
   daily_limit: number;
   reply_delay_seconds: number;
   monthly_limit: number;
+  product_catalog_url: string;
+  product_search_enabled: boolean;
   system_prompt: string;
   greeting_message: string;
   fallback_message: string;
@@ -284,6 +286,18 @@ export default function AIConfigPage() {
                 Delay para responder
                 <input type="number" min="1" max="60" value={config.reply_delay_seconds || 8} onChange={event => updateConfigField('reply_delay_seconds', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
                 <FieldHelp>Tempo que a IA espera antes de responder. Se o cliente mandar duas ou mais mensagens seguidas nesse intervalo, o sistema junta tudo e gera uma unica resposta. Use 6 a 12 segundos para atendimento natural.</FieldHelp>
+              </label>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-start">
+              <label className="text-sm font-medium text-gray-700">
+                Link do catalogo ou loja virtual
+                <input type="url" placeholder="https://sualoja.com.br/produtos" value={config.product_catalog_url || ''} onChange={event => updateConfigField('product_catalog_url', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Cole aqui a pagina publica da loja, catalogo ou produto que a IA deve consultar para buscar informacoes e fotos. Nao coloque esse link no prompt. Quando o cliente pedir produto, preco, estoque ou mandar um link, a IA usa esta fonte e tenta enviar as imagens em carrossel no WhatsApp.</FieldHelp>
+              </label>
+              <label className="mt-7 flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox" checked={config.product_search_enabled !== false} onChange={event => updateConfigField('product_search_enabled', event.target.checked)} className="h-4 w-4" />
+                Buscar produtos
               </label>
             </div>
 

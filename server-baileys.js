@@ -56,7 +56,7 @@ function toPublicMediaUrl(mediaUrl) {
   return baseUrl ? baseUrl + (mediaUrl.startsWith('/') ? mediaUrl : '/' + mediaUrl) : mediaUrl;
 }
 
-async function sendAIAutoReply({ sessionName, clientId, conversation, contact, jid, inboundContent, media }) {
+async function sendAIAutoReply({ sessionName, clientId, conversation, contact, jid, inboundContent, media, conversationCreated }) {
   if (!inboundContent || !String(inboundContent).trim()) return;
 
   var { supabaseAdmin } = require('./src/config/supabase');
@@ -69,7 +69,7 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
     supabase: supabaseAdmin,
     clientId: clientId,
     message: inboundContent,
-    conversation: conversation,
+    conversation: { ...conversation, conversation_created: conversationCreated === true },
     contact: contact,
     media: media
   });
@@ -1192,6 +1192,7 @@ app.post('/internal/messages/process', async function(req, res) {
         sessionName: sessionName,
         clientId: session.client_id,
         conversation: { ...conversation },
+        conversationCreated: conversationCreated,
         contact: { ...contact },
         jid: jid,
         inboundContent: content,

@@ -127,6 +127,8 @@ const aiConfigSchemas = {
     daily_limit: Joi.number().integer().min(1).max(1000).optional(),
     reply_delay_seconds: Joi.number().integer().min(1).max(60).optional(),
     monthly_limit: Joi.number().integer().min(1).max(50000).optional(),
+    product_catalog_url: Joi.string().max(1000).optional().allow(''),
+    product_search_enabled: Joi.boolean().optional(),
     system_prompt: Joi.string().optional().allow(''),
     greeting_message: Joi.string().optional().allow(''),
     fallback_message: Joi.string().optional().allow(''),

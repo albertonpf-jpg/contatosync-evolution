@@ -25,7 +25,11 @@ function getProviderForModel(model) {
 
 function buildSystemPrompt(config, contact, conversation) {
   const basePrompt = config.system_prompt || 'Voce e um assistente virtual de atendimento via WhatsApp. Responda em portugues do Brasil, com clareza e objetividade.';
-  const greeting = config.greeting_message ? `\n\nMensagem de saudacao configurada: ${config.greeting_message}` : '';
+  const totalMessages = Number(conversation?.total_messages || 0);
+  const canGreet = conversation?.conversation_created === true || totalMessages <= 1;
+  const greeting = config.greeting_message
+    ? `\n\nSaudacao configurada: ${config.greeting_message}\nUse essa saudacao somente na primeira resposta do atendimento. Se a conversa ja estiver em andamento, nao cumprimente de novo e responda direto ao assunto do cliente.`
+    : '';
   const fallback = config.fallback_message ? `\n\nSe nao tiver certeza, use esta orientacao de fallback: ${config.fallback_message}` : '';
   const triggerKeywords = normalizeList(config.trigger_keywords);
   const triggerContext = triggerKeywords.length > 0
@@ -37,10 +41,26 @@ function buildSystemPrompt(config, contact, conversation) {
     `- Telefone: ${contact?.phone || conversation?.phone || 'nao informado'}`,
     '- Nunca invente precos, estoque, prazos ou politicas.',
     '- Se faltar informacao, diga que vai encaminhar para um atendente humano.',
+    canGreet ? '- Esta parece ser a primeira resposta deste atendimento; pode cumprimentar uma vez se fizer sentido.' : '- Esta conversa ja esta em andamento; nao envie boas-vindas, saudacao inicial ou apresentacao novamente.',
     '- Responda como mensagem curta de WhatsApp, sem markdown pesado.'
   ].join('\n');
 
   return `${basePrompt}${greeting}${fallback}${triggerContext}\n\n${context}`;
+}
+
+function suppressRepeatedGreeting(text, greetingMessage, conversation) {
+  const totalMessages = Number(conversation?.total_messages || 0);
+  const canGreet = conversation?.conversation_created === true || totalMessages <= 1;
+  if (canGreet || !text) return text;
+
+  let response = String(text).trim();
+  const greeting = String(greetingMessage || '').trim();
+  if (greeting && response.toLowerCase().startsWith(greeting.toLowerCase())) {
+    response = response.slice(greeting.length).replace(/^[\s,.:;!?-]+/, '').trim();
+  }
+
+  response = response.replace(/^(ol[áa]|oi|bom dia|boa tarde|boa noite)[!,.\s-]+/i, '').trim();
+  return response || text;
 }
 
 function getTokenUsageFromOpenAI(data) {
@@ -70,6 +90,40 @@ function getOpenAIText(data) {
 function extractUrls(text) {
   const matches = String(text || '').match(/https?:\/\/[^\s<>"')]+/gi) || [];
   return [...new Set(matches.map(url => url.replace(/[.,;!?]+$/, '')))].slice(0, 3);
+}
+
+function normalizeSourceUrls(values = []) {
+  const urls = [];
+  for (const value of values) {
+    for (const url of extractUrls(value)) {
+      if (!urls.includes(url)) urls.push(url);
+    }
+  }
+  return urls.slice(0, 5);
+}
+
+function shouldUseConfiguredProductSources(message) {
+  if (extractUrls(message).length > 0) return true;
+  const text = String(message || '').toLowerCase();
+  return [
+    'produto',
+    'produtos',
+    'catalogo',
+    'catálogo',
+    'preco',
+    'preço',
+    'valor',
+    'estoque',
+    'tem ',
+    'vende',
+    'comprar',
+    'foto',
+    'imagem',
+    'tamanho',
+    'variacao',
+    'variação',
+    'cor '
+  ].some(term => text.includes(term));
 }
 
 function decodeHtml(value) {
@@ -135,8 +189,8 @@ function extractJsonLdImages(html, pageUrl) {
   return images.filter(Boolean);
 }
 
-async function fetchProductContext(message) {
-  const urls = extractUrls(message);
+async function fetchProductContext(message, sourceUrls = []) {
+  const urls = normalizeSourceUrls([message, ...sourceUrls]);
   if (urls.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
 
   const products = [];
@@ -317,8 +371,15 @@ async function transcribeOpenAIMedia({ apiKey, filePath, mimeType }) {
   }
 }
 
-async function buildOpenAIInputContent({ apiKey, message, media }) {
-  const productContext = await fetchProductContext(message);
+async function buildOpenAIInputContent({ apiKey, message, media, config }) {
+  const configuredSources = [
+    config?.product_catalog_url,
+    ...(Array.isArray(config?.product_source_urls) ? config.product_source_urls : []),
+    config?.system_prompt
+  ];
+  const productContext = config?.product_search_enabled === false
+    ? await fetchProductContext(message, [])
+    : await fetchProductContext(message, shouldUseConfiguredProductSources(message) ? configuredSources : []);
   const content = [{
     type: 'input_text',
     text: message && String(message).trim()
@@ -402,7 +463,7 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media }) {
   const startedAt = Date.now();
   const builtInput = Array.isArray(input)
     ? { content: input, productImages: [] }
-    : await buildOpenAIInputContent({ apiKey, message: input, media });
+    : await buildOpenAIInputContent({ apiKey, message: input, media, config });
   const body = {
     model: config.model || 'gpt-4o-mini',
     instructions: systemPrompt,
@@ -487,7 +548,7 @@ async function callClaude({ apiKey, config, input, systemPrompt }) {
 }
 
 async function getAISetup(supabase, clientId) {
-  const [{ data: config }, { data: client }] = await Promise.all([
+  const [{ data: config }, { data: client }, { data: integrations }] = await Promise.all([
     supabase
       .from('evolution_ai_config')
       .select('*')
@@ -497,10 +558,16 @@ async function getAISetup(supabase, clientId) {
       .from('evolution_clients')
       .select('id, openai_api_key, claude_api_key, ai_model, auto_reply_enabled')
       .eq('id', clientId)
-      .single()
+      .single(),
+    supabase
+      .from('evolution_integrations')
+      .select('integration_type, integration_name, api_endpoint, enabled, is_active')
+      .eq('client_id', clientId)
+      .in('integration_type', ['facilzap', 'ecommerce'])
+      .or('enabled.eq.true,is_active.eq.true')
   ]);
 
-  return { config, client };
+  return { config, client, integrations: Array.isArray(integrations) ? integrations : (integrations ? [integrations] : []) };
 }
 
 async function countTodayUsage(supabase, clientId) {
@@ -548,7 +615,7 @@ async function logAIResult(supabase, payload) {
 }
 
 async function generateAIResponse({ supabase, clientId, message, conversation, contact, media }) {
-  const { config, client } = await getAISetup(supabase, clientId);
+  const { config, client, integrations } = await getAISetup(supabase, clientId);
 
   if (!config || !config.enabled) {
     return { skipped: true, reason: 'IA desabilitada' };
@@ -583,6 +650,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
 
   const effectiveConfig = {
     ...config,
+    product_source_urls: normalizeSourceUrls((integrations || []).map(integration => integration.api_endpoint)),
     model: config.model || client?.ai_model || (provider === 'claude' ? 'claude-3-haiku' : 'gpt-4o-mini')
   };
   const systemPrompt = buildSystemPrompt(effectiveConfig, contact, conversation);
@@ -591,6 +659,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     const result = provider === 'claude'
       ? await callClaude({ apiKey, config: effectiveConfig, input: media ? `${message || ''}\n\nMidia recebida:\n${getMediaDescription(media)}` : message, systemPrompt })
       : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media });
+
+    result.response = suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation);
 
     await logAIResult(supabase, {
       client_id: clientId,

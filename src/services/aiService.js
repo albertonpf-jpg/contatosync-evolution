@@ -111,6 +111,21 @@ function normalizeProductMediaResponse(text, productCards = []) {
     .trim();
 }
 
+function buildProductLookupEmptyResponse(searchText) {
+  const tokens = getSpecificProductTokens(getSearchTokens(searchText));
+  const requested = tokens.length > 0 ? tokens.join(' ') : 'esse pedido';
+  return `Nao encontrei fotos seguras de ${requested} no catalogo configurado. Pode me mandar outro nome, cor ou categoria para eu buscar de novo?`;
+}
+
+function buildProductCardsResponse(productCards = []) {
+  const first = productCards[0];
+  return [
+    `Encontrei ${first?.title || 'opcoes'} na loja.`,
+    first?.description || '',
+    'Enviei as fotos correspondentes acima.'
+  ].filter(Boolean).join('\n');
+}
+
 function getTokenUsageFromOpenAI(data) {
   const usage = data?.usage || {};
   return {
@@ -400,9 +415,13 @@ function getSpecificProductTokens(tokens) {
     'roupa',
     'roupas',
     'infantil',
+    'infantis',
     'adulto',
+    'adultos',
     'masculino',
+    'masculinos',
     'feminino',
+    'femininos',
     'modelo',
     'peca',
     'pecas'
@@ -817,7 +836,7 @@ async function fetchFacilZapProductsFromHtml(html, pageUrl, message) {
   }
 
   const sectionsEndpoint = getFacilZapSectionsEndpoint(catalogHtml) || getFacilZapSectionsEndpoint(html);
-  if (sectionsEndpoint) {
+  if (sectionsEndpoint && products.length === 0) {
     const body = {
       secoes: ['lancamentos', 'mais_vendidos', 'promocoes', 'destaques'],
       categorias: matchingCategories
@@ -941,7 +960,8 @@ async function fetchProductContext(message, sourceUrls = []) {
   return {
     contextText: `Informacoes coletadas da loja virtual:\n${contextText}`,
     imageUrls: relevantProducts.flatMap(product => product.images || []).slice(0, 5),
-    productCards: productCards.slice(0, 10)
+    productCards: productCards.slice(0, 10),
+    lookupAttempted: true
   };
 }
 
@@ -1127,7 +1147,7 @@ async function buildProductContextForConfig(message, config, conversationHistory
   if (config?.product_search_enabled === false) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
   const shouldSearch = shouldUseConfiguredProductSources(searchText);
   const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : []);
-  return { ...productContext, lookupAttempted: shouldSearch };
+  return { ...productContext, lookupAttempted: shouldSearch, searchText };
 }
 
 function buildProductContextText(productContext) {
@@ -1164,7 +1184,7 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
     });
   }
 
-  if (!media || (!media.path && !media.url)) return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
+  if (!media || (!media.path && !media.url)) return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
 
   const kind = getMediaKind(media);
   const mimeType = media.mimeType || media.mimetype || getMimeTypeFromPath(media.path || '', 'application/octet-stream');
@@ -1172,12 +1192,12 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
 
   if (kind === 'image' && media.path && fs.existsSync(media.path)) {
     content.push({ type: 'input_image', image_url: fileToDataUrl(media.path, mimeType), detail: 'auto' });
-    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
+    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
   }
 
   if (kind === 'image' && media.url && /^https?:\/\//i.test(media.url)) {
     content.push({ type: 'input_image', image_url: media.url, detail: 'auto' });
-    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
+    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
   }
 
   if ((kind === 'audio' || kind === 'video') && media.path && fs.existsSync(media.path)) {
@@ -1200,7 +1220,7 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
         if (framePath) fs.promises.unlink(framePath).catch(() => {});
       }
     }
-    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
+    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
   }
 
   if (kind === 'document' && media.path && fs.existsSync(media.path)) {
@@ -1213,7 +1233,7 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
           ? { file_url: media.url }
           : { file_data: fileToBase64(media.path) })
       });
-      return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
+      return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
     }
 
     if (canReadTextFile(media.path, mimeType) && stat.size <= 1024 * 1024) {
@@ -1221,12 +1241,12 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
         type: 'input_text',
         text: `Conteudo do arquivo ${media.fileName || path.basename(media.path)}:\n${fs.readFileSync(media.path, 'utf8').slice(0, 20000)}`
       });
-      return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
+      return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
     }
   }
 
   content.push({ type: 'input_text', text: 'A midia foi recebida, mas esse tipo de arquivo nao pode ser analisado diretamente. Responda considerando o nome, tipo e legenda informados.' });
-  return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
+  return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
 }
 
 async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversationHistory }) {
@@ -1282,6 +1302,8 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
         processing_time_ms: Date.now() - startedAt,
         product_images: builtInput.productImages || [],
         product_cards: builtInput.productCards || [],
+        product_lookup_attempted: builtInput.productLookupAttempted === true,
+        product_search_text: builtInput.productSearchText || '',
         ...getTokenUsageFromOpenAI(fallbackData)
       };
     }
@@ -1298,6 +1320,8 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
     processing_time_ms: Date.now() - startedAt,
     product_images: builtInput.productImages || [],
     product_cards: builtInput.productCards || [],
+    product_lookup_attempted: builtInput.productLookupAttempted === true,
+    product_search_text: builtInput.productSearchText || '',
     ...getTokenUsageFromOpenAI(data)
   };
 }
@@ -1314,7 +1338,9 @@ async function buildClaudeInputContent({ input, media, config, conversationHisto
   return {
     inputText: parts.filter(Boolean).join('\n\n'),
     productImages: productContext.imageUrls || [],
-    productCards: productContext.productCards || []
+    productCards: productContext.productCards || [],
+    productLookupAttempted: productContext.lookupAttempted === true,
+    productSearchText: productContext.searchText || ''
   };
 }
 
@@ -1383,7 +1409,9 @@ async function callClaude({ apiKey, config, input, systemPrompt, media, conversa
     total_tokens: inputTokens + outputTokens,
     processing_time_ms: Date.now() - startedAt,
     product_images: builtInput.productImages || [],
-    product_cards: builtInput.productCards || []
+    product_cards: builtInput.productCards || [],
+    product_lookup_attempted: builtInput.productLookupAttempted === true,
+    product_search_text: builtInput.productSearchText || ''
   };
 }
 
@@ -1491,17 +1519,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     return { skipped: true, reason: 'Palavra bloqueada detectada' };
   }
 
-  const todayUsage = await countTodayUsage(supabase, clientId);
-  if (todayUsage >= (config.daily_limit || 50)) {
-    return { skipped: true, reason: 'Limite diario atingido' };
-  }
-
   const provider = getProviderForModel(config.model || client?.ai_model);
-  const apiKey = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
-  if (!apiKey || apiKey === '***') {
-    return { skipped: true, reason: 'API key nao configurada' };
-  }
-
   const effectiveConfig = {
     ...config,
     product_source_urls: normalizeSourceUrls((integrations || []).map(integration => integration.api_endpoint)),
@@ -1509,6 +1527,54 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   };
   const systemPrompt = buildSystemPrompt(effectiveConfig, contact, conversation);
   const conversationHistory = await getConversationMessagesFromStart(supabase, clientId, conversation?.id);
+  const todayUsage = await countTodayUsage(supabase, clientId);
+  const dailyLimit = config.daily_limit === null || config.daily_limit === undefined ? 50 : Number(config.daily_limit);
+  if (dailyLimit > 0 && todayUsage >= dailyLimit) {
+    const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+    if (productContext.lookupAttempted) {
+      const productCards = productContext.productCards || [];
+      console.log('[AI] Limite diario atingido, usando busca deterministica do catalogo | cards: ' + productCards.length);
+      return {
+        skipped: false,
+        response: productCards.length > 0
+          ? buildProductCardsResponse(productCards)
+          : buildProductLookupEmptyResponse(productContext.searchText || message),
+        provider: 'catalog',
+        model: 'catalog_lookup',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: productContext.imageUrls || [],
+        product_cards: productCards,
+        product_lookup_attempted: true,
+        product_search_text: productContext.searchText || message
+      };
+    }
+    return { skipped: true, reason: 'Limite diario atingido' };
+  }
+
+  const apiKey = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
+  if (!apiKey || apiKey === '***') {
+    const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+    if (productContext.lookupAttempted && productContext.productCards?.length) {
+      return {
+        skipped: false,
+        response: buildProductCardsResponse(productContext.productCards),
+        provider: 'catalog',
+        model: 'catalog_lookup',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: productContext.imageUrls || [],
+        product_cards: productContext.productCards,
+        product_lookup_attempted: true,
+        product_search_text: productContext.searchText || message
+      };
+    }
+    return { skipped: true, reason: 'API key nao configurada' };
+  }
 
   try {
     const result = provider === 'claude'
@@ -1522,10 +1588,14 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         })
       : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media, conversationHistory });
 
-    result.response = normalizeProductMediaResponse(
-      suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation),
-      result.product_cards
-    );
+    if (result.product_lookup_attempted && (!Array.isArray(result.product_cards) || result.product_cards.length === 0)) {
+      result.response = buildProductLookupEmptyResponse(result.product_search_text || message);
+    } else {
+      result.response = normalizeProductMediaResponse(
+        suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation),
+        result.product_cards
+      );
+    }
 
     await logAIResult(supabase, {
       client_id: clientId,

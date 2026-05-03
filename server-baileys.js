@@ -133,7 +133,6 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       status: 'sent',
       is_from_ai: true,
       ai_model_used: aiResult.model || null,
-      ai_confidence: null,
       whatsapp_message_id: sendResult?.messageId || null,
       sent_at: now,
       created_at: now

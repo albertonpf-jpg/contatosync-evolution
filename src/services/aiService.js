@@ -326,6 +326,14 @@ function getSearchTokens(value) {
       'fotos',
       'imagem',
       'imagens',
+      'cade',
+      'cad',
+      'onde',
+      'esta',
+      'estao',
+      'ficou',
+      'faltou',
+      'ainda',
       'quero',
       'manda',
       'mande',
@@ -899,14 +907,30 @@ function formatConversationHistory(messages = []) {
   ].join('\n');
 }
 
-async function buildProductContextForConfig(message, config) {
+function buildProductSearchText(message, conversationHistory = []) {
+  const recentCustomerMessages = Array.isArray(conversationHistory)
+    ? conversationHistory
+      .filter(item => item && item.direction !== 'out' && !item.is_from_ai)
+      .slice(-6)
+      .map(item => String(item.content || '').trim())
+      .filter(Boolean)
+    : [];
+  const current = String(message || '').trim();
+  const parts = [...recentCustomerMessages, current].filter(Boolean);
+  return [...new Set(parts)].join('\n');
+}
+
+async function buildProductContextForConfig(message, config, conversationHistory = []) {
+  const searchText = buildProductSearchText(message, conversationHistory);
   const configuredSources = [
     config?.product_catalog_url,
     ...(Array.isArray(config?.product_source_urls) ? config.product_source_urls : []),
     config?.system_prompt
   ];
-  if (config?.product_search_enabled === false) return { contextText: '', imageUrls: [], productCards: [] };
-  return fetchProductContext(message, shouldUseConfiguredProductSources(message) ? configuredSources : []);
+  if (config?.product_search_enabled === false) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
+  const shouldSearch = shouldUseConfiguredProductSources(searchText);
+  const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : []);
+  return { ...productContext, lookupAttempted: shouldSearch };
 }
 
 function buildProductContextText(productContext) {
@@ -915,7 +939,7 @@ function buildProductContextText(productContext) {
 }
 
 async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory }) {
-  const productContext = await buildProductContextForConfig(message, config);
+  const productContext = await buildProductContextForConfig(message, config, conversationHistory);
   const content = [{
     type: 'input_text',
     text: message && String(message).trim()
@@ -935,6 +959,11 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
     content.push({
       type: 'input_text',
       text: buildProductContextText(productContext)
+    });
+  } else if (productContext.lookupAttempted) {
+    content.push({
+      type: 'input_text',
+      text: 'O cliente pediu fotos ou produtos, mas nenhum produto com imagem foi encontrado no catalogo configurado. Nao diga que vai enviar fotos e nao prometa encaminhar para atendente apenas por falta de imagem. Responda de forma transparente que nao encontrei fotos seguras desse pedido no catalogo e peca para o cliente confirmar o nome do produto, cor ou categoria.'
     });
   }
 
@@ -1077,12 +1106,13 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
 }
 
 async function buildClaudeInputContent({ input, media, config, conversationHistory }) {
-  const productContext = await buildProductContextForConfig(input, config);
+  const productContext = await buildProductContextForConfig(input, config, conversationHistory);
   const parts = [];
   const historyText = formatConversationHistory(conversationHistory);
   if (historyText) parts.push(`Historico da conversa desde a primeira mensagem disponivel:\n${historyText}`);
   if (input) parts.push(String(input));
   if (productContext.contextText) parts.push(buildProductContextText(productContext));
+  else if (productContext.lookupAttempted) parts.push('O cliente pediu fotos ou produtos, mas nenhum produto com imagem foi encontrado no catalogo configurado. Nao diga que vai enviar fotos e nao prometa encaminhar para atendente apenas por falta de imagem. Responda de forma transparente que nao encontrei fotos seguras desse pedido no catalogo e peca para o cliente confirmar o nome do produto, cor ou categoria.');
   if (media) parts.push(`Midia recebida:\n${getMediaDescription(media)}`);
   return {
     inputText: parts.filter(Boolean).join('\n\n'),

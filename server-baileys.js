@@ -79,7 +79,7 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
 
   var now = new Date().toISOString();
   var aiText = aiResult.response;
-  var sendResult = await baileysService.sendMessage(sessionName, jid, aiText);
+  var sendResult = await baileysService.sendTextMessage(sessionName, jid, aiText);
 
   var { data: newMessage, error: messageError } = await supabaseAdmin
     .from('evolution_messages')

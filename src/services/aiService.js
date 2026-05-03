@@ -179,6 +179,12 @@ async function logAIResult(supabase, payload) {
     id: uuidv4(),
     client_id: payload.client_id,
     conversation_id: payload.conversation_id || null,
+    input_message: payload.input_message || null,
+    provider: payload.provider || null,
+    model: payload.model || null,
+    tokens_used: payload.total_tokens || 0,
+    response_time_ms: payload.processing_time_ms || 0,
+    success: payload.status === 'success',
     model_used: payload.model,
     prompt_tokens: payload.prompt_tokens || 0,
     completion_tokens: payload.completion_tokens || 0,
@@ -246,6 +252,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     await logAIResult(supabase, {
       client_id: clientId,
       conversation_id: conversation?.id,
+      input_message: message,
       status: 'success',
       ...result
     });
@@ -255,6 +262,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     await logAIResult(supabase, {
       client_id: clientId,
       conversation_id: conversation?.id,
+      input_message: message,
       model: effectiveConfig.model,
       status: 'error',
       error_message: error.message

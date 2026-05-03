@@ -40,6 +40,8 @@ export default function SettingsPage() {
   const [plan, setPlan] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [hasOpenAIKey, setHasOpenAIKey] = useState(false);
+  const [hasClaudeKey, setHasClaudeKey] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -57,6 +59,8 @@ export default function SettingsPage() {
 
       setEmail(client.email || '');
       setPlan(client.plan || '');
+      setHasOpenAIKey(client.openai_api_key === '***');
+      setHasClaudeKey(client.claude_api_key === '***');
       setForm({
         name: client.name || '',
         company_name: client.company_name || '',
@@ -168,11 +172,13 @@ export default function SettingsPage() {
               <label className="block text-sm font-medium text-gray-700">
                 OpenAI API key
                 <input type="password" value={form.openai_api_key} placeholder="Manter chave atual" onChange={event => updateField('openai_api_key', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                {hasOpenAIKey && !form.openai_api_key && <p className="mt-1 text-xs font-medium text-green-700">Chave OpenAI ja salva. Por seguranca, o sistema nao exibe a chave completa.</p>}
                 <FieldHelp>Cole aqui sua chave da OpenAI se for usar modelos GPT. Voce encontra ou cria essa chave no painel da OpenAI, normalmente em API keys. Se ja existe uma chave salva e voce nao quer trocar, deixe em branco.</FieldHelp>
               </label>
               <label className="block text-sm font-medium text-gray-700">
                 Claude API key
                 <input type="password" value={form.claude_api_key} placeholder="Manter chave atual" onChange={event => updateField('claude_api_key', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                {hasClaudeKey && !form.claude_api_key && <p className="mt-1 text-xs font-medium text-green-700">Chave Claude ja salva. Por seguranca, o sistema nao exibe a chave completa.</p>}
                 <FieldHelp>Cole aqui sua chave da Anthropic se for usar modelos Claude. Voce encontra ou cria essa chave no painel da Anthropic, na area de API keys. Se nao usa Claude, deixe vazio.</FieldHelp>
               </label>
             </div>

@@ -360,16 +360,8 @@ function getSearchTokens(value) {
 
 function getSpecificProductTokens(tokens) {
   const generic = new Set([
-    'conjunto',
     'roupa',
     'roupas',
-    'camisa',
-    'camiseta',
-    'blusa',
-    'short',
-    'shorts',
-    'calca',
-    'vestido',
     'infantil',
     'adulto',
     'masculino',
@@ -381,8 +373,18 @@ function getSpecificProductTokens(tokens) {
   return tokens.filter(token => !generic.has(token));
 }
 
+function getTokenVariants(token) {
+  const variants = [token];
+  if (token.endsWith('s') && token.length > 4) variants.push(token.slice(0, -1));
+  return [...new Set(variants)];
+}
+
+function includesToken(haystack, token) {
+  return getTokenVariants(token).some(variant => haystack.includes(variant));
+}
+
 function countTokenMatches(haystack, tokens) {
-  return tokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0);
+  return tokens.reduce((total, token) => total + (includesToken(haystack, token) ? 1 : 0), 0);
 }
 
 function formatCurrencyBRL(value) {
@@ -423,12 +425,12 @@ function getProductScore(product, messageTokens) {
     product.description,
     product.variations?.join(' ')
   ].join(' '));
-  let score = messageTokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0);
+  let score = messageTokens.reduce((total, token) => total + (includesToken(haystack, token) ? 1 : 0), 0);
   const title = normalizeSearchText(product.title || '');
   const description = normalizeSearchText(product.description || '');
   for (const token of messageTokens) {
-    if (title.includes(token)) score += 3;
-    if (description.includes(token)) score += 1;
+    if (includesToken(title, token)) score += 3;
+    if (includesToken(description, token)) score += 1;
   }
   return score;
 }

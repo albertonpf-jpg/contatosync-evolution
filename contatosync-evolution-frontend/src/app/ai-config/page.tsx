@@ -17,6 +17,7 @@ interface AIConfig {
   hour_start: number;
   hour_end: number;
   daily_limit: number;
+  reply_delay_seconds: number;
   monthly_limit: number;
   system_prompt: string;
   greeting_message: string;
@@ -278,6 +279,11 @@ export default function AIConfigPage() {
                 Limite diario
                 <input type="number" min="1" max="1000" value={config.daily_limit} onChange={event => updateConfigField('daily_limit', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
                 <FieldHelp>Quantidade maxima de respostas de IA por dia. Use para controlar custo e evitar uso indevido. Comece com um limite baixo, como 50 ou 100, e aumente depois de acompanhar o volume real no dashboard.</FieldHelp>
+              </label>
+              <label className="text-sm font-medium text-gray-700">
+                Delay para responder
+                <input type="number" min="1" max="60" value={config.reply_delay_seconds || 8} onChange={event => updateConfigField('reply_delay_seconds', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Tempo que a IA espera antes de responder. Se o cliente mandar duas ou mais mensagens seguidas nesse intervalo, o sistema junta tudo e gera uma unica resposta. Use 6 a 12 segundos para atendimento natural.</FieldHelp>
               </label>
             </div>
 

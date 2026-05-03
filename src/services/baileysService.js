@@ -15,6 +15,8 @@ const {
   downloadContentFromMessage,
   extractMessageContent,
   getContentType,
+  generateWAMessageFromContent,
+  prepareWAMessageMedia,
   proto
 } = require('@whiskeysockets/baileys');
 
@@ -474,6 +476,85 @@ class BaileysService {
       : '';
     console.log('[MEDIA SEND] sent id=' + (result?.key?.id || 'unknown') + ' type=' + type + ' mime=' + mimetype + sentAudioDetails);
     return { success: true, messageId: result.key.id, to: jid, messageType: type, timestamp: new Date() };
+  }
+
+  async sendCarouselMessage(sessionName, jidOrPhone, options = {}) {
+    const session = this.sessions.get(sessionName);
+    if (!session) throw new Error('Sessao nao encontrada: ' + sessionName);
+    if (session.status !== 'connected') {
+      if (session.socket?.user?.id) { session.status = 'connected'; }
+      else { throw new Error('Sessao nao conectada. Status: ' + session.status); }
+    }
+
+    const jid = jidOrPhone.includes('@') ? jidOrPhone : jidOrPhone.replace(/\D/g, '') + '@s.whatsapp.net';
+    const cards = Array.isArray(options.cards) ? options.cards.slice(0, 10) : [];
+    if (cards.length === 0) throw new Error('Nenhum card informado para carrossel');
+
+    const interactiveCards = [];
+    for (const card of cards) {
+      const imageBuffer = await this._downloadRemoteBuffer(card.imageUrl);
+      const { imageMessage } = await prepareWAMessageMedia(
+        { image: imageBuffer },
+        { upload: session.socket.waUploadToServer }
+      );
+      const buttons = [];
+      if (card.url) {
+        buttons.push({
+          name: 'cta_url',
+          buttonParamsJson: JSON.stringify({
+            display_text: 'Ver produto',
+            url: card.url,
+            merchant_url: card.url
+          })
+        });
+      }
+      interactiveCards.push(proto.Message.InteractiveMessage.fromObject({
+        header: {
+          title: String(card.title || 'Produto').slice(0, 60),
+          hasMediaAttachment: true,
+          imageMessage
+        },
+        body: {
+          text: String(card.description || card.title || 'Veja este produto').slice(0, 900)
+        },
+        nativeFlowMessage: {
+          buttons
+        }
+      }));
+    }
+
+    const message = generateWAMessageFromContent(jid, {
+      viewOnceMessage: {
+        message: {
+          messageContextInfo: {
+            deviceListMetadata: {},
+            deviceListMetadataVersion: 2
+          },
+          interactiveMessage: proto.Message.InteractiveMessage.fromObject({
+            body: { text: String(options.body || 'Produtos encontrados').slice(0, 900) },
+            footer: { text: 'ContatoSync' },
+            carouselMessage: {
+              cards: interactiveCards,
+              messageVersion: 1
+            }
+          })
+        }
+      }
+    }, { userJid: session.socket.user?.id });
+
+    await session.socket.relayMessage(jid, message.message, { messageId: message.key.id });
+    this._rememberSentMessage(sessionName, message.key, message.message);
+    return { success: true, messageId: message.key.id, to: jid, messageType: 'carousel', cards: interactiveCards.length, timestamp: new Date() };
+  }
+
+  async _downloadRemoteBuffer(url) {
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'ContatoSyncBot/1.0' },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) throw new Error('Falha ao baixar imagem do carrossel HTTP ' + response.status);
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
   }
 
   async _getAudioDurationSeconds(filePath) {

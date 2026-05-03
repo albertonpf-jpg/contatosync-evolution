@@ -125,6 +125,7 @@ const aiConfigSchemas = {
     hour_start: Joi.number().integer().min(0).max(23).optional(),
     hour_end: Joi.number().integer().min(0).max(23).optional(),
     daily_limit: Joi.number().integer().min(1).max(1000).optional(),
+    reply_delay_seconds: Joi.number().integer().min(1).max(60).optional(),
     monthly_limit: Joi.number().integer().min(1).max(50000).optional(),
     system_prompt: Joi.string().optional().allow(''),
     greeting_message: Joi.string().optional().allow(''),

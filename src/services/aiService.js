@@ -67,6 +67,134 @@ function getOpenAIText(data) {
   return '';
 }
 
+function extractUrls(text) {
+  const matches = String(text || '').match(/https?:\/\/[^\s<>"')]+/gi) || [];
+  return [...new Set(matches.map(url => url.replace(/[.,;!?]+$/, '')))].slice(0, 3);
+}
+
+function decodeHtml(value) {
+  return String(value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function resolvePageUrl(baseUrl, value) {
+  try {
+    return new URL(value, baseUrl).toString();
+  } catch (error) {
+    return '';
+  }
+}
+
+function getMetaContent(html, property) {
+  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patterns = [
+    new RegExp(`<meta[^>]+property=["']${escaped}["'][^>]+content=["']([^"']+)["'][^>]*>`, 'i'),
+    new RegExp(`<meta[^>]+name=["']${escaped}["'][^>]+content=["']([^"']+)["'][^>]*>`, 'i'),
+    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${escaped}["'][^>]*>`, 'i')
+  ];
+  for (const pattern of patterns) {
+    const match = html.match(pattern);
+    if (match?.[1]) return decodeHtml(match[1]);
+  }
+  return '';
+}
+
+function getTitleFromHtml(html) {
+  return decodeHtml(getMetaContent(html, 'og:title') || (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || ''));
+}
+
+function extractJsonLdImages(html, pageUrl) {
+  const images = [];
+  const scriptRegex = /<script[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = scriptRegex.exec(html))) {
+    try {
+      const parsed = JSON.parse(match[1].trim());
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      for (const item of items) {
+        const graph = Array.isArray(item?.['@graph']) ? item['@graph'] : [item];
+        for (const node of graph) {
+          const image = node?.image;
+          const values = Array.isArray(image) ? image : [image];
+          for (const value of values) {
+            const url = typeof value === 'string' ? value : value?.url;
+            if (url) images.push(resolvePageUrl(pageUrl, url));
+          }
+        }
+      }
+    } catch (error) {
+      // Invalid JSON-LD is common on storefronts; ignore and keep other metadata.
+    }
+  }
+  return images.filter(Boolean);
+}
+
+async function fetchProductContext(message) {
+  const urls = extractUrls(message);
+  if (urls.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
+
+  const products = [];
+  const imageUrls = [];
+  for (const url of urls) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'ContatoSyncBot/1.0 (+https://contatosync-evolution.vercel.app)'
+        },
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!response.ok) continue;
+      const html = await response.text();
+      const title = getTitleFromHtml(html);
+      const description = getMetaContent(html, 'og:description') || getMetaContent(html, 'description');
+      const candidateImages = [
+        getMetaContent(html, 'og:image'),
+        getMetaContent(html, 'twitter:image'),
+        ...extractJsonLdImages(html, url)
+      ].map(image => resolvePageUrl(url, image)).filter(Boolean);
+      for (const image of candidateImages) {
+        if (!imageUrls.includes(image)) imageUrls.push(image);
+      }
+      products.push({ url, title, description, images: candidateImages.slice(0, 5) });
+    } catch (error) {
+      products.push({ url, title: '', description: `Nao foi possivel acessar a pagina: ${error.message}`, images: [] });
+    }
+  }
+
+  if (products.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
+
+  const contextText = products.map((product, index) => [
+    `Produto/link ${index + 1}: ${product.url}`,
+    product.title ? `Titulo: ${product.title}` : '',
+    product.description ? `Descricao: ${product.description}` : '',
+    product.images?.length ? `Imagens encontradas: ${product.images.slice(0, 5).join(', ')}` : ''
+  ].filter(Boolean).join('\n')).join('\n\n');
+
+  const productCards = [];
+  for (const product of products) {
+    for (const image of (product.images || []).slice(0, 5)) {
+      productCards.push({
+        title: product.title || 'Produto',
+        description: product.description || '',
+        url: product.url,
+        imageUrl: image
+      });
+    }
+  }
+
+  return {
+    contextText: `Informacoes coletadas da loja virtual:\n${contextText}`,
+    imageUrls: imageUrls.slice(0, 5),
+    productCards: productCards.slice(0, 10)
+  };
+}
+
 function getMediaKind(media = {}) {
   const type = String(media.messageType || '').toLowerCase();
   const mime = String(media.mimeType || media.mimetype || '').toLowerCase();
@@ -190,6 +318,7 @@ async function transcribeOpenAIMedia({ apiKey, filePath, mimeType }) {
 }
 
 async function buildOpenAIInputContent({ apiKey, message, media }) {
+  const productContext = await fetchProductContext(message);
   const content = [{
     type: 'input_text',
     text: message && String(message).trim()
@@ -197,7 +326,14 @@ async function buildOpenAIInputContent({ apiKey, message, media }) {
       : 'O cliente enviou uma midia sem texto. Analise a midia e responda de forma util no atendimento.'
   }];
 
-  if (!media || (!media.path && !media.url)) return content;
+  if (productContext.contextText) {
+    content.push({
+      type: 'input_text',
+      text: `${productContext.contextText}\n\nSe essas informacoes forem de produto, responda com dados uteis e objetivos. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`
+    });
+  }
+
+  if (!media || (!media.path && !media.url)) return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
 
   const kind = getMediaKind(media);
   const mimeType = media.mimeType || media.mimetype || getMimeTypeFromPath(media.path || '', 'application/octet-stream');
@@ -205,12 +341,12 @@ async function buildOpenAIInputContent({ apiKey, message, media }) {
 
   if (kind === 'image' && media.path && fs.existsSync(media.path)) {
     content.push({ type: 'input_image', image_url: fileToDataUrl(media.path, mimeType), detail: 'auto' });
-    return content;
+    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
   }
 
   if (kind === 'image' && media.url && /^https?:\/\//i.test(media.url)) {
     content.push({ type: 'input_image', image_url: media.url, detail: 'auto' });
-    return content;
+    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
   }
 
   if ((kind === 'audio' || kind === 'video') && media.path && fs.existsSync(media.path)) {
@@ -233,7 +369,7 @@ async function buildOpenAIInputContent({ apiKey, message, media }) {
         if (framePath) fs.promises.unlink(framePath).catch(() => {});
       }
     }
-    return content;
+    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
   }
 
   if (kind === 'document' && media.path && fs.existsSync(media.path)) {
@@ -246,7 +382,7 @@ async function buildOpenAIInputContent({ apiKey, message, media }) {
           ? { file_url: media.url }
           : { file_data: fileToBase64(media.path) })
       });
-      return content;
+      return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
     }
 
     if (canReadTextFile(media.path, mimeType) && stat.size <= 1024 * 1024) {
@@ -254,25 +390,23 @@ async function buildOpenAIInputContent({ apiKey, message, media }) {
         type: 'input_text',
         text: `Conteudo do arquivo ${media.fileName || path.basename(media.path)}:\n${fs.readFileSync(media.path, 'utf8').slice(0, 20000)}`
       });
-      return content;
+      return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
     }
   }
 
   content.push({ type: 'input_text', text: 'A midia foi recebida, mas esse tipo de arquivo nao pode ser analisado diretamente. Responda considerando o nome, tipo e legenda informados.' });
-  return content;
+  return { content, productImages: productContext.imageUrls, productCards: productContext.productCards };
 }
 
 async function callOpenAI({ apiKey, config, input, systemPrompt, media }) {
   const startedAt = Date.now();
-  const inputContent = Array.isArray(input)
-    ? input
+  const builtInput = Array.isArray(input)
+    ? { content: input, productImages: [] }
     : await buildOpenAIInputContent({ apiKey, message: input, media });
   const body = {
     model: config.model || 'gpt-4o-mini',
     instructions: systemPrompt,
-    input: Array.isArray(inputContent)
-      ? [{ role: 'user', content: inputContent }]
-      : inputContent,
+    input: [{ role: 'user', content: builtInput.content }],
     max_output_tokens: config.max_tokens || 500
   };
 
@@ -302,6 +436,8 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media }) {
     provider: 'openai',
     model: data.model || body.model,
     processing_time_ms: Date.now() - startedAt,
+    product_images: builtInput.productImages || [],
+    product_cards: builtInput.productCards || [],
     ...getTokenUsageFromOpenAI(data)
   };
 }

@@ -41,6 +41,7 @@ const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3003;
 const FALLBACK_PUBLIC_BASE_URL = 'https://web-production-50297.up.railway.app';
+const aiReplyTimers = new Map();
 
 function getPublicBaseUrl() {
   const explicit = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL;
@@ -177,7 +178,78 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
     });
   }
 
+  if (Array.isArray(aiResult.product_cards) && aiResult.product_cards.length > 0) {
+    try {
+      await baileysService.sendCarouselMessage(sessionName, jid, {
+        body: 'Fotos do produto encontradas na loja:',
+        cards: aiResult.product_cards
+      });
+      console.log('[AI AUTO] Carrossel de produtos enviado | conv: ' + conversation.id + ' | cards: ' + aiResult.product_cards.length);
+    } catch (carouselError) {
+      console.warn('[AI AUTO] Falha ao enviar carrossel nativo, enviando imagens simples: ' + carouselError.message);
+      for (const card of aiResult.product_cards.slice(0, 5)) {
+        try {
+          await baileysService.sendTextMessage(sessionName, jid, `${card.title || 'Produto'}\n${card.url || ''}`.trim());
+        } catch (fallbackError) {
+          console.warn('[AI AUTO] Falha no fallback do card: ' + fallbackError.message);
+        }
+      }
+    }
+  }
+
   console.log('[AI AUTO] Resposta enviada | conv: ' + conversation.id + ' | model: ' + aiResult.model);
+}
+
+async function getAIReplyDelayMs(clientId) {
+  try {
+    var { supabaseAdmin } = require('./src/config/supabase');
+    var { data: config } = await supabaseAdmin
+      .from('evolution_ai_config')
+      .select('reply_delay_seconds')
+      .eq('client_id', clientId)
+      .single();
+    var seconds = Number(config?.reply_delay_seconds);
+    if (!Number.isFinite(seconds)) seconds = 8;
+    return Math.max(1, Math.min(60, seconds)) * 1000;
+  } catch (error) {
+    return 8000;
+  }
+}
+
+function enqueueAIAutoReply(payload) {
+  var key = payload.clientId + ':' + payload.conversation.id;
+  var existing = aiReplyTimers.get(key);
+  var nextContent = String(payload.inboundContent || '').trim();
+  if (existing) {
+    if (nextContent) existing.messages.push(nextContent);
+    if (payload.media && (payload.media.path || payload.media.url)) existing.media = payload.media;
+    existing.payload = { ...existing.payload, ...payload, inboundContent: existing.messages.join('\n') };
+    clearTimeout(existing.timer);
+  } else {
+    existing = {
+      messages: nextContent ? [nextContent] : [],
+      media: payload.media,
+      payload: payload,
+      timer: null
+    };
+    aiReplyTimers.set(key, existing);
+  }
+
+  getAIReplyDelayMs(payload.clientId).then(function(delayMs) {
+    existing.timer = setTimeout(function() {
+      aiReplyTimers.delete(key);
+      var finalPayload = {
+        ...existing.payload,
+        inboundContent: existing.messages.join('\n'),
+        media: existing.media
+      };
+      sendAIAutoReply(finalPayload).catch(function(aiError) {
+        console.error('[AI AUTO] Erro ao responder conversa ' + payload.conversation.id + ':', aiError.message);
+      });
+    }, delayMs);
+  }).catch(function(error) {
+    console.error('[AI AUTO] Erro ao calcular delay:', error.message);
+  });
 }
 
 // Socket.IO com CORS
@@ -1116,24 +1188,20 @@ app.post('/internal/messages/process', async function(req, res) {
     var aiAutoReplyQueued = false;
     if (content && String(content).trim()) {
       aiAutoReplyQueued = true;
-      setImmediate(function() {
-        sendAIAutoReply({
-          sessionName: sessionName,
-          clientId: session.client_id,
-          conversation: { ...conversation },
-          contact: { ...contact },
-          jid: jid,
-          inboundContent: content,
-          media: {
-            messageType: messageType || 'text',
-            url: publicMediaUrl,
-            path: mediaPath,
-            mimeType: mediaMimeType,
-            fileName: mediaFileName
-          }
-        }).catch(function(aiError) {
-          console.error('[AI AUTO] Erro ao responder conversa ' + conversation.id + ':', aiError.message);
-        });
+      enqueueAIAutoReply({
+        sessionName: sessionName,
+        clientId: session.client_id,
+        conversation: { ...conversation },
+        contact: { ...contact },
+        jid: jid,
+        inboundContent: content,
+        media: {
+          messageType: messageType || 'text',
+          url: publicMediaUrl,
+          path: mediaPath,
+          mimeType: mediaMimeType,
+          fileName: mediaFileName
+        }
       });
     }
 

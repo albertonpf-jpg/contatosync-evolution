@@ -92,7 +92,6 @@ router.put('/profile',
     const sanitizedClient = sanitizeSensitiveData(updatedClient);
 
     const aiConfigData = {};
-    if (req.body.ai_model !== undefined) aiConfigData.model = req.body.ai_model;
     if (req.body.ai_enabled !== undefined) aiConfigData.enabled = req.body.ai_enabled;
     if (req.body.daily_ai_limit !== undefined) aiConfigData.daily_limit = req.body.daily_ai_limit;
     if (req.body.working_hours_start !== undefined) aiConfigData.hour_start = req.body.working_hours_start;
@@ -121,7 +120,7 @@ router.put('/profile',
             id: uuidv4(),
             client_id: req.user.id,
             enabled: aiConfigData.enabled ?? false,
-            model: aiConfigData.model || 'gpt-4o-mini',
+            model: 'gpt-5-mini',
             max_tokens: 500,
             temperature: 0.7,
             working_hours_enabled: true,

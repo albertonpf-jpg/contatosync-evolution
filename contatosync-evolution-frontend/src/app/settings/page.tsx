@@ -12,7 +12,6 @@ interface ProfileForm {
   phone: string;
   openai_api_key: string;
   claude_api_key: string;
-  ai_model: string;
   daily_ai_limit: number;
   auto_reply_enabled: boolean;
   working_hours_start: number;
@@ -25,24 +24,11 @@ const defaultForm: ProfileForm = {
   phone: '',
   openai_api_key: '',
   claude_api_key: '',
-  ai_model: 'gpt-4o-mini',
   daily_ai_limit: 50,
   auto_reply_enabled: true,
   working_hours_start: 9,
   working_hours_end: 18
 };
-
-const modelOptions = [
-  { value: 'gpt-5.2', label: 'GPT-5.2 (mais avancado)' },
-  { value: 'gpt-5-mini', label: 'GPT-5 mini (equilibrado)' },
-  { value: 'gpt-5-nano', label: 'GPT-5 nano (menor custo)' },
-  { value: 'gpt-4.1', label: 'GPT-4.1 (alta qualidade)' },
-  { value: 'gpt-4.1-mini', label: 'GPT-4.1 mini (rapido)' },
-  { value: 'gpt-4o', label: 'GPT-4o (multimodal)' },
-  { value: 'gpt-4o-mini', label: 'GPT-4o mini (economico)' },
-  { value: 'claude-3-haiku', label: 'Claude 3 Haiku' },
-  { value: 'claude-3-sonnet', label: 'Claude 3 Sonnet' }
-];
 
 function FieldHelp({ children }: { children: ReactNode }) {
   return <p className="mt-1 text-xs leading-5 text-gray-500">{children}</p>;
@@ -77,7 +63,6 @@ export default function SettingsPage() {
         phone: client.phone || '',
         openai_api_key: client.openai_api_key === '***' ? '' : client.openai_api_key || '',
         claude_api_key: client.claude_api_key === '***' ? '' : client.claude_api_key || '',
-        ai_model: client.ai_model || aiConfig.model || 'gpt-4o-mini',
         daily_ai_limit: client.daily_ai_limit || aiConfig.daily_limit || 50,
         auto_reply_enabled: client.auto_reply_enabled ?? true,
         working_hours_start: client.working_hours_start || aiConfig.hour_start || 9,
@@ -193,13 +178,6 @@ export default function SettingsPage() {
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">
-              <label className="block text-sm font-medium text-gray-700">
-                Modelo padrao
-                <select value={form.ai_model} onChange={event => updateField('ai_model', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
-                  {modelOptions.map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
-                </select>
-                <FieldHelp>Escolha o modelo usado como padrao quando a IA for ativada. Para OpenAI, comece com GPT-5 mini se quiser qualidade e custo equilibrados, ou GPT-5 nano para reduzir gasto. Use Claude apenas se a chave Claude tambem estiver preenchida.</FieldHelp>
-              </label>
               <label className="block text-sm font-medium text-gray-700">
                 Limite diario de IA
                 <input type="number" min="1" max="1000" value={form.daily_ai_limit} onChange={event => updateField('daily_ai_limit', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />

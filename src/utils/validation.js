@@ -39,7 +39,6 @@ const clientSchemas = {
     icloud_password: Joi.string().max(255).optional().allow(''),
     openai_api_key: Joi.string().max(4096).optional().allow(''),
     claude_api_key: Joi.string().max(4096).optional().allow(''),
-    ai_model: Joi.string().max(100).optional(),
     ai_enabled: Joi.boolean().optional(),
     daily_ai_limit: Joi.number().integer().min(1).max(1000).optional(),
     auto_reply_enabled: Joi.boolean().optional(),

@@ -23,6 +23,25 @@ function getProviderForModel(model) {
   return String(model || '').toLowerCase().includes('claude') ? 'claude' : 'openai';
 }
 
+function normalizeConfiguredModel(model, provider) {
+  const value = String(model || '').trim();
+  if (!value) return provider === 'claude' ? 'claude-3-haiku-20240307' : 'gpt-4o-mini';
+
+  const claudeAliases = {
+    'claude-3-haiku': 'claude-3-haiku-20240307',
+    'claude-3-sonnet': 'claude-3-sonnet-20240229',
+    'claude-3-opus': 'claude-3-opus-20240229'
+  };
+
+  return claudeAliases[value] || value;
+}
+
+function getFallbackModel(provider, model) {
+  const value = String(model || '').trim();
+  if (provider === 'claude') return value === 'claude-3-haiku-20240307' ? '' : 'claude-3-haiku-20240307';
+  return value === 'gpt-4o-mini' ? '' : 'gpt-4o-mini';
+}
+
 function buildSystemPrompt(config, contact, conversation) {
   const basePrompt = config.system_prompt || 'Voce e um assistente virtual de atendimento via WhatsApp. Responda em portugues do Brasil, com clareza e objetividade.';
   const totalMessages = Number(conversation?.total_messages || 0);
@@ -298,7 +317,72 @@ function normalizeSearchText(value) {
 function getSearchTokens(value) {
   return normalizeSearchText(value)
     .split(' ')
-    .filter(token => token.length >= 3 && !['produto', 'produtos', 'preco', 'valor', 'foto', 'imagem', 'quero', 'tem', 'voce', 'voces', 'para', 'com'].includes(token));
+    .filter(token => token.length >= 3 && ![
+      'produto',
+      'produtos',
+      'preco',
+      'valor',
+      'foto',
+      'fotos',
+      'imagem',
+      'imagens',
+      'quero',
+      'manda',
+      'mande',
+      'mandar',
+      'envia',
+      'envie',
+      'enviar',
+      'desses',
+      'desse',
+      'dessa',
+      'aqui',
+      'favor',
+      'por',
+      'dos',
+      'das',
+      'nos',
+      'nas',
+      'disponivel',
+      'disponiveis',
+      'tamanho',
+      'tamanhos',
+      'real',
+      'reais',
+      'tem',
+      'voce',
+      'voces',
+      'para',
+      'com'
+    ].includes(token))
+    .filter(token => !/^\d+$/.test(token));
+}
+
+function getSpecificProductTokens(tokens) {
+  const generic = new Set([
+    'conjunto',
+    'roupa',
+    'roupas',
+    'camisa',
+    'camiseta',
+    'blusa',
+    'short',
+    'shorts',
+    'calca',
+    'vestido',
+    'infantil',
+    'adulto',
+    'masculino',
+    'feminino',
+    'modelo',
+    'peca',
+    'pecas'
+  ]);
+  return tokens.filter(token => !generic.has(token));
+}
+
+function countTokenMatches(haystack, tokens) {
+  return tokens.reduce((total, token) => total + (haystack.includes(token) ? 1 : 0), 0);
 }
 
 function formatCurrencyBRL(value) {
@@ -351,13 +435,35 @@ function getProductScore(product, messageTokens) {
 
 function getRelevantProducts(products, message) {
   const messageTokens = getSearchTokens(message);
+  const specificTokens = getSpecificProductTokens(messageTokens);
   const uniqueProducts = dedupeProducts(products)
-    .map(product => ({ ...product, score: getProductScore(product, messageTokens) }))
+    .map(product => {
+      const title = normalizeSearchText(product.title || '');
+      const haystack = normalizeSearchText([
+        product.title,
+        product.description,
+        product.variations?.join(' ')
+      ].join(' '));
+      return {
+        ...product,
+        score: getProductScore(product, messageTokens),
+        _titleMatches: countTokenMatches(title, messageTokens),
+        _specificMatches: countTokenMatches(haystack, specificTokens)
+      };
+    })
     .sort((a, b) => b.score - a.score);
 
   if (messageTokens.length === 0) return uniqueProducts.slice(0, 6);
 
-  const matched = uniqueProducts.filter(product => product.score > 0);
+  const minSpecificMatches = specificTokens.length >= 2 ? specificTokens.length : specificTokens.length;
+  const bestScore = uniqueProducts[0]?.score || 0;
+  const matched = uniqueProducts.filter(product => {
+    if (product.score <= 0) return false;
+    if (minSpecificMatches > 0 && product._specificMatches < minSpecificMatches) return false;
+    if (bestScore >= 6 && product.score < Math.ceil(bestScore * 0.7)) return false;
+    if (messageTokens.length >= 3 && product._titleMatches === 0 && product._specificMatches < 2) return false;
+    return true;
+  });
   if (matched.length > 0) return matched.slice(0, 6);
   return [];
 }
@@ -791,15 +897,23 @@ function formatConversationHistory(messages = []) {
   ].join('\n');
 }
 
-async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory }) {
+async function buildProductContextForConfig(message, config) {
   const configuredSources = [
     config?.product_catalog_url,
     ...(Array.isArray(config?.product_source_urls) ? config.product_source_urls : []),
     config?.system_prompt
   ];
-  const productContext = config?.product_search_enabled === false
-    ? await fetchProductContext(message, [])
-    : await fetchProductContext(message, shouldUseConfiguredProductSources(message) ? configuredSources : []);
+  if (config?.product_search_enabled === false) return { contextText: '', imageUrls: [], productCards: [] };
+  return fetchProductContext(message, shouldUseConfiguredProductSources(message) ? configuredSources : []);
+}
+
+function buildProductContextText(productContext) {
+  if (!productContext?.contextText) return '';
+  return `${productContext.contextText}\n\nUse somente os produtos que batem com o pedido do cliente. Se o cliente pediu um produto especifico, nao inclua produtos parecidos, personagens, outras estampas, outras cores ou outras categorias. Se nao houver correspondencia clara, diga que nao encontrou fotos seguras para enviar. Use nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`;
+}
+
+async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory }) {
+  const productContext = await buildProductContextForConfig(message, config);
   const content = [{
     type: 'input_text',
     text: message && String(message).trim()
@@ -818,7 +932,7 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
   if (productContext.contextText) {
     content.push({
       type: 'input_text',
-      text: `${productContext.contextText}\n\nUse essas informacoes para responder com nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`
+      text: buildProductContextText(productContext)
     });
   }
 
@@ -893,7 +1007,7 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
     ? { content: input, productImages: [] }
     : await buildOpenAIInputContent({ apiKey, message: input, media, config, conversationHistory });
   const body = {
-    model: config.model || 'gpt-4o-mini',
+    model: normalizeConfiguredModel(config.model, 'openai'),
     instructions: systemPrompt,
     input: [{ role: 'user', content: builtInput.content }],
     max_output_tokens: config.max_tokens || 500
@@ -903,7 +1017,7 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
     body.temperature = typeof config.temperature === 'number' ? config.temperature : 0.7;
   }
 
-  const response = await fetch('https://api.openai.com/v1/responses', {
+  let response = await fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -914,6 +1028,35 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
 
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    const fallbackModel = getFallbackModel('openai', body.model);
+    const canFallback = fallbackModel && /model|not found|does not exist|unsupported|invalid|access/i.test(String(data?.error?.message || ''));
+    if (canFallback) {
+      const fallbackBody = { ...body, model: fallbackModel };
+      response = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(fallbackBody)
+      });
+      const fallbackData = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(fallbackData?.error?.message || `OpenAI respondeu HTTP ${response.status}`);
+      }
+      const fallbackText = getOpenAIText(fallbackData).trim();
+      if (!fallbackText) throw new Error('OpenAI nao retornou texto na resposta');
+      return {
+        response: fallbackText,
+        provider: 'openai',
+        model: fallbackData.model || fallbackBody.model,
+        requested_model: body.model,
+        processing_time_ms: Date.now() - startedAt,
+        product_images: builtInput.productImages || [],
+        product_cards: builtInput.productCards || [],
+        ...getTokenUsageFromOpenAI(fallbackData)
+      };
+    }
     throw new Error(data?.error?.message || `OpenAI respondeu HTTP ${response.status}`);
   }
 
@@ -931,27 +1074,64 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
   };
 }
 
-async function callClaude({ apiKey, config, input, systemPrompt }) {
+async function buildClaudeInputContent({ input, media, config, conversationHistory }) {
+  const productContext = await buildProductContextForConfig(input, config);
+  const parts = [];
+  const historyText = formatConversationHistory(conversationHistory);
+  if (historyText) parts.push(`Historico da conversa desde a primeira mensagem disponivel:\n${historyText}`);
+  if (input) parts.push(String(input));
+  if (productContext.contextText) parts.push(buildProductContextText(productContext));
+  if (media) parts.push(`Midia recebida:\n${getMediaDescription(media)}`);
+  return {
+    inputText: parts.filter(Boolean).join('\n\n'),
+    productImages: productContext.imageUrls || [],
+    productCards: productContext.productCards || []
+  };
+}
+
+async function callClaude({ apiKey, config, input, systemPrompt, media, conversationHistory }) {
   const startedAt = Date.now();
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
+  const builtInput = await buildClaudeInputContent({ input, media, config, conversationHistory });
+  const body = {
+    model: normalizeConfiguredModel(config.model, 'claude'),
+    max_tokens: config.max_tokens || 500,
+    temperature: typeof config.temperature === 'number' ? config.temperature : 0.7,
+    system: systemPrompt,
+    messages: [{ role: 'user', content: builtInput.inputText || 'Responda ao cliente de forma util no atendimento.' }]
+  };
+  let response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-      model: config.model || 'claude-3-haiku',
-      max_tokens: config.max_tokens || 500,
-      temperature: typeof config.temperature === 'number' ? config.temperature : 0.7,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: input }]
-    })
+    body: JSON.stringify(body)
   });
 
-  const data = await response.json().catch(() => ({}));
+  let data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data?.error?.message || `Claude respondeu HTTP ${response.status}`);
+    const fallbackModel = getFallbackModel('claude', body.model);
+    const canFallback = fallbackModel && /model|not found|does not exist|unsupported|invalid|access/i.test(String(data?.error?.message || ''));
+    if (canFallback) {
+      const fallbackBody = { ...body, model: fallbackModel };
+      response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(fallbackBody)
+      });
+      data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.error?.message || `Claude respondeu HTTP ${response.status}`);
+      }
+      body.model = fallbackModel;
+    } else {
+      throw new Error(data?.error?.message || `Claude respondeu HTTP ${response.status}`);
+    }
   }
 
   const text = (data.content || [])
@@ -968,10 +1148,13 @@ async function callClaude({ apiKey, config, input, systemPrompt }) {
     response: text,
     provider: 'claude',
     model: data.model || config.model,
+    requested_model: body.model === normalizeConfiguredModel(config.model, 'claude') ? undefined : normalizeConfiguredModel(config.model, 'claude'),
     prompt_tokens: inputTokens,
     completion_tokens: outputTokens,
     total_tokens: inputTokens + outputTokens,
-    processing_time_ms: Date.now() - startedAt
+    processing_time_ms: Date.now() - startedAt,
+    product_images: builtInput.productImages || [],
+    product_cards: builtInput.productCards || []
   };
 }
 
@@ -1103,11 +1286,10 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       ? await callClaude({
           apiKey,
           config: effectiveConfig,
-          input: [
-            formatConversationHistory(conversationHistory) ? `Historico recente:\n${formatConversationHistory(conversationHistory)}` : '',
-            media ? `${message || ''}\n\nMidia recebida:\n${getMediaDescription(media)}` : message
-          ].filter(Boolean).join('\n\n'),
-          systemPrompt
+          input: message,
+          systemPrompt,
+          media,
+          conversationHistory
         })
       : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media, conversationHistory });
 

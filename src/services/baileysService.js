@@ -647,13 +647,24 @@ class BaileysService {
   }
 
   async _downloadRemoteBuffer(url) {
-    const response = await fetch(url, {
-      headers: { 'User-Agent': 'ContatoSyncBot/1.0' },
-      signal: AbortSignal.timeout(10000)
-    });
-    if (!response.ok) throw new Error('Falha ao baixar imagem do carrossel HTTP ' + response.status);
-    const arrayBuffer = await response.arrayBuffer();
-    return Buffer.from(arrayBuffer);
+    let lastError = null;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const response = await fetch(url, {
+          headers: { 'User-Agent': 'ContatoSyncBot/1.0' },
+          signal: AbortSignal.timeout(10000)
+        });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        if (buffer.length === 0) throw new Error('imagem vazia');
+        return buffer;
+      } catch (error) {
+        lastError = error;
+        if (attempt < 3) await new Promise(resolve => setTimeout(resolve, attempt * 400));
+      }
+    }
+    throw new Error('Falha ao baixar imagem do carrossel: ' + (lastError?.message || 'erro desconhecido'));
   }
 
   async _getAudioDurationSeconds(filePath) {

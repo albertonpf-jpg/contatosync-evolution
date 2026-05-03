@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { apiService } from '@/lib/api';
 import { Bot, CheckCircle2, KeyRound, Loader2, Plus, RefreshCw, Save, Trash2, Zap } from 'lucide-react';
@@ -54,6 +55,10 @@ const defaultIntegrationForm = {
 };
 
 const models = ['gpt-4o-mini', 'gpt-4o', 'gpt-4.1-mini', 'claude-3-haiku', 'claude-3-sonnet'];
+
+function FieldHelp({ children }: { children: ReactNode }) {
+  return <p className="mt-1 text-xs leading-5 text-gray-500">{children}</p>;
+}
 
 function listToText(items?: string[]) {
   return (items || []).join(', ');
@@ -230,7 +235,10 @@ export default function AIConfigPage() {
             <div className="flex items-center justify-between">
               <div className="flex items-center">
                 <Bot className="mr-3 h-6 w-6 text-blue-600" />
-                <h2 className="text-lg font-semibold text-gray-900">Motor de IA</h2>
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900">Motor de IA</h2>
+                  <p className="mt-1 text-sm text-gray-500">Defina como a IA deve responder no WhatsApp, quando ela pode atuar e quais limites ela deve respeitar.</p>
+                </div>
               </div>
               <label className="flex items-center gap-2 text-sm text-gray-700">
                 <input type="checkbox" checked={config.enabled} onChange={event => updateConfigField('enabled', event.target.checked)} className="h-4 w-4" />
@@ -244,34 +252,41 @@ export default function AIConfigPage() {
                 <select value={config.model} onChange={event => updateConfigField('model', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2">
                   {models.map(model => <option key={model} value={model}>{model}</option>)}
                 </select>
+                <FieldHelp>Escolha o modelo que vai gerar as respostas. Use gpt-4o-mini para menor custo e boa velocidade; use modelos maiores quando precisar de respostas mais completas. O modelo precisa ser compativel com a chave cadastrada em Configuracoes.</FieldHelp>
               </label>
               <label className="text-sm font-medium text-gray-700">
                 Temperatura
                 <input type="number" min="0" max="2" step="0.1" value={config.temperature} onChange={event => updateConfigField('temperature', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Controla a criatividade. Use 0.2 a 0.5 para atendimento mais direto e previsivel; use 0.7 ou mais para respostas mais flexiveis. Para vendas e suporte, normalmente 0.4 a 0.7 funciona melhor.</FieldHelp>
               </label>
               <label className="text-sm font-medium text-gray-700">
                 Max tokens
                 <input type="number" min="1" max="4000" value={config.max_tokens} onChange={event => updateConfigField('max_tokens', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Limite maximo de tamanho da resposta da IA. Quanto maior, mais longa e mais cara pode ficar a resposta. Para WhatsApp, use algo entre 300 e 800; aumente apenas se a IA precisar explicar muitos detalhes.</FieldHelp>
               </label>
               <label className="text-sm font-medium text-gray-700">
                 Limite diario
                 <input type="number" min="1" max="1000" value={config.daily_limit} onChange={event => updateConfigField('daily_limit', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Quantidade maxima de respostas de IA por dia. Use para controlar custo e evitar uso indevido. Comece com um limite baixo, como 50 ou 100, e aumente depois de acompanhar o volume real no dashboard.</FieldHelp>
               </label>
             </div>
 
             <label className="block text-sm font-medium text-gray-700">
               Prompt do sistema
               <textarea value={config.system_prompt} onChange={event => updateConfigField('system_prompt', event.target.value)} rows={5} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+              <FieldHelp>Explique para a IA quem ela e, como deve atender e quais regras deve seguir. Inclua tom de voz, horario, politicas, limites, quando chamar humano e informacoes do negocio. Exemplo: "Voce atende clientes da loja X, responde em portugues, nao inventa preco e chama um atendente quando nao souber".</FieldHelp>
             </label>
 
             <div className="grid gap-4 md:grid-cols-2">
               <label className="text-sm font-medium text-gray-700">
                 Saudacao
                 <textarea value={config.greeting_message} onChange={event => updateConfigField('greeting_message', event.target.value)} rows={3} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Mensagem usada quando a IA inicia ou reconhece um atendimento. Preencha com uma frase curta e natural, como "Ola! Sou o assistente virtual. Como posso ajudar?".</FieldHelp>
               </label>
               <label className="text-sm font-medium text-gray-700">
                 Mensagem fallback
                 <textarea value={config.fallback_message} onChange={event => updateConfigField('fallback_message', event.target.value)} rows={3} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Mensagem usada quando a IA nao consegue responder com seguranca. Use para encaminhar para atendimento humano, por exemplo: "Nao consegui confirmar essa informacao. Vou chamar um atendente para ajudar".</FieldHelp>
               </label>
             </div>
 
@@ -279,10 +294,12 @@ export default function AIConfigPage() {
               <label className="text-sm font-medium text-gray-700">
                 Palavras de gatilho
                 <input value={triggerText} onChange={event => setTriggerText(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Palavras que ajudam a IA a identificar quando deve responder. Separe por virgulas. Exemplo: preco, entrega, produto, horario, pedido. Use termos que seus clientes costumam mandar no WhatsApp.</FieldHelp>
               </label>
               <label className="text-sm font-medium text-gray-700">
                 Palavras bloqueadas
                 <input value={blacklistText} onChange={event => setBlacklistText(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Palavras que impedem resposta automatica e indicam que deve chamar humano. Separe por virgulas. Exemplo: urgente, reclamacao, cancelamento, juridico, emergencia.</FieldHelp>
               </label>
             </div>
 
@@ -294,10 +311,12 @@ export default function AIConfigPage() {
               <label className="text-sm font-medium text-gray-700">
                 Inicio
                 <input type="number" min="0" max="23" value={config.hour_start} onChange={event => updateConfigField('hour_start', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Hora em que a IA pode comecar a responder. Use formato de 0 a 23. Exemplo: 9 para 09:00.</FieldHelp>
               </label>
               <label className="text-sm font-medium text-gray-700">
                 Fim
                 <input type="number" min="0" max="23" value={config.hour_end} onChange={event => updateConfigField('hour_end', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Hora em que a IA deve parar de responder automaticamente. Use formato de 0 a 23. Exemplo: 18 para 18:00.</FieldHelp>
               </label>
             </div>
 
@@ -311,7 +330,10 @@ export default function AIConfigPage() {
             <div className="flex items-center justify-between">
               <div className="flex items-center">
                 <Zap className="mr-3 h-6 w-6 text-orange-600" />
-                <h2 className="text-lg font-semibold text-gray-900">Integracoes rapidas</h2>
+                <div>
+                  <h2 className="text-lg font-semibold text-gray-900">Integracoes rapidas</h2>
+                  <p className="mt-1 text-sm text-gray-500">Conecte APIs externas para a IA consultar informacoes reais, como catalogo, pedidos, clientes, CRM ou automacoes.</p>
+                </div>
               </div>
               <button type="button" onClick={() => setShowIntegrationForm(value => !value)} className="inline-flex items-center rounded-lg bg-orange-600 px-3 py-2 text-sm text-white hover:bg-orange-700">
                 <Plus className="mr-2 h-4 w-4" />
@@ -329,13 +351,26 @@ export default function AIConfigPage() {
                   <select value={integrationForm.integration_type} onChange={event => setIntegrationForm({ ...integrationForm, integration_type: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2">
                     {integrationTypes.map(type => <option key={type.type} value={type.type}>{type.name}</option>)}
                   </select>
-                  <input required placeholder="Nome da integracao" value={integrationForm.integration_name} onChange={event => setIntegrationForm({ ...integrationForm, integration_name: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
-                  <input required type="url" placeholder="https://api.seudominio.com/endpoint" value={integrationForm.api_endpoint} onChange={event => setIntegrationForm({ ...integrationForm, api_endpoint: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+                  <FieldHelp>Escolha o tipo conforme o sistema que sera conectado. FacilZap, CRM, e-commerce e email normalmente pedem token. Webhook e usado quando outro sistema recebe eventos do ContatoSync.</FieldHelp>
+                  <div>
+                    <input required placeholder="Nome da integracao" value={integrationForm.integration_name} onChange={event => setIntegrationForm({ ...integrationForm, integration_name: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+                    <FieldHelp>Use um nome facil de reconhecer, como "FacilZap loja principal" ou "CRM vendas". Esse nome aparece na lista e ajuda a saber qual conexao esta ativa.</FieldHelp>
+                  </div>
+                  <div>
+                    <input required type="url" placeholder="https://api.seudominio.com/endpoint" value={integrationForm.api_endpoint} onChange={event => setIntegrationForm({ ...integrationForm, api_endpoint: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+                    <FieldHelp>Cole a URL base ou endpoint da API do sistema externo. Voce encontra isso na documentacao da plataforma, geralmente em areas chamadas API, Developers, Webhooks ou Integracoes. Deve comecar com https:// ou http://.</FieldHelp>
+                  </div>
                   {requiresToken && (
-                    <input required type="password" placeholder="Token ou API key" value={integrationForm.api_key} onChange={event => setIntegrationForm({ ...integrationForm, api_key: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+                    <div>
+                      <input required type="password" placeholder="Token ou API key" value={integrationForm.api_key} onChange={event => setIntegrationForm({ ...integrationForm, api_key: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+                      <FieldHelp>Cole o token de acesso gerado no sistema externo. Normalmente fica em Configuracoes, API, Desenvolvedores, Tokens ou Chaves de API. Esse token autoriza o ContatoSync a consultar ou enviar dados para essa API.</FieldHelp>
+                    </div>
                   )}
                   {requiresSecret && (
-                    <input type="password" placeholder="API secret" value={integrationForm.api_secret} onChange={event => setIntegrationForm({ ...integrationForm, api_secret: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+                    <div>
+                      <input type="password" placeholder="API secret" value={integrationForm.api_secret} onChange={event => setIntegrationForm({ ...integrationForm, api_secret: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
+                      <FieldHelp>Preencha somente se a plataforma fornecer uma segunda chave chamada secret, client secret ou assinatura. Ela costuma ficar na mesma tela onde o token/API key foi criado.</FieldHelp>
+                    </div>
                   )}
                   <button type="button" onClick={() => void createIntegration()} disabled={saving} className="inline-flex items-center rounded-lg bg-orange-600 px-4 py-2 text-sm text-white hover:bg-orange-700 disabled:opacity-50">
                     {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}

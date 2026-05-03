@@ -1,6 +1,7 @@
 'use client';
 
 import { FormEvent, useEffect, useState } from 'react';
+import type { ReactNode } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { apiService } from '@/lib/api';
 import { Loader2, Save, Settings, ShieldCheck, UserRound } from 'lucide-react';
@@ -30,6 +31,10 @@ const defaultForm: ProfileForm = {
   working_hours_start: 9,
   working_hours_end: 18
 };
+
+function FieldHelp({ children }: { children: ReactNode }) {
+  return <p className="mt-1 text-xs leading-5 text-gray-500">{children}</p>;
+}
 
 export default function SettingsPage() {
   const [form, setForm] = useState<ProfileForm>(defaultForm);
@@ -125,41 +130,53 @@ export default function SettingsPage() {
           <section className="space-y-5 rounded-lg border border-gray-200 bg-white p-6">
             <div className="flex items-center">
               <UserRound className="mr-3 h-6 w-6 text-blue-600" />
-              <h2 className="text-lg font-semibold text-gray-900">Conta</h2>
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Conta</h2>
+                <p className="mt-1 text-sm text-gray-500">Dados usados para identificar sua empresa dentro do sistema e organizar o atendimento.</p>
+              </div>
             </div>
 
             <label className="block text-sm font-medium text-gray-700">
               Nome
               <input value={form.name} onChange={event => updateField('name', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+              <FieldHelp>Preencha com o nome do responsavel pela conta. Esse dado ajuda a identificar quem administra o ContatoSync.</FieldHelp>
             </label>
             <label className="block text-sm font-medium text-gray-700">
               Empresa
               <input value={form.company_name} onChange={event => updateField('company_name', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+              <FieldHelp>Informe o nome comercial da empresa que usa o WhatsApp. Esse nome pode orientar textos internos e facilitar suporte.</FieldHelp>
             </label>
             <label className="block text-sm font-medium text-gray-700">
               Telefone
               <input value={form.phone} onChange={event => updateField('phone', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+              <FieldHelp>Use o telefone principal da empresa ou do responsavel. Preferencialmente no formato com DDD, por exemplo: 11999999999.</FieldHelp>
             </label>
             <div className="rounded-lg bg-gray-50 p-4 text-sm text-gray-600">
               <p>Email: <span className="font-medium text-gray-900">{email}</span></p>
               <p>Plano: <span className="font-medium text-gray-900">{plan || 'basic'}</span></p>
+              <p className="mt-2 text-xs leading-5 text-gray-500">Email e plano sao informacoes da conta. Se precisar trocar email de login ou plano, faca isso pelo fluxo administrativo correto para evitar perda de acesso.</p>
             </div>
           </section>
 
           <section className="space-y-5 rounded-lg border border-gray-200 bg-white p-6">
             <div className="flex items-center">
               <ShieldCheck className="mr-3 h-6 w-6 text-green-600" />
-              <h2 className="text-lg font-semibold text-gray-900">IA e Automacao</h2>
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">IA e Automacao</h2>
+                <p className="mt-1 text-sm text-gray-500">Configure as chaves que permitem ao ContatoSync usar provedores de IA e defina limites basicos de uso.</p>
+              </div>
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">
               <label className="block text-sm font-medium text-gray-700">
                 OpenAI API key
                 <input type="password" value={form.openai_api_key} placeholder="Manter chave atual" onChange={event => updateField('openai_api_key', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Cole aqui sua chave da OpenAI se for usar modelos GPT. Voce encontra ou cria essa chave no painel da OpenAI, normalmente em API keys. Se ja existe uma chave salva e voce nao quer trocar, deixe em branco.</FieldHelp>
               </label>
               <label className="block text-sm font-medium text-gray-700">
                 Claude API key
                 <input type="password" value={form.claude_api_key} placeholder="Manter chave atual" onChange={event => updateField('claude_api_key', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Cole aqui sua chave da Anthropic se for usar modelos Claude. Voce encontra ou cria essa chave no painel da Anthropic, na area de API keys. Se nao usa Claude, deixe vazio.</FieldHelp>
               </label>
             </div>
 
@@ -167,25 +184,32 @@ export default function SettingsPage() {
               <label className="block text-sm font-medium text-gray-700">
                 Modelo padrao
                 <input value={form.ai_model} onChange={event => updateField('ai_model', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Modelo usado como padrao quando a IA for ativada. Preencha com o nome exato do modelo aceito pelo provedor da chave, por exemplo gpt-4o-mini para OpenAI. O mesmo modelo tambem pode ser ajustado na tela IA Config.</FieldHelp>
               </label>
               <label className="block text-sm font-medium text-gray-700">
                 Limite diario de IA
                 <input type="number" min="1" max="1000" value={form.daily_ai_limit} onChange={event => updateField('daily_ai_limit', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Numero maximo de respostas automaticas por dia. Use esse campo para controlar gasto e evitar excesso de respostas. Comece com 50 ou 100 e aumente quando tiver clareza do volume real.</FieldHelp>
               </label>
               <label className="block text-sm font-medium text-gray-700">
                 Inicio atendimento
                 <input type="number" min="0" max="23" value={form.working_hours_start} onChange={event => updateField('working_hours_start', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Hora inicial em que a automacao pode responder. Use apenas a hora de 0 a 23. Exemplo: 8 para 08:00, 9 para 09:00.</FieldHelp>
               </label>
               <label className="block text-sm font-medium text-gray-700">
                 Fim atendimento
                 <input type="number" min="0" max="23" value={form.working_hours_end} onChange={event => updateField('working_hours_end', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+                <FieldHelp>Hora final em que a automacao deve parar de responder. Use apenas a hora de 0 a 23. Exemplo: 18 para 18:00. Fora desse periodo, a IA pode ficar bloqueada se o horario estiver ativo.</FieldHelp>
               </label>
             </div>
 
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input type="checkbox" checked={form.auto_reply_enabled} onChange={event => updateField('auto_reply_enabled', event.target.checked)} className="h-4 w-4" />
-              Resposta automatica habilitada
-            </label>
+            <div>
+              <label className="flex items-center gap-2 text-sm text-gray-700">
+                <input type="checkbox" checked={form.auto_reply_enabled} onChange={event => updateField('auto_reply_enabled', event.target.checked)} className="h-4 w-4" />
+                Resposta automatica habilitada
+              </label>
+              <FieldHelp>Quando marcado, o sistema pode responder automaticamente conforme a configuracao da IA. Desmarque quando quiser que as mensagens fiquem apenas para atendimento manual.</FieldHelp>
+            </div>
 
             <button disabled={saving} className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-white hover:bg-blue-700 disabled:opacity-50">
               {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}

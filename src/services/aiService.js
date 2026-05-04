@@ -330,6 +330,10 @@ function buildConfiguredProductSources(config = {}) {
 function shouldUseConfiguredProductSources(message) {
   if (extractUrls(message).length > 0) return true;
   const text = String(message || '').toLowerCase();
+  const normalized = normalizeSearchText(message);
+  if (/(^|\s)(como comprar|forma de comprar|formas de comprar|passo a passo|endereco|localizacao|onde fica|horario|funcionamento|telefone|contato|pagamento|entrega|frete|retirada|troca|devolucao)(\s|$)/i.test(normalized)) {
+    return false;
+  }
   return [
     'produto',
     'produtos',
@@ -383,6 +387,40 @@ function shouldUseConfiguredProductSources(message) {
     'camisetas',
     'tshirt',
     't-shirt'
+  ].some(term => text.includes(term));
+}
+
+function shouldUseConfiguredSiteSources(message) {
+  if (extractUrls(message).length > 0) return true;
+  const text = normalizeSearchText(message);
+  if (!text) return false;
+  return [
+    'endereco',
+    'localizacao',
+    'loja fisica',
+    'onde fica',
+    'como comprar',
+    'comprar',
+    'pedido',
+    'pagamento',
+    'pagar',
+    'pix',
+    'cartao',
+    'entrega',
+    'frete',
+    'retirada',
+    'troca',
+    'devolucao',
+    'garantia',
+    'horario',
+    'funcionamento',
+    'telefone',
+    'whatsapp',
+    'instagram',
+    'contato',
+    'quem somos',
+    'sobre',
+    'politica'
   ].some(term => text.includes(term));
 }
 
@@ -514,6 +552,74 @@ function extractJsonLdProducts(html, pageUrl) {
 
 function stripHtml(value) {
   return decodeHtml(String(value || '').replace(/<[^>]+>/g, ' '));
+}
+
+function htmlToReadableText(html) {
+  return stripHtml(String(html || '')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(?:p|div|li|h[1-6]|section|article|tr)>/gi, '\n'))
+    .replace(/\s+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+function getRelevantSiteSnippets(text, message, maxSnippets = 8) {
+  const cleanText = String(text || '').replace(/\r/g, '\n');
+  const paragraphs = cleanText
+    .split(/\n{1,}|\.\s+/)
+    .map(item => item.replace(/\s+/g, ' ').trim())
+    .filter(item => item.length >= 20 && item.length <= 600);
+  const messageTokens = getSpecificProductTokens(getSearchTokens(message));
+  const intentTokens = getSearchTokens([
+    message,
+    'endereco localizacao contato telefone whatsapp instagram como comprar pagamento pix cartao entrega frete retirada troca devolucao horario funcionamento'
+  ].join(' '));
+  const scored = paragraphs.map(paragraph => {
+    const haystack = normalizeSearchText(paragraph);
+    const score = countTokenMatches(haystack, [...new Set([...messageTokens, ...intentTokens])]);
+    const strongSignal = /(endere[cç]o|localiza[cç][aã]o|telefone|whatsapp|instagram|contato|comprar|pagamento|pix|cart[aã]o|entrega|frete|retirada|troca|devolu[cç][aã]o|hor[aá]rio|funcionamento)/i.test(paragraph) ? 3 : 0;
+    return { paragraph, score: score + strongSignal };
+  });
+  const selected = scored
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map(item => item.paragraph);
+  return [...new Set(selected)].slice(0, maxSnippets);
+}
+
+function extractSiteInfoFromHtml(html, url, message) {
+  const title = getTitleFromHtml(html);
+  const description = getMetaContent(html, 'og:description') || getMetaContent(html, 'description');
+  const text = htmlToReadableText(html);
+  const snippets = getRelevantSiteSnippets(text, message);
+  const fallback = snippets.length > 0 ? snippets : text.split(/\n+/).map(item => item.trim()).filter(item => item.length >= 30).slice(0, 6);
+  return {
+    url,
+    title,
+    description,
+    snippets: fallback.map(item => truncateText(item, 500)).slice(0, 8)
+  };
+}
+
+function flattenJsonText(value, depth = 0) {
+  if (value === null || value === undefined || depth > 4) return [];
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    const text = String(value).trim();
+    return text ? [text] : [];
+  }
+  if (Array.isArray(value)) return value.flatMap(item => flattenJsonText(item, depth + 1));
+  if (typeof value === 'object') {
+    return Object.entries(value).flatMap(([key, item]) => {
+      const values = flattenJsonText(item, depth + 1);
+      if (values.length === 0) return [];
+      return values.map(text => `${key}: ${text}`);
+    });
+  }
+  return [];
 }
 
 function normalizeSearchText(value) {
@@ -1400,6 +1506,68 @@ async function fetchProductContext(message, sourceUrls = []) {
   };
 }
 
+async function fetchSiteInfoContext(message, sourceUrls = []) {
+  const sources = normalizeProductSources([message, ...sourceUrls]);
+  if (sources.length === 0) return { contextText: '', lookupAttempted: false };
+
+  const entries = [];
+  console.log('[AI SITE] Buscando informacoes gerais | query: ' + normalizeSearchText(message).slice(0, 120) + ' | fontes: ' + sources.map(source => `${source.type}:${source.url}`).join(', '));
+  for (const source of sources.slice(0, 6)) {
+    try {
+      const response = await fetch(source.url, {
+        headers: {
+          'User-Agent': 'ContatoSyncBot/1.0 (+https://contatosync-evolution.vercel.app)',
+          ...(source.headers || {})
+        },
+        signal: AbortSignal.timeout(8000)
+      });
+      if (!response.ok) continue;
+      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+      const bodyText = await response.text();
+      if (contentType.includes('json')) {
+        const snippets = getRelevantSiteSnippets(flattenJsonText(JSON.parse(bodyText)).join('\n'), message);
+        if (snippets.length > 0) {
+          entries.push({
+            url: source.url,
+            sourceName: source.name,
+            title: source.name || 'API configurada',
+            description: '',
+            snippets
+          });
+        }
+        continue;
+      }
+
+      const siteInfo = extractSiteInfoFromHtml(bodyText, source.url, message);
+      const hasUsefulInfo = siteInfo.title || siteInfo.description || siteInfo.snippets.length > 0;
+      if (hasUsefulInfo) entries.push({ ...siteInfo, sourceName: source.name });
+    } catch (error) {
+      entries.push({
+        url: source.url,
+        sourceName: source.name,
+        title: '',
+        description: '',
+        snippets: [`Nao foi possivel acessar esta fonte: ${error.message}`]
+      });
+    }
+  }
+
+  if (entries.length === 0) return { contextText: '', lookupAttempted: true };
+
+  const contextText = entries.map((entry, index) => [
+    `Fonte ${index + 1}: ${entry.url}`,
+    entry.sourceName ? `Nome da fonte: ${entry.sourceName}` : '',
+    entry.title ? `Titulo da pagina: ${entry.title}` : '',
+    entry.description ? `Descricao da pagina: ${entry.description}` : '',
+    entry.snippets.length ? `Informacoes encontradas:\n- ${entry.snippets.join('\n- ')}` : ''
+  ].filter(Boolean).join('\n')).join('\n\n');
+
+  return {
+    contextText: `Informacoes gerais coletadas do site/configuracoes:\n${contextText}`,
+    lookupAttempted: true
+  };
+}
+
 function getMediaKind(media = {}) {
   const type = String(media.messageType || '').toLowerCase();
   const mime = String(media.mimeType || media.mimetype || '').toLowerCase();
@@ -1654,13 +1822,41 @@ async function buildProductContextForConfig(message, config, conversationHistory
   return { ...productContext, lookupAttempted: shouldSearch, searchText };
 }
 
+async function buildSiteContextForConfig(message, config) {
+  const configuredSources = buildConfiguredProductSources(config);
+  const shouldSearch = shouldUseConfiguredSiteSources(message);
+  if (!shouldSearch) return { contextText: '', lookupAttempted: false };
+  const siteContext = await fetchSiteInfoContext(message, configuredSources);
+  return { ...siteContext, lookupAttempted: shouldSearch };
+}
+
 function buildProductContextText(productContext) {
   if (!productContext?.contextText) return '';
   return `${productContext.contextText}\n\nEstas informacoes foram buscadas antes da resposta nas APIs de integracoes ativas e/ou no link de catalogo configurado. Use primeiro os dados coletados das integracoes e do catalogo. Use somente os produtos que batem com o pedido do cliente. Se o cliente pediu idade/tamanho, por exemplo crianca de 6 anos, tamanho 6 ou tam 6, responda e envie somente produtos com esse tamanho explicitamente encontrado. Se o cliente pediu um produto especifico, nao inclua produtos parecidos, personagens, outras estampas, outras cores ou outras categorias. Se nao houver correspondencia clara, diga que nao encontrou fotos seguras para enviar. Use nomes, precos, fotos, variacoes, tamanhos e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque, tamanho ou variacao que nao esteja no conteudo coletado.`;
 }
 
+function buildSiteContextText(siteContext) {
+  if (!siteContext?.contextText) return '';
+  return `${siteContext.contextText}\n\nEstas informacoes foram buscadas antes da resposta no site, links adicionais, arquivos e/ou APIs configuradas. Use esses dados para responder perguntas sobre endereco, contato, como comprar, pagamento, entrega, retirada, troca, devolucao, horario, politicas e informacoes institucionais. Nao invente informacoes que nao estejam no conteudo coletado. Se a informacao solicitada nao apareceu no site/fontes, diga que nao encontrou essa informacao nas fontes configuradas e peca confirmacao.`;
+}
+
+function buildSiteContextSummaryResponse(siteContext) {
+  const text = String(siteContext?.contextText || '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => line && !/^Fonte \d+:|^Nome da fonte:|^Titulo da pagina:/i.test(line))
+    .slice(0, 8)
+    .join('\n')
+    .replace(/^Informacoes gerais coletadas do site\/configuracoes:\s*/i, '')
+    .trim();
+  return text
+    ? `Encontrei estas informacoes nas fontes configuradas:\n${text}`
+    : 'Nao encontrei essa informacao nas fontes configuradas.';
+}
+
 async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory }) {
   const productContext = await buildProductContextForConfig(message, config, conversationHistory);
+  const siteContext = await buildSiteContextForConfig(message, config);
   const knowledgeContext = buildKnowledgeContextForConfig(config);
   const content = [{
     type: 'input_text',
@@ -1679,6 +1875,9 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
 
   if (knowledgeContext) {
     content.push({ type: 'input_text', text: knowledgeContext });
+  }
+  if (siteContext.contextText) {
+    content.push({ type: 'input_text', text: buildSiteContextText(siteContext) });
   }
   content.push(...buildOpenAIKnowledgeFileParts(config));
 
@@ -1838,12 +2037,14 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
 
 async function buildClaudeInputContent({ input, media, config, conversationHistory }) {
   const productContext = await buildProductContextForConfig(input, config, conversationHistory);
+  const siteContext = await buildSiteContextForConfig(input, config);
   const knowledgeContext = buildKnowledgeContextForConfig(config);
   const parts = [];
   const historyText = formatConversationHistory(conversationHistory);
   if (historyText) parts.push(`Historico da conversa desde a primeira mensagem disponivel:\n${historyText}`);
   if (input) parts.push(String(input));
   if (knowledgeContext) parts.push(knowledgeContext);
+  if (siteContext.contextText) parts.push(buildSiteContextText(siteContext));
   if (productContext.contextText) parts.push(buildProductContextText(productContext));
   else if (productContext.lookupAttempted) parts.push('O cliente pediu fotos ou produtos, mas nenhum produto com imagem foi encontrado no catalogo configurado. Nao diga que vai enviar fotos e nao prometa encaminhar para atendente apenas por falta de imagem. Responda de forma transparente que nao encontrei fotos seguras desse pedido no catalogo e peca para o cliente confirmar o nome do produto, cor ou categoria.');
   if (media) parts.push(`Midia recebida:\n${getMediaDescription(media)}`);
@@ -2155,6 +2356,21 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         product_search_text: productContext.searchText || message
       };
     }
+    const siteContext = await buildSiteContextForConfig(message, effectiveConfig);
+    if (siteContext.contextText) {
+      return {
+        skipped: false,
+        response: buildSiteContextSummaryResponse(siteContext),
+        provider: 'site',
+        model: 'site_lookup',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: []
+      };
+    }
     return {
       skipped: false,
       response: buildAIUnavailableResponse(effectiveConfig),
@@ -2230,6 +2446,21 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           product_cards: productCards,
           product_lookup_attempted: true,
           product_search_text: productContext.searchText || message
+        };
+      }
+      const siteContext = await buildSiteContextForConfig(message, effectiveConfig);
+      if (siteContext.contextText) {
+        return {
+          skipped: false,
+          response: buildSiteContextSummaryResponse(siteContext),
+          provider: 'site',
+          model: 'site_lookup',
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          processing_time_ms: 0,
+          product_images: [],
+          product_cards: []
         };
       }
       return {

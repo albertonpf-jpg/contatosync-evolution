@@ -193,6 +193,56 @@ function normalizeSourceUrls(values = []) {
   return urls.slice(0, 5);
 }
 
+function normalizeProductSources(values = []) {
+  const sources = [];
+  const seen = new Set();
+  const addSource = (source) => {
+    if (!source) return;
+    if (typeof source === 'string') {
+      for (const url of extractUrls(source)) {
+        const key = url.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        sources.push({ url, type: 'link', name: 'Link configurado', headers: {} });
+      }
+      return;
+    }
+    const url = String(source.url || source.api_endpoint || '').trim();
+    if (!/^https?:\/\//i.test(url)) return;
+    const key = `${String(source.type || source.integration_type || 'link').toLowerCase()}:${url.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    sources.push({
+      url,
+      type: source.type || source.integration_type || 'link',
+      name: source.name || source.integration_name || 'Fonte configurada',
+      headers: source.headers || {}
+    });
+  };
+
+  values.forEach(addSource);
+  return sources.slice(0, 8);
+}
+
+function buildIntegrationHeaders(integration = {}) {
+  const headers = { Accept: 'application/json' };
+  if (integration.api_key) {
+    headers.Authorization = `Bearer ${integration.api_key}`;
+    headers['x-api-key'] = integration.api_key;
+  }
+  if (integration.api_secret) headers['x-api-secret'] = integration.api_secret;
+  return headers;
+}
+
+function buildConfiguredProductSources(config = {}) {
+  return normalizeProductSources([
+    ...(Array.isArray(config.product_integrations) ? config.product_integrations : []),
+    config.product_catalog_url,
+    ...(Array.isArray(config.product_source_urls) ? config.product_source_urls : []),
+    config.system_prompt
+  ]);
+}
+
 function shouldUseConfiguredProductSources(message) {
   if (extractUrls(message).length > 0) return true;
   const text = String(message || '').toLowerCase();
@@ -633,6 +683,104 @@ function normalizeFacilZapProduct(product, catalogBase) {
   };
 }
 
+function firstValue(...values) {
+  return values.find(value => value !== undefined && value !== null && String(value).trim() !== '');
+}
+
+function collectImageValues(value, pageUrl) {
+  const images = [];
+  const visit = (item) => {
+    if (!item) return;
+    if (typeof item === 'string') {
+      const resolved = resolvePageUrl(pageUrl, item);
+      if (resolved && /\.(?:png|jpe?g|webp|gif)(?:[?#].*)?$/i.test(resolved)) images.push(resolved);
+      return;
+    }
+    if (Array.isArray(item)) {
+      item.forEach(visit);
+      return;
+    }
+    if (typeof item !== 'object') return;
+    visit(item.url || item.src || item.path || item.image || item.imagem);
+  };
+  visit(value);
+  return images.filter(Boolean);
+}
+
+function extractGenericJsonProducts(data, sourceUrl) {
+  const products = [];
+  const visit = (value, depth = 0) => {
+    if (!value || depth > 6) return;
+    if (Array.isArray(value)) {
+      value.forEach(item => visit(item, depth + 1));
+      return;
+    }
+    if (typeof value !== 'object') return;
+
+    const title = firstValue(value.nome, value.name, value.title, value.titulo, value.product_name, value.descricao_curta);
+    const imageFields = [
+      value.imagens,
+      value.images,
+      value.fotos,
+      value.photos,
+      value.image,
+      value.imagem,
+      value.thumbnail,
+      value.photo,
+      value.picture
+    ];
+    const images = [...new Set(imageFields.flatMap(item => collectImageValues(item, sourceUrl)))].slice(0, 5);
+    const hasProductSignal = title && (
+      images.length > 0
+      || value.preco !== undefined
+      || value.price !== undefined
+      || value.valor !== undefined
+      || value.sku !== undefined
+      || value.id !== undefined
+      || value.estoque !== undefined
+      || value.stock !== undefined
+    );
+
+    if (hasProductSignal) {
+      const price = firstValue(value.preco, value.price, value.valor, value.preco_promocional, value.sale_price);
+      const url = resolvePageUrl(sourceUrl, firstValue(value.url, value.link, value.permalink, value.product_url, sourceUrl));
+      const variations = [
+        value.variacoes,
+        value.variations,
+        value.tamanhos,
+        value.sizes,
+        value.cores,
+        value.colors
+      ].flatMap(item => {
+        if (!item) return [];
+        if (Array.isArray(item)) return item.map(entry => typeof entry === 'string' ? entry : firstValue(entry.nome, entry.name, entry.label, entry.valor, entry.value));
+        if (typeof item === 'object') return Object.values(item).map(entry => typeof entry === 'string' ? entry : firstValue(entry.nome, entry.name, entry.label, entry.valor, entry.value));
+        return [String(item)];
+      }).filter(Boolean).slice(0, 8);
+
+      products.push({
+        id: firstValue(value.id, value.sku, value.codigo, url, title),
+        url,
+        title: stripHtml(title),
+        description: stripHtml(firstValue(value.descricao, value.description, value.details, value.resumo, '')),
+        price: price ? (/^R\$/i.test(String(price)) ? String(price) : formatCurrencyBRL(price)) : '',
+        stock: firstValue(value.estoque, value.stock, value.total_estoque, value.quantity, null),
+        category: firstValue(value.categoria, value.category, value.categoria_nome, value.category_name, ''),
+        categoryName: firstValue(value.categoria_nome, value.category_name, value.categoria, value.category, ''),
+        variations,
+        images,
+        score: 0
+      });
+      return;
+    }
+
+    Object.values(value).forEach(item => visit(item, depth + 1));
+  };
+
+  visit(data);
+  return dedupeProducts(products);
+}
+
 function getProductScore(product, messageTokens) {
   if (!messageTokens.length) return 0;
   const haystack = normalizeSearchText([
@@ -678,7 +826,7 @@ function getRelevantProducts(products, message) {
       ].join(' '));
       return {
         ...product,
-        score: getProductScore(product, messageTokens),
+        score: getProductScore(product, messageTokens) + (product.sourceType && product.sourceType !== 'link' ? 2 : 0),
         _titleMatches: countTokenMatches(title, messageTokens),
         _specificMatches: countTokenMatches(haystack, specificTokens),
         _colorMatches: countTokenMatches(titleAndVariations, colorTokens),
@@ -925,29 +1073,47 @@ async function fetchFacilZapProductsFromHtml(html, pageUrl, message) {
 }
 
 async function fetchProductContext(message, sourceUrls = []) {
-  const urls = normalizeSourceUrls([message, ...sourceUrls]);
-  if (urls.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
+  const sources = normalizeProductSources([message, ...sourceUrls]);
+  if (sources.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
 
   const products = [];
   const imageUrls = [];
-  console.log('[AI PRODUCT] Buscando catalogo | query: ' + normalizeSearchText(message).slice(0, 120) + ' | fontes: ' + urls.join(', '));
-  for (const url of urls) {
+  console.log('[AI PRODUCT] Buscando catalogo/API | query: ' + normalizeSearchText(message).slice(0, 120) + ' | fontes: ' + sources.map(source => `${source.type}:${source.url}`).join(', '));
+  for (const source of sources) {
+    const url = source.url;
     try {
       const response = await fetch(url, {
         headers: {
-          'User-Agent': 'ContatoSyncBot/1.0 (+https://contatosync-evolution.vercel.app)'
+          'User-Agent': 'ContatoSyncBot/1.0 (+https://contatosync-evolution.vercel.app)',
+          ...(source.headers || {})
         },
         signal: AbortSignal.timeout(8000)
       });
       if (!response.ok) continue;
-      const html = await response.text();
+      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+      const bodyText = await response.text();
+      if (contentType.includes('json')) {
+        const data = JSON.parse(bodyText);
+        const jsonProducts = extractGenericJsonProducts(data, url);
+        if (jsonProducts.length > 0) {
+          console.log('[AI PRODUCT] API de integracao consultada | fonte: ' + source.name + ' | produtos: ' + jsonProducts.length);
+          for (const product of jsonProducts) {
+            for (const image of product.images || []) {
+              if (!imageUrls.includes(image)) imageUrls.push(image);
+            }
+            products.push({ ...product, sourceType: source.type, sourceName: source.name });
+          }
+          continue;
+        }
+      }
+      const html = bodyText;
       const facilZapProducts = await fetchFacilZapProductsFromHtml(html, url, message);
       if (facilZapProducts.length > 0) {
         for (const product of facilZapProducts) {
           for (const image of product.images || []) {
             if (!imageUrls.includes(image)) imageUrls.push(image);
           }
-          products.push(product);
+          products.push({ ...product, sourceType: source.type, sourceName: source.name });
         }
         continue;
       }
@@ -960,7 +1126,7 @@ async function fetchProductContext(message, sourceUrls = []) {
           for (const image of product.images || []) {
             if (!imageUrls.includes(image)) imageUrls.push(image);
           }
-          products.push(product);
+          products.push({ ...product, sourceType: source.type, sourceName: source.name });
         }
         continue;
       }
@@ -974,7 +1140,7 @@ async function fetchProductContext(message, sourceUrls = []) {
       for (const image of candidateImages) {
         if (!imageUrls.includes(image)) imageUrls.push(image);
       }
-      products.push({ url, title, description, images: candidateImages.slice(0, 5) });
+      products.push({ url, title, description, images: candidateImages.slice(0, 5), sourceType: source.type, sourceName: source.name });
     } catch (error) {
       products.push({ url, title: '', description: `Nao foi possivel acessar a pagina: ${error.message}`, images: [] });
     }
@@ -987,6 +1153,7 @@ async function fetchProductContext(message, sourceUrls = []) {
 
   const contextText = relevantProducts.map((product, index) => [
     `Produto/link ${index + 1}: ${product.url}`,
+    product.sourceName ? `Fonte: ${product.sourceName}` : '',
     product.title ? `Titulo: ${product.title}` : '',
     product.price ? `Preco: ${product.price}` : '',
     product.stock !== null && product.stock !== undefined ? `Estoque informado: ${product.stock}` : '',
@@ -1196,11 +1363,7 @@ function buildProductSearchText(message, conversationHistory = []) {
 
 async function buildProductContextForConfig(message, config, conversationHistory = []) {
   const searchText = buildProductSearchText(message, conversationHistory);
-  const configuredSources = [
-    config?.product_catalog_url,
-    ...(Array.isArray(config?.product_source_urls) ? config.product_source_urls : []),
-    config?.system_prompt
-  ];
+  const configuredSources = buildConfiguredProductSources(config);
   if (config?.product_search_enabled === false) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
   const shouldSearch = shouldUseConfiguredProductSources(searchText);
   const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : []);
@@ -1209,7 +1372,7 @@ async function buildProductContextForConfig(message, config, conversationHistory
 
 function buildProductContextText(productContext) {
   if (!productContext?.contextText) return '';
-  return `${productContext.contextText}\n\nUse somente os produtos que batem com o pedido do cliente. Se o cliente pediu um produto especifico, nao inclua produtos parecidos, personagens, outras estampas, outras cores ou outras categorias. Se nao houver correspondencia clara, diga que nao encontrou fotos seguras para enviar. Use nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`;
+  return `${productContext.contextText}\n\nEstas informacoes foram buscadas antes da resposta nas APIs de integracoes ativas e/ou no link de catalogo configurado. Use primeiro os dados coletados das integracoes e do catalogo. Use somente os produtos que batem com o pedido do cliente. Se o cliente pediu um produto especifico, nao inclua produtos parecidos, personagens, outras estampas, outras cores ou outras categorias. Se nao houver correspondencia clara, diga que nao encontrou fotos seguras para enviar. Use nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`;
 }
 
 async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory }) {
@@ -1486,9 +1649,9 @@ async function getAISetup(supabase, clientId) {
       .single(),
     supabase
       .from('evolution_integrations')
-      .select('integration_type, integration_name, api_endpoint, enabled, is_active')
+      .select('integration_type, integration_name, api_endpoint, api_key, api_secret, enabled, is_active, status')
       .eq('client_id', clientId)
-      .in('integration_type', ['facilzap', 'ecommerce'])
+      .in('integration_type', ['facilzap', 'ecommerce', 'crm'])
       .or('enabled.eq.true,is_active.eq.true')
   ]);
 
@@ -1571,7 +1734,14 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   const provider = getProviderForModel(config.model || client?.ai_model);
   const effectiveConfig = {
     ...config,
-    product_source_urls: normalizeSourceUrls((integrations || []).map(integration => integration.api_endpoint)),
+    product_integrations: (integrations || [])
+      .filter(integration => integration?.api_endpoint && integration.status !== 'error')
+      .map(integration => ({
+        integration_type: integration.integration_type,
+        integration_name: integration.integration_name,
+        api_endpoint: integration.api_endpoint,
+        headers: buildIntegrationHeaders(integration)
+      })),
     model: config.model || client?.ai_model || (provider === 'claude' ? 'claude-3-haiku' : 'gpt-4o-mini')
   };
   const systemPrompt = buildSystemPrompt(effectiveConfig, contact, conversation);

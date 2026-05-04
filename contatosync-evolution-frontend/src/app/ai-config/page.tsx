@@ -145,12 +145,14 @@ export default function AIConfigPage() {
       setError(null);
       const updated = await apiService.updateAIConfig({
         ...config,
+        product_catalog_url: (config.product_catalog_url || '').trim(),
         working_days: [1, 2, 3, 4, 5, 6, 7],
         trigger_keywords: textToList(triggerText),
         blacklist_keywords: textToList(blacklistText)
       });
       setConfig(updated);
       setMessage('Configuracao de IA salva.');
+      await loadPage();
     } catch (err: any) {
       setError(err.response?.data?.error || err.message || 'Erro ao salvar configuracao');
     } finally {
@@ -294,7 +296,7 @@ export default function AIConfigPage() {
               <label className="text-sm font-medium text-gray-700">
                 Link do catalogo ou loja virtual
                 <input type="url" placeholder="https://sualoja.com.br/produtos" value={config.product_catalog_url || ''} onChange={event => updateConfigField('product_catalog_url', event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
-                <FieldHelp>Cole aqui a pagina publica da loja, catalogo ou produto que a IA deve consultar para buscar informacoes e fotos. Nao coloque esse link no prompt. Quando o cliente pedir produto, preco, estoque ou mandar um link, a IA usa esta fonte e tenta enviar as imagens em carrossel no WhatsApp.</FieldHelp>
+                <FieldHelp>Cole aqui a pagina publica da loja, catalogo ou produto que a IA deve consultar para buscar informacoes e fotos. Quando houver integracoes ativas, a IA consulta as APIs primeiro e depois este link. Essa busca funciona independente do modelo selecionado.</FieldHelp>
               </label>
               <label className="mt-7 flex items-center gap-2 text-sm text-gray-700">
                 <input type="checkbox" checked={config.product_search_enabled !== false} onChange={event => updateConfigField('product_search_enabled', event.target.checked)} className="h-4 w-4" />
@@ -376,7 +378,7 @@ export default function AIConfigPage() {
               <div className="rounded-lg border border-orange-200 bg-orange-50 p-4">
                 <div className="mb-3 flex items-center text-sm font-medium text-orange-900">
                   <KeyRound className="mr-2 h-4 w-4" />
-                  URL e token sao obrigatorios para conexoes via API.
+                  A IA consulta APIs de integracoes ativas antes do link do catalogo.
                 </div>
                 <div className="space-y-3">
                   <select value={integrationForm.integration_type} onChange={event => setIntegrationForm({ ...integrationForm, integration_type: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2">

@@ -85,6 +85,12 @@ router.put('/config',
       ...req.body,
       updated_at: new Date().toISOString()
     };
+    if (typeof updateData.product_catalog_url === 'string') {
+      updateData.product_catalog_url = updateData.product_catalog_url.trim();
+    }
+    if (updateData.product_catalog_url && !/^https?:\/\//i.test(updateData.product_catalog_url)) {
+      return error(res, 'Link do catalogo deve comecar com http:// ou https://', 400);
+    }
 
     const { data: updatedConfig, error } = await executeWithRLS(req.user.id, (client) =>
       client

@@ -139,7 +139,27 @@ function normalizeProductMediaResponse(text, productCards = []) {
 }
 
 function buildProductLookupEmptyResponse(searchText) {
-  const tokens = getSpecificProductTokens(getSearchTokens(searchText));
+  const tokens = getSpecificProductTokens(getSearchTokens(searchText))
+    .filter(token => ![
+      'nao',
+      'não',
+      'pedi',
+      'pra',
+      'pro',
+      'olha',
+      'olhar',
+      'direito',
+      'porque',
+      'aviso',
+      'avisos',
+      'pedido',
+      'pedidos',
+      'minimo',
+      'mínimo',
+      'catalogo',
+      'catálogo',
+      'configurado'
+    ].includes(token));
   const requested = tokens.length > 0 ? tokens.join(' ') : 'esse pedido';
   return `Nao encontrei fotos seguras de ${requested} no catalogo configurado. Pode me mandar outro nome, cor ou categoria para eu buscar de novo?`;
 }
@@ -331,7 +351,7 @@ function shouldUseConfiguredProductSources(message) {
   if (extractUrls(message).length > 0) return true;
   const text = String(message || '').toLowerCase();
   const normalized = normalizeSearchText(message);
-  if (/(^|\s)(como comprar|forma de comprar|formas de comprar|passo a passo|endereco|localizacao|onde fica|horario|funcionamento|telefone|contato|pagamento|entrega|frete|retirada|troca|devolucao)(\s|$)/i.test(normalized)) {
+  if (/(^|\s)(como comprar|forma de comprar|formas de comprar|passo a passo|pedido minimo|valor minimo|compra minima|aviso|avisos|regras|endereco|localizacao|onde fica|horario|funcionamento|telefone|contato|pagamento|entrega|frete|retirada|troca|devolucao)(\s|$)/i.test(normalized)) {
     return false;
   }
   return [
@@ -402,6 +422,13 @@ function shouldUseConfiguredSiteSources(message) {
     'como comprar',
     'comprar',
     'pedido',
+    'pedido minimo',
+    'valor minimo',
+    'compra minima',
+    'aviso',
+    'avisos',
+    'regras',
+    'regra',
     'pagamento',
     'pagar',
     'pix',
@@ -696,7 +723,25 @@ function getSearchTokens(value) {
       'crianca',
       'criancas',
       'criança',
-      'crianças'
+      'crianças',
+      'nao',
+      'não',
+      'pedi',
+      'pra',
+      'pro',
+      'olha',
+      'olhar',
+      'direito',
+      'porque',
+      'aviso',
+      'avisos',
+      'pedido',
+      'pedidos',
+      'minimo',
+      'mínimo',
+      'catalogo',
+      'catálogo',
+      'configurado'
     ].includes(token))
     .filter(token => !/^\d+$/.test(token));
 }

@@ -109,7 +109,19 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       for (let index = 0; index < cardsToSend.length; index += 1) {
         const card = cardsToSend[index];
         try {
-          await baileysService.sendRemoteImageMessage(sessionName, jid, card.imageUrl, '');
+          // Montar caption curto: titulo + preco + tamanhos do card correspondente
+          var cardTitle = String(card.title || '')
+            .replace(/^\uD83D\uDECD\uFE0F?\s*/u, '')
+            .replace(/\s*-\s*foto\s*\d+\s*$/i, '')
+            .trim();
+          var cardDesc = String(card.description || '');
+          var cardPriceMatch = cardDesc.match(/R\$\s*[\d.,]+/);
+          var cardSizeMatch = cardDesc.match(/📏 Tamanho: ([^\n]+)/);
+          var captionParts = cardTitle ? [cardTitle] : [];
+          if (cardPriceMatch) captionParts.push(cardPriceMatch[0]);
+          if (cardSizeMatch) captionParts.push('Tam: ' + cardSizeMatch[1].slice(0, 40));
+          var cardCaption = captionParts.join(' | ').slice(0, 200);
+          await baileysService.sendRemoteImageMessage(sessionName, jid, card.imageUrl, cardCaption);
           productMediaSent = true;
         } catch (imageError) {
           console.warn('[AI AUTO] Falha ao enviar imagem do produto: ' + imageError.message);

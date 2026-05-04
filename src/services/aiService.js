@@ -497,14 +497,16 @@ function buildProductIntegrationSources(integration) {
 
   const productSources = [];
   for (const source of sources) {
-    productSources.push(source);
     if (source.endpointKey !== 'products_path' && source.endpointKey !== 'stock_path') continue;
-    productSources.push(
-      addQueryParam(source.url, 'limite', 100) ? { ...source, url: addQueryParam(source.url, 'limite', 100), name: `${source.name} (limite)` } : source,
-      addQueryParam(source.url, 'per_page', 100) ? { ...source, url: addQueryParam(source.url, 'per_page', 100), name: `${source.name} (per_page)` } : source
-    );
+    for (let page = 1; page <= 10; page += 1) {
+      productSources.push({
+        ...source,
+        url: addQueryParam(source.url, 'page', page),
+        name: `${source.name} (page ${page})`
+      });
+    }
   }
-  return productSources;
+  return productSources.length > 0 ? productSources : sources;
 }
 
 function getProductSearchPhrase(message) {
@@ -519,6 +521,7 @@ function expandProductSourcesForSearch(message, sources = []) {
   const expanded = [];
   for (const source of sources) {
     expanded.push(source);
+    if (source.type === 'facilzap') continue;
     if (!['products_path', 'stock_path'].includes(source.endpointKey)) continue;
     for (const param of ['q', 'search', 'busca', 'nome', 'categoria', 'termo']) {
       expanded.push({
@@ -1482,6 +1485,14 @@ function getProductScore(product, messageTokens) {
   return score;
 }
 
+function hasNegativeProductMatch(product, tokens = []) {
+  const haystack = normalizeSearchText([
+    product.title,
+    product.description
+  ].join(' '));
+  return tokens.some(token => new RegExp(`\\b(?:nao|sem|acompanha|acompanham|acompanhar)\\b.{0,40}\\b${token}\\b|\\b${token}\\b.{0,40}\\b(?:nao|sem|acompanha|acompanham|acompanhar)\\b`, 'i').test(haystack));
+}
+
 function getRelevantProducts(products, message) {
   const messageTokens = getSearchTokens(message);
   const specificTokens = getSpecificProductTokens(messageTokens);
@@ -1534,6 +1545,7 @@ function getRelevantProducts(products, message) {
   const bestScore = uniqueProducts[0]?.score || 0;
   const matched = uniqueProducts.filter(product => {
     if (product.score <= 0) return false;
+    if (specificTokens.length > 0 && hasNegativeProductMatch(product, specificTokens)) return false;
     if (requestedSizes.length > 0 && !productMatchesRequestedSize(product, requestedSizes)) return false;
     if (minSpecificMatches > 0 && product._specificMatches < minSpecificMatches) return false;
     if (colorTokens.length > 0 && product._colorMatches < colorTokens.length) return false;

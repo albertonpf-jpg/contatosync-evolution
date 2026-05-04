@@ -7,6 +7,42 @@ const { promisify } = require('util');
 const { execFile } = require('child_process');
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_INTEGRATION_CONFIG = {
+  facilzap: {
+    auth_type: 'bearer',
+    products_path: '/produtos',
+    catalog_path: '/catalogos',
+    orders_path: '/pedidos',
+    order_status_path: '/pedidos/{pedido}',
+    tracking_path: '/pedidos/{pedido}/codigo-rastreio',
+    customers_path: '/clientes',
+    stock_path: '/produtos',
+    query_param: 'q',
+    phone_param: 'telefone',
+    order_param: 'pedido'
+  },
+  ecommerce: {
+    auth_type: 'bearer',
+    products_path: '',
+    catalog_path: '',
+    orders_path: '',
+    order_status_path: '',
+    tracking_path: '',
+    customers_path: '',
+    stock_path: '',
+    query_param: 'q',
+    phone_param: 'phone',
+    order_param: 'order'
+  },
+  crm: {
+    auth_type: 'bearer',
+    customers_path: '',
+    orders_path: '',
+    query_param: 'q',
+    phone_param: 'phone',
+    order_param: 'order'
+  }
+};
 
 function normalizeList(value) {
   if (!value) return [];
@@ -330,17 +366,85 @@ function normalizeProductSources(values = []) {
 
 function buildIntegrationHeaders(integration = {}) {
   const headers = { Accept: 'application/json' };
+  const authType = String(integration.config?.auth_type || integration.auth_type || 'bearer').toLowerCase();
   if (integration.api_key) {
-    headers.Authorization = `Bearer ${integration.api_key}`;
-    headers['x-api-key'] = integration.api_key;
+    if (authType === 'x-api-key' || authType === 'api_key') {
+      headers['x-api-key'] = integration.api_key;
+    } else if (authType === 'query') {
+      // Query-string tokens are appended when URLs are built.
+    } else {
+      headers.Authorization = `Bearer ${integration.api_key}`;
+      headers['x-api-key'] = integration.api_key;
+    }
   }
   if (integration.api_secret) headers['x-api-secret'] = integration.api_secret;
   return headers;
 }
 
+function joinIntegrationUrl(baseUrl, endpointPath) {
+  const base = String(baseUrl || '').replace(/\/+$/, '');
+  const pathValue = String(endpointPath || '').trim();
+  if (!base || !pathValue) return '';
+  if (/^https?:\/\//i.test(pathValue)) return pathValue;
+  return `${base}/${pathValue.replace(/^\/+/, '')}`;
+}
+
+function interpolateIntegrationPath(pathValue, params = {}) {
+  return String(pathValue || '').replace(/\{(\w+)\}/g, (_, key) => encodeURIComponent(params[key] || ''));
+}
+
+function addQueryParam(url, key, value) {
+  if (!url || !key || value === undefined || value === null || value === '') return url;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set(key, value);
+    return parsed.toString();
+  } catch (error) {
+    return url;
+  }
+}
+
+function extractOrderReference(message) {
+  const text = normalizeSearchText(message);
+  return text.match(/\b(?:pedido|numero|n)\s*(\d{2,})\b/i)?.[1]
+    || text.match(/\b\d{4,}\b/)?.[0]
+    || '';
+}
+
+function buildIntegrationEndpointSource(integration, endpointKey, params = {}) {
+  const integrationType = integration.integration_type || integration.type;
+  const config = {
+    ...(DEFAULT_INTEGRATION_CONFIG[integrationType] || {}),
+    ...(integration.config || {})
+  };
+  const pathValue = config[endpointKey];
+  const url = joinIntegrationUrl(integration.api_endpoint, interpolateIntegrationPath(pathValue, params));
+  if (!url) return null;
+  let finalUrl = url;
+  const authType = String(config.auth_type || 'bearer').toLowerCase();
+  if (authType === 'query' && integration.api_key) {
+    finalUrl = addQueryParam(finalUrl, config.token_param || 'token', integration.api_key);
+  }
+  return {
+    url: finalUrl,
+    type: integration.integration_type || integration.type || 'api',
+    name: `${integration.integration_name || integration.name || 'Integracao'} - ${endpointKey}`,
+    headers: integration.headers || buildIntegrationHeaders(integration)
+  };
+}
+
+function buildProductIntegrationSources(integration) {
+  return ['products_path', 'catalog_path', 'stock_path']
+    .map(key => buildIntegrationEndpointSource(integration, key))
+    .filter(Boolean);
+}
+
 function buildConfiguredProductSources(config = {}) {
   return normalizeProductSources([
-    ...(Array.isArray(config.product_integrations) ? config.product_integrations : []),
+    ...(Array.isArray(config.product_integrations) ? config.product_integrations.flatMap(integration => [
+      integration,
+      ...buildProductIntegrationSources(integration)
+    ]) : []),
     config.product_catalog_url,
     ...(Array.isArray(config.product_source_urls) ? config.product_source_urls : []),
     config.system_prompt
@@ -465,6 +569,37 @@ function shouldUseConfiguredSiteSources(message) {
     'sobre',
     'politica'
   ].some(term => text.includes(term));
+}
+
+function shouldUseOperationalIntegrationSources(message) {
+  const text = normalizeSearchText(message);
+  if (!text) return false;
+  return /\b(pedido|pedidos|enviado|enviou|envio|rastreio|rastrear|codigo de rastreio|status|estoque|disponivel|cliente|compra|compras)\b/i.test(text);
+}
+
+function buildOperationalIntegrationSources(config = {}, message = '', contact = {}, conversation = {}) {
+  const integrations = Array.isArray(config.product_integrations) ? config.product_integrations : [];
+  const phone = String(contact?.phone || conversation?.phone || '').replace(/\D/g, '');
+  const query = String(message || '').trim();
+  const pedido = extractOrderReference(message);
+  const sources = [];
+  for (const integration of integrations) {
+    const cfg = integration.config || {};
+    const params = { phone, telefone: phone, query, q: query, pedido, order: pedido };
+    const endpointKeys = shouldUseOperationalIntegrationSources(message)
+      ? ['orders_path', 'order_status_path', 'tracking_path', 'customers_path', 'stock_path']
+      : [];
+    for (const key of endpointKeys) {
+      if ((key === 'order_status_path' || key === 'tracking_path') && !pedido && String(cfg[key] || '').includes('{pedido}')) continue;
+      let source = buildIntegrationEndpointSource(integration, key, params);
+      if (!source) continue;
+      if (phone && cfg.phone_param && ['orders_path', 'customers_path'].includes(key)) source.url = addQueryParam(source.url, cfg.phone_param, phone);
+      if (pedido && cfg.order_param && ['orders_path'].includes(key)) source.url = addQueryParam(source.url, cfg.order_param, pedido);
+      if (query && cfg.query_param && ['stock_path'].includes(key)) source.url = addQueryParam(source.url, cfg.query_param, query);
+      sources.push(source);
+    }
+  }
+  return normalizeProductSources(sources);
 }
 
 function decodeHtml(value) {
@@ -1891,6 +2026,17 @@ async function buildSiteContextForConfig(message, config) {
   return { ...siteContext, lookupAttempted: shouldSearch };
 }
 
+async function buildOperationalContextForConfig(message, config, contact, conversation) {
+  const sources = buildOperationalIntegrationSources(config, message, contact, conversation);
+  if (sources.length === 0) return { contextText: '', lookupAttempted: false };
+  const context = await fetchSiteInfoContext(message, sources);
+  return {
+    ...context,
+    contextText: context.contextText ? context.contextText.replace('Informacoes gerais coletadas do site/configuracoes:', 'Informacoes operacionais coletadas das integracoes:') : '',
+    lookupAttempted: true
+  };
+}
+
 function buildProductContextText(productContext) {
   if (!productContext?.contextText) return '';
   return `${productContext.contextText}\n\nEstas informacoes foram buscadas antes da resposta nas APIs de integracoes ativas e/ou no link de catalogo configurado. Use primeiro os dados coletados das integracoes e do catalogo. Use somente os produtos que batem com o pedido do cliente. Se o cliente pediu idade/tamanho, por exemplo crianca de 6 anos, tamanho 6 ou tam 6, responda e envie somente produtos com esse tamanho explicitamente encontrado. Se o cliente pediu um produto especifico, nao inclua produtos parecidos, personagens, outras estampas, outras cores ou outras categorias. Se nao houver correspondencia clara, diga que nao encontrou fotos seguras para enviar. Use nomes, precos, fotos, variacoes, tamanhos e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque, tamanho ou variacao que nao esteja no conteudo coletado.`;
@@ -1899,6 +2045,11 @@ function buildProductContextText(productContext) {
 function buildSiteContextText(siteContext) {
   if (!siteContext?.contextText) return '';
   return `${siteContext.contextText}\n\nEstas informacoes foram buscadas antes da resposta no site, links adicionais, arquivos e/ou APIs configuradas. Use esses dados para responder perguntas sobre endereco, contato, como comprar, pagamento, entrega, retirada, troca, devolucao, horario, politicas e informacoes institucionais. Nao invente informacoes que nao estejam no conteudo coletado. Se a informacao solicitada nao apareceu no site/fontes, diga que nao encontrou essa informacao nas fontes configuradas e peca confirmacao.`;
+}
+
+function buildOperationalContextText(operationalContext) {
+  if (!operationalContext?.contextText) return '';
+  return `${operationalContext.contextText}\n\nEstas informacoes foram consultadas em integracoes ativas antes da resposta. Use esses dados para responder sobre pedido, status, envio, rastreio, estoque, cliente, pagamento ou entrega. Nao invente status, rastreio, estoque ou prazo. Se a integracao nao trouxer o dado solicitado, diga que nao encontrou essa informacao na integracao configurada.`;
 }
 
 function buildSiteContextSummaryResponse(siteContext) {
@@ -1915,9 +2066,10 @@ function buildSiteContextSummaryResponse(siteContext) {
     : 'Nao encontrei essa informacao nas fontes configuradas.';
 }
 
-async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory }) {
+async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory, contact, conversation }) {
   const productContext = await buildProductContextForConfig(message, config, conversationHistory);
   const siteContext = await buildSiteContextForConfig(message, config);
+  const operationalContext = await buildOperationalContextForConfig(message, config, contact, conversation);
   const knowledgeContext = buildKnowledgeContextForConfig(config);
   const content = [{
     type: 'input_text',
@@ -1939,6 +2091,9 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
   }
   if (siteContext.contextText) {
     content.push({ type: 'input_text', text: buildSiteContextText(siteContext) });
+  }
+  if (operationalContext.contextText) {
+    content.push({ type: 'input_text', text: buildOperationalContextText(operationalContext) });
   }
   content.push(...buildOpenAIKnowledgeFileParts(config));
 
@@ -2019,11 +2174,11 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
   return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
 }
 
-async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversationHistory }) {
+async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversationHistory, contact, conversation }) {
   const startedAt = Date.now();
   const builtInput = Array.isArray(input)
     ? { content: input, productImages: [] }
-    : await buildOpenAIInputContent({ apiKey, message: input, media, config, conversationHistory });
+    : await buildOpenAIInputContent({ apiKey, message: input, media, config, conversationHistory, contact, conversation });
   const body = {
     model: normalizeConfiguredModel(config.model, 'openai'),
     instructions: systemPrompt,
@@ -2096,9 +2251,10 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
   };
 }
 
-async function buildClaudeInputContent({ input, media, config, conversationHistory }) {
+async function buildClaudeInputContent({ input, media, config, conversationHistory, contact, conversation }) {
   const productContext = await buildProductContextForConfig(input, config, conversationHistory);
   const siteContext = await buildSiteContextForConfig(input, config);
+  const operationalContext = await buildOperationalContextForConfig(input, config, contact, conversation);
   const knowledgeContext = buildKnowledgeContextForConfig(config);
   const parts = [];
   const historyText = formatConversationHistory(conversationHistory);
@@ -2106,6 +2262,7 @@ async function buildClaudeInputContent({ input, media, config, conversationHisto
   if (input) parts.push(String(input));
   if (knowledgeContext) parts.push(knowledgeContext);
   if (siteContext.contextText) parts.push(buildSiteContextText(siteContext));
+  if (operationalContext.contextText) parts.push(buildOperationalContextText(operationalContext));
   if (productContext.contextText) parts.push(buildProductContextText(productContext));
   else if (productContext.lookupAttempted) parts.push('O cliente pediu fotos ou produtos, mas nenhum produto com imagem foi encontrado no catalogo configurado. Nao diga que vai enviar fotos e nao prometa encaminhar para atendente apenas por falta de imagem. Responda de forma transparente que nao encontrei fotos seguras desse pedido no catalogo e peca para o cliente confirmar o nome do produto, cor ou categoria.');
   if (media) parts.push(`Midia recebida:\n${getMediaDescription(media)}`);
@@ -2118,9 +2275,9 @@ async function buildClaudeInputContent({ input, media, config, conversationHisto
   };
 }
 
-async function callClaude({ apiKey, config, input, systemPrompt, media, conversationHistory }) {
+async function callClaude({ apiKey, config, input, systemPrompt, media, conversationHistory, contact, conversation }) {
   const startedAt = Date.now();
-  const builtInput = await buildClaudeInputContent({ input, media, config, conversationHistory });
+  const builtInput = await buildClaudeInputContent({ input, media, config, conversationHistory, contact, conversation });
   const body = {
     model: normalizeConfiguredModel(config.model, 'claude'),
     max_tokens: config.max_tokens || 500,
@@ -2203,7 +2360,7 @@ async function getAISetup(supabase, clientId) {
       .single(),
     supabase
       .from('evolution_integrations')
-      .select('integration_type, integration_name, api_endpoint, api_key, api_secret, enabled, is_active, status')
+      .select('integration_type, integration_name, api_endpoint, api_key, api_secret, config, enabled, is_active, status')
       .eq('client_id', clientId)
       .in('integration_type', ['facilzap', 'ecommerce', 'crm'])
       .or('enabled.eq.true,is_active.eq.true')
@@ -2294,6 +2451,12 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         integration_type: integration.integration_type,
         integration_name: integration.integration_name,
         api_endpoint: integration.api_endpoint,
+        api_key: integration.api_key,
+        api_secret: integration.api_secret,
+        config: {
+          ...(DEFAULT_INTEGRATION_CONFIG[integration.integration_type] || {}),
+          ...(integration.config || {})
+        },
         headers: buildIntegrationHeaders(integration)
       })),
     model: config.model || client?.ai_model || (provider === 'claude' ? 'claude-3-haiku' : 'gpt-4o-mini')
@@ -2454,9 +2617,11 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           input: message,
           systemPrompt,
           media,
-          conversationHistory
+          conversationHistory,
+          contact,
+          conversation
         })
-      : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media, conversationHistory });
+      : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media, conversationHistory, contact, conversation });
 
     if (result.product_lookup_attempted && (!Array.isArray(result.product_cards) || result.product_cards.length === 0)) {
       result.response = buildProductLookupEmptyResponse(result.product_search_text || message);

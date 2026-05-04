@@ -9,13 +9,59 @@ const { success, error: responseError, notFound, conflict, asyncHandler, handleS
 const router = express.Router();
 
 const API_TOKEN_TYPES = new Set(['facilzap', 'crm', 'ecommerce', 'email']);
+const DEFAULT_INTEGRATION_CONFIG = {
+  facilzap: {
+    auth_type: 'bearer',
+    products_path: '/produtos',
+    catalog_path: '/catalogos',
+    orders_path: '/pedidos',
+    order_status_path: '/pedidos/{pedido}',
+    tracking_path: '/pedidos/{pedido}/codigo-rastreio',
+    customers_path: '/clientes',
+    stock_path: '/produtos',
+    query_param: 'q',
+    phone_param: 'telefone',
+    order_param: 'pedido'
+  },
+  ecommerce: {
+    auth_type: 'bearer',
+    products_path: '',
+    catalog_path: '',
+    orders_path: '',
+    order_status_path: '',
+    tracking_path: '',
+    customers_path: '',
+    stock_path: '',
+    query_param: 'q',
+    phone_param: 'phone',
+    order_param: 'order'
+  },
+  crm: {
+    auth_type: 'bearer',
+    customers_path: '',
+    orders_path: '',
+    query_param: 'q',
+    phone_param: 'phone',
+    order_param: 'order'
+  }
+};
+
+const normalizeIntegrationConfig = (type, config = {}) => ({
+  ...(DEFAULT_INTEGRATION_CONFIG[type] || {}),
+  ...(config && typeof config === 'object' ? config : {})
+});
 
 const buildIntegrationHeaders = (integration) => {
   const headers = { Accept: 'application/json' };
+  const authType = String(integration.config?.auth_type || 'bearer').toLowerCase();
 
   if (integration.api_key) {
-    headers.Authorization = `Bearer ${integration.api_key}`;
-    headers['x-api-key'] = integration.api_key;
+    if (authType === 'x-api-key' || authType === 'api_key') {
+      headers['x-api-key'] = integration.api_key;
+    } else if (authType !== 'query') {
+      headers.Authorization = `Bearer ${integration.api_key}`;
+      headers['x-api-key'] = integration.api_key;
+    }
   }
 
   if (integration.api_secret) {
@@ -87,7 +133,9 @@ router.get('/types',
         type: 'facilzap',
         name: 'FacilZap',
         description: 'IntegraÃ§Ã£o com API do FacilZap para envio de mensagens',
-        fields: ['api_endpoint', 'api_key']
+        fields: ['api_endpoint', 'api_key', 'api_secret'],
+        config_fields: ['auth_type', 'products_path', 'catalog_path', 'orders_path', 'order_status_path', 'tracking_path', 'customers_path', 'stock_path', 'query_param', 'phone_param', 'order_param'],
+        default_config: DEFAULT_INTEGRATION_CONFIG.facilzap
       },
       {
         type: 'webhook',
@@ -105,7 +153,9 @@ router.get('/types',
         type: 'ecommerce',
         name: 'E-commerce',
         description: 'IntegraÃ§Ã£o com plataformas de e-commerce',
-        fields: ['api_endpoint', 'api_key']
+        fields: ['api_endpoint', 'api_key', 'api_secret'],
+        config_fields: ['auth_type', 'products_path', 'catalog_path', 'orders_path', 'order_status_path', 'tracking_path', 'customers_path', 'stock_path', 'query_param', 'phone_param', 'order_param'],
+        default_config: DEFAULT_INTEGRATION_CONFIG.ecommerce
       },
       {
         type: 'email',
@@ -194,7 +244,7 @@ router.post('/',
       api_endpoint: api_endpoint || '',
       api_key: api_key || '',
       api_secret: api_secret || '',
-      config: config || {},
+      config: normalizeIntegrationConfig(integration_type, config),
       enabled: enabled !== undefined ? enabled : true,
       status: 'active',
       error_count: 0,
@@ -266,6 +316,9 @@ router.put('/:id',
       ...req.body,
       updated_at: new Date().toISOString()
     };
+    if (Object.prototype.hasOwnProperty.call(req.body, 'config')) {
+      updateData.config = normalizeIntegrationConfig(currentIntegration.integration_type, req.body.config);
+    }
 
     const { data: updatedIntegration, error } = await executeWithRLS(req.user.id, (client) =>
       client

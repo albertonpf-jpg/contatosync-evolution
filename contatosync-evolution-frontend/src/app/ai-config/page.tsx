@@ -37,6 +37,7 @@ interface Integration {
   api_endpoint: string;
   api_key?: string;
   api_secret?: string;
+  config?: IntegrationConfig;
   enabled: boolean;
   status?: string;
   last_sync?: string;
@@ -48,6 +49,23 @@ interface IntegrationType {
   name: string;
   description: string;
   fields: string[];
+  config_fields?: string[];
+  default_config?: IntegrationConfig;
+}
+
+interface IntegrationConfig {
+  auth_type?: string;
+  products_path?: string;
+  catalog_path?: string;
+  orders_path?: string;
+  order_status_path?: string;
+  tracking_path?: string;
+  customers_path?: string;
+  stock_path?: string;
+  query_param?: string;
+  phone_param?: string;
+  order_param?: string;
+  token_param?: string;
 }
 
 const defaultIntegrationForm = {
@@ -56,6 +74,19 @@ const defaultIntegrationForm = {
   api_endpoint: '',
   api_key: '',
   api_secret: '',
+  config: {
+    auth_type: 'bearer',
+    products_path: '/produtos',
+    catalog_path: '/catalogos',
+    orders_path: '/pedidos',
+    order_status_path: '/pedidos/{pedido}',
+    tracking_path: '/pedidos/{pedido}/codigo-rastreio',
+    customers_path: '/clientes',
+    stock_path: '/produtos',
+    query_param: 'q',
+    phone_param: 'telefone',
+    order_param: 'pedido'
+  } as IntegrationConfig,
   enabled: true
 };
 
@@ -126,6 +157,7 @@ export default function AIConfigPage() {
   );
   const requiresToken = selectedIntegrationType?.fields.includes('api_key') ?? true;
   const requiresSecret = selectedIntegrationType?.fields.includes('api_secret') ?? false;
+  const supportsEndpointConfig = (selectedIntegrationType?.config_fields || []).length > 0;
 
   useEffect(() => {
     void loadPage();
@@ -197,6 +229,7 @@ export default function AIConfigPage() {
         api_endpoint: integrationForm.api_endpoint.trim(),
         api_key: integrationForm.api_key.trim(),
         api_secret: integrationForm.api_secret.trim(),
+        config: integrationForm.config,
         enabled: integrationForm.enabled
       });
       setIntegrationForm(defaultIntegrationForm);
@@ -236,6 +269,25 @@ export default function AIConfigPage() {
     } catch (err: any) {
       setError(err.response?.data?.error || err.message || 'Erro ao remover integracao');
     }
+  };
+
+  const changeIntegrationType = (type: string) => {
+    const selectedType = integrationTypes.find(item => item.type === type);
+    setIntegrationForm({
+      ...integrationForm,
+      integration_type: type,
+      config: selectedType?.default_config || {}
+    });
+  };
+
+  const updateIntegrationConfig = <K extends keyof IntegrationConfig>(field: K, value: IntegrationConfig[K]) => {
+    setIntegrationForm(current => ({
+      ...current,
+      config: {
+        ...(current.config || {}),
+        [field]: value
+      }
+    }));
   };
 
   const uploadKnowledgeFiles = async (files: FileList | null) => {
@@ -471,7 +523,7 @@ export default function AIConfigPage() {
                   A IA consulta APIs de integracoes ativas antes do link do catalogo.
                 </div>
                 <div className="space-y-3">
-                  <select value={integrationForm.integration_type} onChange={event => setIntegrationForm({ ...integrationForm, integration_type: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2">
+                  <select value={integrationForm.integration_type} onChange={event => changeIntegrationType(event.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2">
                     {integrationTypes.map(type => <option key={type.type} value={type.type}>{type.name}</option>)}
                   </select>
                   <FieldHelp>Escolha o tipo conforme o sistema que sera conectado. FacilZap, CRM, e-commerce e email normalmente pedem token. Webhook e usado quando outro sistema recebe eventos do ContatoSync.</FieldHelp>
@@ -493,6 +545,31 @@ export default function AIConfigPage() {
                     <div>
                       <input type="password" placeholder="API secret" value={integrationForm.api_secret} onChange={event => setIntegrationForm({ ...integrationForm, api_secret: event.target.value })} className="w-full rounded-lg border border-gray-300 px-3 py-2" />
                       <FieldHelp>Preencha somente se a plataforma fornecer uma segunda chave chamada secret, client secret ou assinatura. Ela costuma ficar na mesma tela onde o token/API key foi criado.</FieldHelp>
+                    </div>
+                  )}
+                  {supportsEndpointConfig && (
+                    <div className="space-y-3 rounded-lg border border-orange-200 bg-white p-3">
+                      <div>
+                        <select value={integrationForm.config?.auth_type || 'bearer'} onChange={event => updateIntegrationConfig('auth_type', event.target.value)} className="w-full rounded-lg border border-gray-300 px-3 py-2">
+                          <option value="bearer">Bearer token</option>
+                          <option value="x-api-key">x-api-key</option>
+                          <option value="query">Token na URL</option>
+                        </select>
+                        <FieldHelp>Como a API espera receber o token. FacilZap normalmente usa token de API; se a documentacao pedir outro formato, ajuste aqui.</FieldHelp>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <input placeholder="/produtos" value={integrationForm.config?.products_path || ''} onChange={event => updateIntegrationConfig('products_path', event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
+                        <input placeholder="/catalogos" value={integrationForm.config?.catalog_path || ''} onChange={event => updateIntegrationConfig('catalog_path', event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
+                        <input placeholder="/pedidos" value={integrationForm.config?.orders_path || ''} onChange={event => updateIntegrationConfig('orders_path', event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
+                        <input placeholder="/pedidos/{pedido}" value={integrationForm.config?.order_status_path || ''} onChange={event => updateIntegrationConfig('order_status_path', event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
+                        <input placeholder="/pedidos/{pedido}/codigo-rastreio" value={integrationForm.config?.tracking_path || ''} onChange={event => updateIntegrationConfig('tracking_path', event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
+                        <input placeholder="/clientes" value={integrationForm.config?.customers_path || ''} onChange={event => updateIntegrationConfig('customers_path', event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
+                        <input placeholder="/produtos" value={integrationForm.config?.stock_path || ''} onChange={event => updateIntegrationConfig('stock_path', event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
+                        <input placeholder="telefone" value={integrationForm.config?.phone_param || ''} onChange={event => updateIntegrationConfig('phone_param', event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
+                        <input placeholder="pedido" value={integrationForm.config?.order_param || ''} onChange={event => updateIntegrationConfig('order_param', event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
+                        <input placeholder="q" value={integrationForm.config?.query_param || ''} onChange={event => updateIntegrationConfig('query_param', event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
+                      </div>
+                      <FieldHelp>Use caminhos relativos à URL base. Em endpoints de pedido/rastreio, use {'{pedido}'} onde o numero do pedido deve entrar. Para APIs externas, deixe vazio o que a plataforma nao oferecer.</FieldHelp>
                     </div>
                   )}
                   <button type="button" onClick={() => void createIntegration()} disabled={saving} className="inline-flex items-center rounded-lg bg-orange-600 px-4 py-2 text-sm text-white hover:bg-orange-700 disabled:opacity-50">

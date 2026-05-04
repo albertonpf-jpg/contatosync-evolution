@@ -347,6 +347,20 @@ function buildConfiguredProductSources(config = {}) {
   ]);
 }
 
+function hasStrongProductIntent(message) {
+  const text = normalizeSearchText(message);
+  if (!text) return false;
+  const wantsMedia = /\b(foto|fotos|imagem|imagens|mostra|mostrar|mande|manda|envie|envia|ver)\b/i.test(text);
+  const wantsProduct = /\b(quero|queria|procuro|procurando|busco|preciso|gostaria|tem|vende)\b/i.test(text);
+  const productNoun = /\b(produto|produtos|catalogo|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|tshirt|cropped)\b/i.test(text);
+  const productAttribute = /\b(preco|valor|estoque|tamanho|tamanhos|cor|cores|variacao|variacoes|tem|vende)\b/i.test(text);
+  const tokenCount = text.split(' ').filter(Boolean).length;
+  return (wantsMedia && productNoun)
+    || (productNoun && (productAttribute || wantsProduct))
+    || (productNoun && tokenCount <= 3)
+    || extractRequestedSizes(message).length > 0;
+}
+
 function shouldUseConfiguredProductSources(message) {
   if (extractUrls(message).length > 0) return true;
   const text = String(message || '').toLowerCase();
@@ -354,6 +368,7 @@ function shouldUseConfiguredProductSources(message) {
   if (/(^|\s)(como comprar|forma de comprar|formas de comprar|passo a passo|pedido minimo|valor minimo|compra minima|aviso|avisos|regras|endereco|localizacao|onde fica|horario|funcionamento|telefone|contato|pagamento|entrega|frete|retirada|troca|devolucao)(\s|$)/i.test(normalized)) {
     return false;
   }
+  if (!hasStrongProductIntent(message)) return false;
   return [
     'produto',
     'produtos',
@@ -414,6 +429,7 @@ function shouldUseConfiguredSiteSources(message) {
   if (extractUrls(message).length > 0) return true;
   const text = normalizeSearchText(message);
   if (!text) return false;
+  if (!hasStrongProductIntent(message)) return true;
   return [
     'endereco',
     'localizacao',

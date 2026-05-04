@@ -51,9 +51,69 @@ const normalizeIntegrationConfig = (type, config = {}) => ({
   ...(config && typeof config === 'object' ? config : {})
 });
 
+const joinIntegrationUrl = (baseUrl, endpointPath) => {
+  const base = String(baseUrl || '').replace(/\/+$/, '');
+  const pathValue = String(endpointPath || '').trim();
+  if (!base || !pathValue) return '';
+  if (/^https?:\/\//i.test(pathValue)) return pathValue;
+  return `${base}/${pathValue.replace(/^\/+/, '')}`;
+};
+
+const addQueryParam = (url, key, value) => {
+  if (!url || !key || value === undefined || value === null || value === '') return url;
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set(key, value);
+    return parsed.toString();
+  } catch (error) {
+    return url;
+  }
+};
+
+const sanitizeUrlForLog = (url) => {
+  try {
+    const parsed = new URL(url);
+    for (const key of parsed.searchParams.keys()) {
+      if (/token|api[_-]?key|secret|senha|password/i.test(key)) parsed.searchParams.set(key, '[redacted]');
+    }
+    return parsed.toString();
+  } catch (error) {
+    return String(url || '').replace(/(token|api[_-]?key|secret|senha|password)=([^&\s]+)/ig, '$1=[redacted]');
+  }
+};
+
+const buildIntegrationTestTargets = (integration) => {
+  const config = normalizeIntegrationConfig(integration.integration_type, integration.config);
+  const authType = String(config.auth_type || 'bearer').toLowerCase();
+  const endpointKeys = integration.integration_type === 'webhook'
+    ? []
+    : ['catalog_path', 'products_path', 'stock_path', 'customers_path', 'orders_path'];
+  const targets = [];
+
+  for (const key of endpointKeys) {
+    let url = joinIntegrationUrl(integration.api_endpoint, config[key]);
+    if (!url) continue;
+    if (authType === 'query' && integration.api_key) {
+      url = addQueryParam(url, config.token_param || 'token', integration.api_key);
+    }
+    targets.push({ url, label: key });
+  }
+
+  targets.push({ url: integration.api_endpoint, label: 'api_endpoint' });
+  const seen = new Set();
+  return targets.filter(target => {
+    if (!/^https?:\/\//i.test(String(target.url || ''))) return false;
+    const key = target.url.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 const buildIntegrationHeaders = (integration) => {
   const headers = { Accept: 'application/json' };
-  const authType = String(integration.config?.auth_type || 'bearer').toLowerCase();
+  const config = normalizeIntegrationConfig(integration.integration_type, integration.config);
+  const authType = String(config.auth_type || 'bearer').toLowerCase();
 
   if (integration.api_key) {
     if (authType === 'x-api-key' || authType === 'api_key') {
@@ -439,26 +499,64 @@ router.post('/:id/test',
 
     try {
       const startedAt = Date.now();
-      const apiResponse = await axios.request({
-        method: integration.integration_type === 'webhook' ? 'POST' : 'GET',
-        url: integration.api_endpoint,
-        headers: buildIntegrationHeaders(integration),
-        data: integration.integration_type === 'webhook' ? {
-          event: 'contatosync.integration_test',
-          timestamp: new Date().toISOString()
-        } : undefined,
-        timeout: 10000,
-        validateStatus: (status) => status >= 200 && status < 500
-      });
+      const targets = buildIntegrationTestTargets(integration);
+      let apiResponse = null;
+      let testedTarget = null;
+      const attempts = [];
+      let lastRequestError = null;
+
+      for (const target of targets) {
+        try {
+          const response = await axios.request({
+            method: integration.integration_type === 'webhook' ? 'POST' : 'GET',
+            url: target.url,
+            headers: buildIntegrationHeaders(integration),
+            data: integration.integration_type === 'webhook' ? {
+              event: 'contatosync.integration_test',
+              timestamp: new Date().toISOString()
+            } : undefined,
+            timeout: 10000,
+            validateStatus: (status) => status >= 200 && status < 500
+          });
+          attempts.push({
+            endpoint: sanitizeUrlForLog(target.url),
+            label: target.label,
+            status_code: response.status
+          });
+          if (response.status >= 200 && response.status < 300) {
+            apiResponse = response;
+            testedTarget = target;
+            break;
+          }
+          if (!apiResponse || response.status !== 405) {
+            apiResponse = response;
+            testedTarget = target;
+          }
+        } catch (requestError) {
+          lastRequestError = requestError;
+          attempts.push({
+            endpoint: sanitizeUrlForLog(target.url),
+            label: target.label,
+            error: requestError.message
+          });
+        }
+      }
+
+      if (!apiResponse) {
+        throw lastRequestError || new Error('Nenhum endpoint de teste foi gerado');
+      }
 
       const ok = apiResponse.status >= 200 && apiResponse.status < 300;
       const testResult = {
         success: ok,
-        message: ok ? 'Conexao com a integracao estabelecida com sucesso' : `API respondeu com status ${apiResponse.status}`,
+        message: ok
+          ? `Conexao com a integracao estabelecida com sucesso em ${testedTarget.label}`
+          : `Nenhum endpoint configurado respondeu com sucesso. Ultimo status: ${apiResponse.status}`,
         data: {
-          endpoint: integration.api_endpoint,
+          endpoint: sanitizeUrlForLog(testedTarget.url),
           status_code: apiResponse.status,
-          response_time_ms: Date.now() - startedAt
+          response_time_ms: Date.now() - startedAt,
+          attempts
         }
       };
 

@@ -1700,16 +1700,40 @@ function extractGenericJsonProducts(data, sourceUrl, source = {}) {
     );
 
     if (hasProductSignal) {
-      const price = firstValue(
-        value.preco,
-        value.price,
-        value.valor,
-        value.preco_promocional,
-        value.sale_price,
-        value.precos_produto?.promocional,
-        value.precos_produto?.padrao,
-        value.precos_produto?.preco_a_partir?.preco
-      );
+      const price = (function extractPrice(v) {
+        function vp(x) {
+          if (x === null || x === undefined || x === '') return null;
+          const n = Number(String(x).replace(',', '.').replace(/[^\d.-]/g, ''));
+          return Number.isFinite(n) && n > 0 ? n : null;
+        }
+        const directCandidates = [
+          v.precos_produto?.promocional,
+          v.precos_produto?.preco_a_partir?.preco,
+          v.precos_produto?.preco_minimo,
+          v.precos_produto?.padrao,
+          v.preco_promocional,
+          v.preco_venda,
+          v.valor_venda,
+          v.sale_price,
+          v.price,
+          v.preco,
+          v.valor
+        ];
+        for (const c of directCandidates) {
+          const n = vp(c);
+          if (n !== null) return n;
+        }
+        const variacoes = v.variacoes || v.variations;
+        if (variacoes && typeof variacoes === 'object') {
+          const entries = Array.isArray(variacoes) ? variacoes : Object.values(variacoes);
+          for (const entry of entries) {
+            if (!entry || typeof entry !== 'object') continue;
+            const n = vp(entry.preco) ?? vp(entry.valor) ?? vp(entry.price);
+            if (n !== null) return n;
+          }
+        }
+        return null;
+      })(value);
       const isFacilZapSource = /facilzap/i.test(String(sourceUrl || ''));
       const rawUrl = firstValue(value.url, value.link, value.permalink, value.product_url, value.link_produto, value.url_produto, sourceUrl);
       const url = isFacilZapSource
@@ -1740,7 +1764,7 @@ function extractGenericJsonProducts(data, sourceUrl, source = {}) {
         url,
         title: stripHtml(title),
         description: stripHtml(firstValue(value.descricao, value.description, value.details, value.resumo, '')),
-        price: price ? (/^R\$/i.test(String(price)) ? String(price) : formatCurrencyBRL(price)) : '',
+        price: price !== null ? formatCurrencyBRL(price) : '',
         stock: getNestedStockValue(firstValue(value.estoque, value.stock, value.total_estoque, value.quantity, null)),
         category: firstValue(value.categoria, value.category, value.categoria_nome, value.category_name, ''),
         categoryName: firstValue(value.categoria_nome, value.category_name, value.categoria, value.category, ''),

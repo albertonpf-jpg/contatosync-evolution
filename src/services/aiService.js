@@ -157,7 +157,11 @@ function removeImageUrlsFromResponse(text) {
 
 function normalizeProductMediaResponse(text, productCards = []) {
   let response = removeImageUrlsFromResponse(text);
-  if (!Array.isArray(productCards) || productCards.length === 0) return response;
+  if (!Array.isArray(productCards) || productCards.length === 0) {
+    return response
+      .replace(/\b(aqui est[aã]o|seguem|enviei|vou enviar|mandei)\b.{0,80}\b(fotos|imagens)\b[^\n.]*/gi, 'Encontrei produtos no catalogo, mas nao encontrei fotos seguras para enviar automaticamente')
+      .trim();
+  }
 
   const asksPermission = /posso\s+(te\s+)?(mandar|enviar|mostrar)|quer\s+que\s+eu\s+(mande|envie|mostre)|quer\s+ver\s+(as\s+)?fotos|deseja\s+(que\s+eu\s+)?(ver|receber|as\s+fotos)/i.test(response);
   if (asksPermission || !response) {
@@ -615,96 +619,40 @@ function buildConfiguredProductSources(config = {}) {
 function hasStrongProductIntent(message) {
   const text = normalizeSearchText(message);
   if (!text) return false;
+  const nonCatalogInfo = /\b(como comprar|forma de comprar|formas de comprar|passo a passo|pedido minimo|valor minimo|compra minima|aviso|avisos|regras|endereco|localizacao|onde fica|horario|funcionamento|telefone|contato|pagamento|pagar|pix|cartao|boleto|entrega|frete|retirada|troca|devolucao|status|rastreio|pedido)\b/i.test(text);
   const wantsMedia = /\b(foto|fotos|imagem|imagens|mostra|mostrar|mande|manda|envie|envia|ver)\b/i.test(text);
-  const wantsProduct = /\b(quero|queria|procuro|procurando|busco|preciso|gostaria|tem|vende|opcao|opcoes|modelos|mais|outra|outras|outro|outros)\b/i.test(text);
-  const productNoun = /\b(produto|produtos|catalogo|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|tshirt|cropped)\b/i.test(text);
+  const wantsProduct = /\b(quero|queria|procuro|procurando|busco|preciso|gostaria|tem|vende|vendem|trabalha|trabalham|possui|temos|custa|preco|valor|opcao|opcoes|modelos|mais|outra|outras|outro|outros)\b/i.test(text);
+  const productNoun = /\b(produto|produtos|catalogo|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|tshirt|cropped|moletom|moletons|moleton|moletons)\b/i.test(text);
   const productAttribute = /\b(preco|valor|estoque|tamanho|tamanhos|cor|cores|variacao|variacoes|tem|vende|opcao|opcoes|modelos)\b/i.test(text);
+  const specificTokens = getSpecificProductTokens(getSearchTokens(text));
+  const hasSearchableCatalogTerm = productNoun || specificTokens.length > 0;
+  if (nonCatalogInfo && !productNoun) return false;
   const tokenCount = text.split(' ').filter(Boolean).length;
-  return (wantsMedia && productNoun)
+  return (wantsMedia && hasSearchableCatalogTerm)
+    || (wantsProduct && hasSearchableCatalogTerm)
     || (productNoun && (productAttribute || wantsProduct))
     || (productNoun && tokenCount <= 3)
     || extractRequestedSizes(message).length > 0;
 }
-
 function isMoreProductOptionsRequest(message) {
   const text = normalizeSearchText(message);
   return /\b(mais|outra|outras|outro|outros|novas|novos|diferentes|ver mais|mostrar mais|mande mais|manda mais|envie mais)\b/.test(text)
-    && /\b(opcao|opcoes|modelo|modelos|produto|produtos|foto|fotos|imagem|imagens|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|tshirt|cropped)\b/.test(text);
+    && /\b(opcao|opcoes|modelo|modelos|produto|produtos|foto|fotos|imagem|imagens|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|tshirt|cropped|moletom|moletons|moleton|moletons)\b/.test(text);
+}
+
+function isCatalogFollowUpRequest(message) {
+  const text = normalizeSearchText(message);
+  return /\b(foto|fotos|imagem|imagens|manda|mande|envia|envie|ver|mostra|mostre|mais|outra|outras|outro|outros|opcao|opcoes|modelo|modelos)\b/i.test(text);
 }
 
 function shouldUseConfiguredProductSources(message) {
   if (extractUrls(message).length > 0) return true;
-  const text = String(message || '').toLowerCase();
   const normalized = normalizeSearchText(message);
-  if (/(^|\s)(como comprar|forma de comprar|formas de comprar|passo a passo|pedido minimo|valor minimo|compra minima|aviso|avisos|regras|endereco|localizacao|onde fica|horario|funcionamento|telefone|contato|pagamento|entrega|frete|retirada|troca|devolucao)(\s|$)/i.test(normalized)) {
+  if (/(^|\s)(como comprar|forma de comprar|formas de comprar|passo a passo|pedido minimo|valor minimo|compra minima|aviso|avisos|regras|endereco|localizacao|onde fica|horario|funcionamento|telefone|contato|pagamento|pagar|pix|cartao|boleto|entrega|frete|retirada|troca|devolucao|status|rastreio)(\s|$)/i.test(normalized)) {
     return false;
   }
-  if (!hasStrongProductIntent(message)) return false;
-  return [
-    'produto',
-    'produtos',
-    'catalogo',
-    'catálogo',
-    'preco',
-    'preço',
-    'valor',
-    'estoque',
-    'tem ',
-    'vende',
-    'comprar',
-    'foto',
-    'imagem',
-    'opcao',
-    'opcoes',
-    'modelo',
-    'modelos',
-    'mais ',
-    'outra',
-    'outras',
-    'outro',
-    'outros',
-    'tamanho',
-    'variacao',
-    'variação',
-    'cor ',
-    'roupa',
-    'roupas',
-    'crianca',
-    'criança',
-    'criancas',
-    'crianças',
-    'ano',
-    'anos',
-    'idade',
-    'vestido',
-    'vestidos',
-    'conjunto',
-    'conjuntos',
-    'blusa',
-    'blusas',
-    'body',
-    'bodys',
-    'calca',
-    'calÃ§a',
-    'calcas',
-    'calÃ§as',
-    'cropped',
-    'croppeds',
-    'croped',
-    'macacao',
-    'macacÃ£o',
-    'jardineira',
-    'saia',
-    'saias',
-    'short',
-    'shorts',
-    'camiseta',
-    'camisetas',
-    'tshirt',
-    't-shirt'
-  ].some(term => text.includes(term));
+  return hasStrongProductIntent(message);
 }
-
 function shouldUseConfiguredSiteSources(message) {
   if (extractUrls(message).length > 0) return true;
   const text = normalizeSearchText(message);
@@ -1300,6 +1248,10 @@ function getTokenVariants(token) {
   if (token === 'tshirt') variants.push('tshirts', 't shirt');
   if (token === 'cropped') variants.push('croppeds', 'croped');
   if (token === 'croped') variants.push('cropeds', 'cropped');
+  if (token === 'moletom') variants.push('moletons', 'moleton', 'moletons');
+  if (token === 'moletons') variants.push('moletom', 'moleton', 'moletons');
+  if (token === 'moleton') variants.push('moletons', 'moletom', 'moletons');
+  if (token === 'moletons') variants.push('moleton', 'moletom', 'moletons');
   return [...new Set(variants)];
 }
 
@@ -2553,7 +2505,7 @@ function extractPreviouslyMentionedProductTitles(conversationHistory = []) {
       .trim())
     .filter(line => line.length >= 4 && line.length <= 90)
     .filter(line => !ignored.test(normalizeSearchText(line)))
-    .filter(line => /\b(saia|short|vestido|conjunto|blusa|body|calca|macacao|jardineira|camiseta|cropped|tshirt)\b/i.test(normalizeSearchText(line)))
+    .filter(line => /\b(saia|short|vestido|conjunto|blusa|body|calca|macacao|jardineira|camiseta|cropped|tshirt|moletom|moleton)\b/i.test(normalizeSearchText(line)))
     .filter(line => {
       const key = normalizeSearchText(line);
       if (!key || seen.has(key)) return false;
@@ -2565,8 +2517,7 @@ function extractPreviouslyMentionedProductTitles(conversationHistory = []) {
 function buildProductSearchText(message, conversationHistory = []) {
   const current = String(message || '').trim();
   const normalizedCurrent = normalizeSearchText(current);
-  const currentIsFollowUp = /\b(foto|fotos|imagem|imagens|manda|mande|envia|envie|ver|mostra|mostre|mais|outra|outras|outro|outros|opcao|opcoes|modelo|modelos)\b/i.test(normalizedCurrent)
-    || isMoreProductOptionsRequest(current);
+  const currentIsFollowUp = isCatalogFollowUpRequest(normalizedCurrent) || isMoreProductOptionsRequest(current);
   const lastProductRequest = getRecentCustomerProductRequest(conversationHistory);
   const currentForIntent = currentIsFollowUp && lastProductRequest ? `${lastProductRequest}\n${current}` : current;
   const currentShouldSearch = shouldUseConfiguredProductSources(currentForIntent);
@@ -2580,7 +2531,7 @@ async function buildProductContextForConfig(message, config, conversationHistory
   const configuredSources = buildConfiguredProductSources(config);
   if (config?.product_search_enabled === false && configuredSources.length === 0) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
   const shouldSearch = shouldUseConfiguredProductSources(searchText);
-  const excludeTitles = isMoreProductOptionsRequest(message)
+  const excludeTitles = isCatalogFollowUpRequest(message)
     ? extractPreviouslyMentionedProductTitles(conversationHistory)
     : [];
   const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : [], { excludeTitles });

@@ -281,11 +281,12 @@ function buildCarouselCardDescription(product) {
   const colorText = colors.length
     ? colors.join(', ')
     : '';
+  const stock = getNestedStockValue(product?.stock);
   const details = [
     product?.price ? `💰 Preço: ${product.price}` : '',
     sizes ? `📏 Tamanho: ${sizes}` : '',
     colorText ? `🎨 Cor: ${colorText}` : '',
-    product?.stock !== null && product?.stock !== undefined && product.stock !== '' ? `📦 Estoque: ${product.stock}` : '',
+    stock !== null && stock !== undefined && stock !== '' ? `📦 Estoque: ${stock}` : '',
     product?.description ? `📝 Detalhes: ${String(product.description).replace(/\s+/g, ' ').trim()}` : ''
   ].filter(Boolean);
   return truncateText(details.join('\n'), 260);
@@ -681,7 +682,7 @@ function buildOperationalIntegrationSources(config = {}, message = '', contact =
     };
     const params = { phone, telefone: phone, query, q: query, pedido, order: pedido };
     const endpointKeys = shouldUseOperationalIntegrationSources(message)
-      ? ['order_status_path', 'tracking_path', 'orders_path', 'customers_path', 'stock_path']
+      ? ['order_status_path', 'orders_path', 'customers_path', 'stock_path']
       : [];
     for (const key of endpointKeys) {
       if ((key === 'order_status_path' || key === 'tracking_path') && !pedido && String(cfg[key] || '').includes('{pedido}')) continue;
@@ -929,11 +930,14 @@ function getOperationalJsonSnippets(value, message, source = {}) {
     return [`A API retornou JSON para consulta de pedidos, mas o numero ${pedido} nao apareceu nos campos retornados por este endpoint.`];
   }
 
+  const criticalStatusLines = lines.filter(line => /(^(id|codigo|total):|cliente: nome|cliente: whatsapp|cliente: whatsapp_e164|forma_entrega: nome|status_pedido|status_pago|status_em_separacao|status_separado|status_despachado|status_entregue|rastreio|codigo_rastreio|pagamentos: status)/i.test(line));
   const statusLines = lines.filter(line => /(pedido|codigo|cliente|whatsapp|telefone|status|pago|separacao|separado|despachado|entregue|rastreio|frete|entrega|total|pagamento|observacoes)/i.test(line));
   const selected = matchingLines.length > 0
-    ? [...matchingLines, ...statusLines]
-    : statusLines.length > 0
-      ? statusLines
+    ? [...matchingLines, ...criticalStatusLines, ...statusLines]
+    : criticalStatusLines.length > 0
+      ? [...criticalStatusLines, ...statusLines]
+      : statusLines.length > 0
+        ? statusLines
       : lines;
 
   return [...new Set(selected)]
@@ -1059,7 +1063,21 @@ function getSpecificProductTokens(tokens) {
     'femininos',
     'modelo',
     'peca',
-    'pecas'
+    'pecas',
+    'tem',
+    'vende',
+    'vender',
+    'vendem',
+    'vendendo',
+    'comprar',
+    'compra',
+    'compras',
+    'quero',
+    'queria',
+    'procuro',
+    'preciso',
+    'opcao',
+    'opcoes'
   ]);
   return tokens.filter(token => !generic.has(token));
 }
@@ -1331,6 +1349,15 @@ function firstValue(...values) {
   return values.find(value => value !== undefined && value !== null && String(value).trim() !== '');
 }
 
+function getNestedStockValue(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (typeof value === 'number' || typeof value === 'string') return value;
+  if (typeof value === 'object') {
+    return firstValue(value.estoque, value.stock, value.quantity, value.quantidade, value.disponivel, null);
+  }
+  return null;
+}
+
 function collectImageValues(value, pageUrl) {
   const images = [];
   const isFacilZapSource = /facilzap/i.test(String(pageUrl || ''));
@@ -1387,7 +1414,16 @@ function extractGenericJsonProducts(data, sourceUrl) {
     );
 
     if (hasProductSignal) {
-      const price = firstValue(value.preco, value.price, value.valor, value.preco_promocional, value.sale_price);
+      const price = firstValue(
+        value.preco,
+        value.price,
+        value.valor,
+        value.preco_promocional,
+        value.sale_price,
+        value.precos_produto?.promocional,
+        value.precos_produto?.padrao,
+        value.precos_produto?.preco_a_partir?.preco
+      );
       const url = resolvePageUrl(sourceUrl, firstValue(value.url, value.link, value.permalink, value.product_url, sourceUrl));
       const variations = [
         value.variacoes,
@@ -1409,7 +1445,7 @@ function extractGenericJsonProducts(data, sourceUrl) {
         title: stripHtml(title),
         description: stripHtml(firstValue(value.descricao, value.description, value.details, value.resumo, '')),
         price: price ? (/^R\$/i.test(String(price)) ? String(price) : formatCurrencyBRL(price)) : '',
-        stock: firstValue(value.estoque, value.stock, value.total_estoque, value.quantity, null),
+        stock: getNestedStockValue(firstValue(value.estoque, value.stock, value.total_estoque, value.quantity, null)),
         category: firstValue(value.categoria, value.category, value.categoria_nome, value.category_name, ''),
         categoryName: firstValue(value.categoria_nome, value.category_name, value.categoria, value.category, ''),
         variations,
@@ -1506,7 +1542,11 @@ function getRelevantProducts(products, message) {
     if (messageTokens.length >= 3 && product._titleMatches === 0 && product._specificMatches < 2) return false;
     return true;
   });
-  if (matched.length > 0) return matched.slice(0, 6);
+  if (matched.length > 0) {
+    const titleOrCategoryMatched = matched.filter(product => product._titleMatches > 0 || countTokenMatches(normalizeSearchText([product.category, product.categoryName, product.categoria_nome].join(' ')), specificTokens) > 0);
+    if (specificTokens.length > 0 && titleOrCategoryMatched.length > 0) return titleOrCategoryMatched.slice(0, 6);
+    return matched.slice(0, 6);
+  }
   return [];
 }
 

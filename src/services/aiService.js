@@ -153,6 +153,34 @@ function buildProductCardsResponse(productCards = []) {
   ].filter(Boolean).join('\n');
 }
 
+function truncateText(value, maxLength) {
+  const text = String(value || '').replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (text.length <= maxLength) return text;
+  return text.slice(0, Math.max(0, maxLength - 1)).trimEnd() + '…';
+}
+
+function buildCarouselCardTitle(product, suffix = '') {
+  const title = String(product?.title || 'Produto').trim();
+  return truncateText(`🛍️ ${title}${suffix}`, 60);
+}
+
+function buildCarouselCardDescription(product) {
+  const sizes = Array.isArray(product?._sizes) && product._sizes.length
+    ? product._sizes.slice(0, 6).join(', ')
+    : '';
+  const variations = Array.isArray(product?.variations) && product.variations.length
+    ? product.variations.slice(0, 5).join(', ')
+    : '';
+  const details = [
+    product?.price ? `💰 Preço: ${product.price}` : '',
+    sizes ? `📏 Tamanho: ${sizes}` : '',
+    variations ? `🎨 Variações: ${variations}` : '',
+    product?.stock !== null && product?.stock !== undefined && product.stock !== '' ? `📦 Estoque: ${product.stock}` : '',
+    product?.description ? `📝 Detalhes: ${String(product.description).replace(/\s+/g, ' ').trim()}` : ''
+  ].filter(Boolean);
+  return truncateText(details.join('\n'), 260);
+}
+
 function buildAIUnavailableResponse(config) {
   return 'No momento nao consegui acessar o modelo de IA configurado. Sua mensagem foi recebida e um atendente pode continuar se necessario.';
 }
@@ -1315,13 +1343,8 @@ async function fetchProductContext(message, sourceUrls = []) {
       const image = images[index];
       const suffix = images.length > 1 ? ` - foto ${index + 1}` : '';
       productCards.push({
-        title: String((product.title || 'Produto') + suffix).slice(0, 60),
-        description: [
-          product.price ? `Preco: ${product.price}` : '',
-          product._sizes?.length ? `Tamanhos: ${product._sizes.slice(0, 6).join(', ')}` : '',
-          product.variations?.length ? `Variacoes: ${product.variations.slice(0, 4).join(', ')}` : '',
-          product.description || ''
-        ].filter(Boolean).join('\n').slice(0, 180),
+        title: buildCarouselCardTitle(product, suffix),
+        description: buildCarouselCardDescription(product),
         url: product.url,
         imageUrl: image
       });

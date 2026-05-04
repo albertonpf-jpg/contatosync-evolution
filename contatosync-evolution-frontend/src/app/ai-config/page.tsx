@@ -276,6 +276,7 @@ export default function AIConfigPage() {
     setIntegrationForm({
       ...integrationForm,
       integration_type: type,
+      api_endpoint: type === 'facilzap' && !integrationForm.api_endpoint.trim() ? 'https://api.facilzap.app.br' : integrationForm.api_endpoint,
       config: selectedType?.default_config || {}
     });
   };

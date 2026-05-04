@@ -209,6 +209,19 @@ function buildProductCardsResponse(productCards = []) {
   ].filter(Boolean).join('\n');
 }
 
+function buildProductContextSummaryResponse(productContext, searchText) {
+  const lines = String(productContext?.contextText || '')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => /^(Titulo|Preco|Estoque informado|Tamanhos encontrados|Variacoes|Descricao):/i.test(line))
+    .slice(0, 12);
+  if (lines.length === 0) return buildProductLookupEmptyResponse(searchText);
+  return [
+    'Encontrei essas informacoes no catalogo configurado:',
+    lines.join('\n')
+  ].join('\n');
+}
+
 function truncateText(value, maxLength) {
   const text = String(value || '').replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   if (text.length <= maxLength) return text;
@@ -363,7 +376,7 @@ function normalizeProductSources(values = []) {
   };
 
   values.forEach(addSource);
-  return sources.slice(0, 8);
+  return sources.slice(0, 30);
 }
 
 function buildIntegrationHeaders(integration = {}) {
@@ -376,7 +389,6 @@ function buildIntegrationHeaders(integration = {}) {
       // Query-string tokens are appended when URLs are built.
     } else {
       headers.Authorization = `Bearer ${integration.api_key}`;
-      headers['x-api-key'] = integration.api_key;
     }
   }
   if (integration.api_secret) headers['x-api-secret'] = integration.api_secret;
@@ -389,6 +401,20 @@ function joinIntegrationUrl(baseUrl, endpointPath) {
   if (!base || !pathValue) return '';
   if (/^https?:\/\//i.test(pathValue)) return pathValue;
   return `${base}/${pathValue.replace(/^\/+/, '')}`;
+}
+
+function getIntegrationApiBaseUrl(integration = {}) {
+  const rawBase = String(integration.api_endpoint || integration.url || '').trim();
+  if ((integration.integration_type || integration.type) !== 'facilzap') return rawBase;
+  try {
+    const parsed = new URL(rawBase);
+    if (/facilzap\.app\.br$/i.test(parsed.hostname) && parsed.hostname !== 'api.facilzap.app.br') {
+      return 'https://api.facilzap.app.br';
+    }
+  } catch (error) {
+    return rawBase;
+  }
+  return rawBase;
 }
 
 function interpolateIntegrationPath(pathValue, params = {}) {
@@ -444,7 +470,7 @@ function buildIntegrationEndpointSource(integration, endpointKey, params = {}) {
     ...(integration.config || {})
   };
   const pathValue = config[endpointKey];
-  const url = joinIntegrationUrl(integration.api_endpoint, interpolateIntegrationPath(pathValue, params));
+  const url = joinIntegrationUrl(getIntegrationApiBaseUrl(integration), interpolateIntegrationPath(pathValue, params));
   if (!url) return null;
   let finalUrl = url;
   const authType = String(config.auth_type || 'bearer').toLowerCase();
@@ -1312,7 +1338,7 @@ function collectImageValues(value, pageUrl) {
     if (!item) return;
     if (typeof item === 'string') {
       const resolved = isFacilZapSource ? getFacilZapImageUrl(item) : resolvePageUrl(pageUrl, item);
-      if (resolved && /\.(?:png|jpe?g|webp|gif)(?:[?#].*)?$/i.test(resolved)) images.push(resolved);
+      if (resolved && (isFacilZapSource || /\.(?:png|jpe?g|webp|gif)(?:[?#].*)?$/i.test(resolved))) images.push(resolved);
       return;
     }
     if (Array.isArray(item)) {
@@ -1710,7 +1736,7 @@ async function fetchProductContext(message, sourceUrls = []) {
 
   const products = [];
   const imageUrls = [];
-  console.log('[AI PRODUCT] Buscando catalogo/API | query: ' + normalizeSearchText(message).slice(0, 120) + ' | fontes: ' + sources.map(source => `${source.type}:${source.url}`).join(', '));
+  console.log('[AI PRODUCT] Buscando catalogo/API | query: ' + normalizeSearchText(message).slice(0, 120) + ' | fontes: ' + sources.map(source => `${source.type}:${sanitizeUrlForLog(source.url)}`).join(', '));
   for (const source of sources) {
     const url = source.url;
     try {
@@ -1721,7 +1747,10 @@ async function fetchProductContext(message, sourceUrls = []) {
         },
         signal: AbortSignal.timeout(8000)
       });
-      if (!response.ok) continue;
+      if (!response.ok) {
+        console.warn(`[AI PRODUCT] Fonte retornou HTTP ${response.status} | ${sanitizeUrlForLog(url)}`);
+        continue;
+      }
       const contentType = String(response.headers.get('content-type') || '').toLowerCase();
       const bodyText = await response.text();
       if (contentType.includes('json')) {
@@ -1774,6 +1803,7 @@ async function fetchProductContext(message, sourceUrls = []) {
       }
       products.push({ url, title, description, images: candidateImages.slice(0, 5), sourceType: source.type, sourceName: source.name });
     } catch (error) {
+      console.warn(`[AI PRODUCT] Falha ao acessar fonte | ${sanitizeUrlForLog(url)} | ${error.message}`);
       products.push({ url, title: '', description: `Nao foi possivel acessar a pagina: ${error.message}`, images: [] });
     }
   }
@@ -1781,7 +1811,7 @@ async function fetchProductContext(message, sourceUrls = []) {
   const relevantProducts = getRelevantProducts(products, message);
   console.log('[AI PRODUCT] Resultado catalogo | produtos_coletados: ' + products.length + ' | produtos_relevantes: ' + relevantProducts.length);
 
-  if (relevantProducts.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
+  if (relevantProducts.length === 0) return { contextText: '', imageUrls: [], productCards: [], productsFound: false };
 
   const contextText = relevantProducts.map((product, index) => [
     `Produto/link ${index + 1}: ${product.url}`,
@@ -1814,6 +1844,7 @@ async function fetchProductContext(message, sourceUrls = []) {
     contextText: `Informacoes coletadas da loja virtual:\n${contextText}`,
     imageUrls: relevantProducts.flatMap(product => product.images || []).slice(0, 5),
     productCards: productCards.slice(0, 10),
+    productsFound: relevantProducts.length > 0,
     lookupAttempted: true
   };
 }
@@ -2175,6 +2206,17 @@ function buildProductContextText(productContext) {
   return `${productContext.contextText}\n\nEstas informacoes foram buscadas antes da resposta nas APIs de integracoes ativas e/ou no link de catalogo configurado. Use primeiro os dados coletados das integracoes e do catalogo. Use somente os produtos que batem com o pedido do cliente. Se o cliente pediu idade/tamanho, por exemplo crianca de 6 anos, tamanho 6 ou tam 6, responda e envie somente produtos com esse tamanho explicitamente encontrado. Se o cliente pediu um produto especifico, nao inclua produtos parecidos, personagens, outras estampas, outras cores ou outras categorias. Se nao houver correspondencia clara, diga que nao encontrou fotos seguras para enviar. Use nomes, precos, fotos, variacoes, tamanhos e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque, tamanho ou variacao que nao esteja no conteudo coletado.`;
 }
 
+function buildProductInputResult(extra, productContext) {
+  return {
+    ...extra,
+    productImages: productContext.imageUrls || [],
+    productCards: productContext.productCards || [],
+    productLookupAttempted: productContext.lookupAttempted === true,
+    productSearchText: productContext.searchText || '',
+    productsFound: productContext.productsFound === true || Boolean(productContext.contextText)
+  };
+}
+
 function buildSiteContextText(siteContext) {
   if (!siteContext?.contextText) return '';
   return `${siteContext.contextText}\n\nEstas informacoes foram buscadas antes da resposta no site, links adicionais, arquivos e/ou APIs configuradas. Use esses dados para responder perguntas sobre endereco, contato, como comprar, pagamento, entrega, retirada, troca, devolucao, horario, politicas e informacoes institucionais. Nao invente informacoes que nao estejam no conteudo coletado. Se a informacao solicitada nao apareceu no site/fontes, diga que nao encontrou essa informacao nas fontes configuradas e peca confirmacao.`;
@@ -2242,7 +2284,7 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
     });
   }
 
-  if (!media || (!media.path && !media.url)) return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
+  if (!media || (!media.path && !media.url)) return buildProductInputResult({ content }, productContext);
 
   const kind = getMediaKind(media);
   const mimeType = media.mimeType || media.mimetype || getMimeTypeFromPath(media.path || '', 'application/octet-stream');
@@ -2250,12 +2292,12 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
 
   if (kind === 'image' && media.path && fs.existsSync(media.path)) {
     content.push({ type: 'input_image', image_url: fileToDataUrl(media.path, mimeType), detail: 'auto' });
-    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
+    return buildProductInputResult({ content }, productContext);
   }
 
   if (kind === 'image' && media.url && /^https?:\/\//i.test(media.url)) {
     content.push({ type: 'input_image', image_url: media.url, detail: 'auto' });
-    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
+    return buildProductInputResult({ content }, productContext);
   }
 
   if ((kind === 'audio' || kind === 'video') && media.path && fs.existsSync(media.path)) {
@@ -2278,7 +2320,7 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
         if (framePath) fs.promises.unlink(framePath).catch(() => {});
       }
     }
-    return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
+    return buildProductInputResult({ content }, productContext);
   }
 
   if (kind === 'document' && media.path && fs.existsSync(media.path)) {
@@ -2291,7 +2333,7 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
           ? { file_url: media.url }
           : { file_data: fileToBase64(media.path) })
       });
-      return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
+      return buildProductInputResult({ content }, productContext);
     }
 
     if (canReadTextFile(media.path, mimeType) && stat.size <= 1024 * 1024) {
@@ -2299,12 +2341,12 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
         type: 'input_text',
         text: `Conteudo do arquivo ${media.fileName || path.basename(media.path)}:\n${fs.readFileSync(media.path, 'utf8').slice(0, 20000)}`
       });
-      return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
+      return buildProductInputResult({ content }, productContext);
     }
   }
 
   content.push({ type: 'input_text', text: 'A midia foi recebida, mas esse tipo de arquivo nao pode ser analisado diretamente. Responda considerando o nome, tipo e legenda informados.' });
-  return { content, productImages: productContext.imageUrls, productCards: productContext.productCards, productLookupAttempted: productContext.lookupAttempted, productSearchText: productContext.searchText };
+  return buildProductInputResult({ content }, productContext);
 }
 
 async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversationHistory, contact, conversation }) {
@@ -2362,6 +2404,7 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
         product_cards: builtInput.productCards || [],
         product_lookup_attempted: builtInput.productLookupAttempted === true,
         product_search_text: builtInput.productSearchText || '',
+        products_found: builtInput.productsFound === true,
         ...getTokenUsageFromOpenAI(fallbackData)
       };
     }
@@ -2380,6 +2423,7 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
     product_cards: builtInput.productCards || [],
     product_lookup_attempted: builtInput.productLookupAttempted === true,
     product_search_text: builtInput.productSearchText || '',
+    products_found: builtInput.productsFound === true,
     ...getTokenUsageFromOpenAI(data)
   };
 }
@@ -2404,7 +2448,8 @@ async function buildClaudeInputContent({ input, media, config, conversationHisto
     productImages: productContext.imageUrls || [],
     productCards: productContext.productCards || [],
     productLookupAttempted: productContext.lookupAttempted === true,
-    productSearchText: productContext.searchText || ''
+    productSearchText: productContext.searchText || '',
+    productsFound: productContext.productsFound === true || Boolean(productContext.contextText)
   };
 }
 
@@ -2475,7 +2520,8 @@ async function callClaude({ apiKey, config, input, systemPrompt, media, conversa
     product_images: builtInput.productImages || [],
     product_cards: builtInput.productCards || [],
     product_lookup_attempted: builtInput.productLookupAttempted === true,
-    product_search_text: builtInput.productSearchText || ''
+    product_search_text: builtInput.productSearchText || '',
+    products_found: builtInput.productsFound === true
   };
 }
 
@@ -2663,7 +2709,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         skipped: false,
         response: productCards.length > 0
           ? buildProductCardsResponse(productCards)
-          : buildProductLookupEmptyResponse(productContext.searchText || message),
+          : productContext.productsFound
+            ? buildProductContextSummaryResponse(productContext, productContext.searchText || message)
+            : buildProductLookupEmptyResponse(productContext.searchText || message),
         provider: 'catalog',
         model: 'catalog_lookup',
         prompt_tokens: 0,
@@ -2700,7 +2748,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         skipped: false,
         response: productCards.length > 0
           ? buildProductCardsResponse(productCards)
-          : buildProductLookupEmptyResponse(productContext.searchText || message),
+          : productContext.productsFound
+            ? buildProductContextSummaryResponse(productContext, productContext.searchText || message)
+            : buildProductLookupEmptyResponse(productContext.searchText || message),
         provider: 'catalog',
         model: 'catalog_lookup',
         prompt_tokens: 0,
@@ -2756,7 +2806,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         })
       : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media, conversationHistory, contact, conversation });
 
-    if (result.product_lookup_attempted && (!Array.isArray(result.product_cards) || result.product_cards.length === 0)) {
+    if (result.product_lookup_attempted && !result.products_found && (!Array.isArray(result.product_cards) || result.product_cards.length === 0)) {
       result.response = buildProductLookupEmptyResponse(result.product_search_text || message);
     } else {
       result.response = normalizeProductMediaResponse(
@@ -2794,7 +2844,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           skipped: false,
           response: productCards.length > 0
             ? buildProductCardsResponse(productCards)
-            : buildProductLookupEmptyResponse(productContext.searchText || message),
+            : productContext.productsFound
+              ? buildProductContextSummaryResponse(productContext, productContext.searchText || message)
+              : buildProductLookupEmptyResponse(productContext.searchText || message),
           provider: 'catalog',
           model: 'catalog_lookup',
           prompt_tokens: 0,
@@ -2844,7 +2896,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         skipped: false,
         response: productCards.length > 0
           ? buildProductCardsResponse(productCards)
-          : buildAIProviderErrorResponse(effectiveConfig),
+          : productContext.productsFound
+            ? buildProductContextSummaryResponse(productContext, productContext.searchText || message)
+            : buildAIProviderErrorResponse(effectiveConfig),
         provider: 'catalog',
         model: productCards.length > 0 ? 'catalog_lookup' : 'provider_error_fallback',
         prompt_tokens: 0,

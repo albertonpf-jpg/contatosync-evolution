@@ -59,6 +59,20 @@ const joinIntegrationUrl = (baseUrl, endpointPath) => {
   return `${base}/${pathValue.replace(/^\/+/, '')}`;
 };
 
+const getIntegrationApiBaseUrl = (integration = {}) => {
+  const rawBase = String(integration.api_endpoint || '').trim();
+  if (integration.integration_type !== 'facilzap') return rawBase;
+  try {
+    const parsed = new URL(rawBase);
+    if (/facilzap\.app\.br$/i.test(parsed.hostname) && parsed.hostname !== 'api.facilzap.app.br') {
+      return 'https://api.facilzap.app.br';
+    }
+  } catch (error) {
+    return rawBase;
+  }
+  return rawBase;
+};
+
 const addQueryParam = (url, key, value) => {
   if (!url || !key || value === undefined || value === null || value === '') return url;
   try {
@@ -91,7 +105,7 @@ const buildIntegrationTestTargets = (integration) => {
   const targets = [];
 
   for (const key of endpointKeys) {
-    let url = joinIntegrationUrl(integration.api_endpoint, config[key]);
+    let url = joinIntegrationUrl(getIntegrationApiBaseUrl(integration), config[key]);
     if (!url) continue;
     if (authType === 'query' && integration.api_key) {
       url = addQueryParam(url, config.token_param || 'token', integration.api_key);
@@ -99,7 +113,7 @@ const buildIntegrationTestTargets = (integration) => {
     targets.push({ url, label: key });
   }
 
-  targets.push({ url: integration.api_endpoint, label: 'api_endpoint' });
+  targets.push({ url: getIntegrationApiBaseUrl(integration), label: 'api_endpoint' });
   const seen = new Set();
   return targets.filter(target => {
     if (!/^https?:\/\//i.test(String(target.url || ''))) return false;
@@ -120,7 +134,6 @@ const buildIntegrationHeaders = (integration) => {
       headers['x-api-key'] = integration.api_key;
     } else if (authType !== 'query') {
       headers.Authorization = `Bearer ${integration.api_key}`;
-      headers['x-api-key'] = integration.api_key;
     }
   }
 

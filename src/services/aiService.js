@@ -122,6 +122,7 @@ function buildSystemPrompt(config, contact, conversation) {
     `- Cliente no WhatsApp: ${contact?.name || conversation?.contact_name || 'Contato sem nome'}`,
     `- Telefone: ${contact?.phone || conversation?.phone || 'nao informado'}`,
     '- Nunca invente precos, estoque, prazos ou politicas.',
+    '- Quando houver URLs, arquivos ou integracoes configuradas no motor da IA, use essas fontes antes de concluir que nao encontrou a informacao.',
     '- Se faltar informacao, diga que vai encaminhar para um atendente humano.',
     canGreet ? '- Esta parece ser a primeira resposta deste atendimento; pode cumprimentar uma vez se fizer sentido.' : '- Esta conversa ja esta em andamento; nao envie boas-vindas, saudacao inicial ou apresentacao novamente.',
     '- Responda como mensagem curta de WhatsApp, sem markdown pesado.'
@@ -318,14 +319,20 @@ function getDisplayColorVariations(product) {
 }
 
 function buildCarouselCardDescription(product) {
-  const sizes = Array.isArray(product?._sizes) && product._sizes.length
-    ? product._sizes.slice(0, 6).join(', ')
-    : '';
-  const colors = getDisplayColorVariations(product);
+  const availableSizes = getAvailableProductSizes(product);
+  const sizes = availableSizes.length
+    ? availableSizes.slice(0, 6).join(', ')
+    : Array.isArray(product?._sizes) && product._sizes.length
+      ? product._sizes.slice(0, 6).join(', ')
+      : '';
+  const availableVariationLabels = getAvailableProductVariationLabels(product);
+  const colors = availableVariationLabels.length
+    ? availableVariationLabels
+    : getDisplayColorVariations(product);
   const colorText = colors.length
     ? colors.join(', ')
     : '';
-  const stock = getNestedStockValue(product?.stock);
+  const stock = getProductAvailableStock(product);
   const details = [
     product?.price ? `💰 Preço: ${product.price}` : '',
     sizes ? `📏 Tamanho: ${sizes}` : '',
@@ -1377,6 +1384,7 @@ function normalizeFacilZapProduct(product, catalogBase) {
   ].map(getFacilZapImageUrl).filter(Boolean);
   const price = getFacilZapPrice(product);
   const variations = getFacilZapVariations(product);
+  const variationStocks = getVariationStockEntries(product.variacoes);
   return {
     id: product.id,
     url: String(catalogBase).replace('{PATH}', 'produto/' + product.id),
@@ -1387,6 +1395,7 @@ function normalizeFacilZapProduct(product, catalogBase) {
     category: product.categoria_nome || product.categoria || '',
     categoryName: product.categoria_nome || '',
     variations,
+    variationStocks,
     images: [...new Set(images)].slice(0, 5),
     score: 0
   };
@@ -1400,9 +1409,134 @@ function getNestedStockValue(value) {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value === 'number' || typeof value === 'string') return value;
   if (typeof value === 'object') {
-    return firstValue(value.estoque, value.stock, value.quantity, value.quantidade, value.disponivel, null);
+    return firstValue(value.estoque, value.stock, value.quantity, value.quantidade, value.disponivel, value.available, value.qtd, null);
   }
   return null;
+}
+
+function getStockNumber(value) {
+  const raw = getNestedStockValue(value);
+  if (raw === null || raw === undefined || raw === '') return null;
+  const normalized = String(raw).replace(/\./g, '').replace(',', '.').replace(/[^\d.-]/g, '');
+  if (!normalized) return null;
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : null;
+}
+
+function getVariationStockEntries(value) {
+  if (!value) return [];
+  const entries = Array.isArray(value)
+    ? value
+    : typeof value === 'object'
+      ? Object.values(value)
+      : [value];
+  return entries
+    .flatMap(entry => {
+      if (entry === undefined || entry === null || entry === '') return [];
+      if (typeof entry === 'string' || typeof entry === 'number') {
+        return [{ label: String(entry), stock: null }];
+      }
+      if (typeof entry !== 'object') return [];
+      const label = firstValue(
+        entry.nome,
+        entry.name,
+        entry.label,
+        entry.valor,
+        entry.value,
+        entry.tamanho,
+        entry.size,
+        entry.cor,
+        entry.color,
+        entry.subgrupo
+      );
+      const stock = getStockNumber(firstValue(
+        entry.estoque,
+        entry.stock,
+        entry.total_estoque,
+        entry.quantity,
+        entry.quantidade,
+        entry.disponivel,
+        entry.available,
+        entry.qtd,
+        null
+      ));
+      return [{ label: label ? String(label) : '', stock }];
+    })
+    .filter(entry => entry.label || entry.stock !== null);
+}
+
+function getProductVariationStockEntries(product = {}) {
+  const entries = [
+    ...(Array.isArray(product.variationStocks) ? product.variationStocks : []),
+    ...(Array.isArray(product._variationStocks) ? product._variationStocks : [])
+  ];
+  const seen = new Set();
+  return entries
+    .map(entry => ({
+      label: String(entry?.label || entry?.name || entry?.nome || '').trim(),
+      stock: getStockNumber(firstValue(entry?.stock, entry?.estoque, entry?.quantity, entry?.quantidade, null))
+    }))
+    .filter(entry => entry.label || entry.stock !== null)
+    .filter(entry => {
+      const key = normalizeSearchText(`${entry.label}|${entry.stock ?? ''}`);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function getProductAvailableStock(product = {}) {
+  const variationEntries = getProductVariationStockEntries(product);
+  const positiveVariationStock = variationEntries.reduce((sum, entry) => {
+    const stock = Number(entry.stock);
+    return Number.isFinite(stock) && stock > 0 ? sum + stock : sum;
+  }, 0);
+  if (positiveVariationStock > 0) return positiveVariationStock;
+  return getStockNumber(firstValue(product.stock, product.estoque, product.total_estoque, product.quantity, null));
+}
+
+function hasPositiveProductStock(product = {}) {
+  const stock = getProductAvailableStock(product);
+  return Number.isFinite(Number(stock)) && Number(stock) > 0;
+}
+
+function getAvailableProductSizes(product = {}) {
+  const sizes = new Set();
+  for (const entry of getProductVariationStockEntries(product)) {
+    if (!(Number(entry.stock) > 0)) continue;
+    for (const match of normalizeSearchText(entry.label).matchAll(/\b(\d{1,2}|pp|p|m|g|gg|xg|xgg)\b/gi)) {
+      const size = normalizeSizeToken(match[1]);
+      if (size) sizes.add(size);
+    }
+  }
+  return [...sizes];
+}
+
+function getAvailableProductVariationLabels(product = {}) {
+  const knownSizes = Array.isArray(product?._sizes) ? product._sizes : extractProductSizes(product);
+  const seen = new Set();
+  return getProductVariationStockEntries(product)
+    .filter(entry => Number(entry.stock) > 0)
+    .map(entry => stripSizeFromVariation(entry.label, knownSizes))
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+    .filter(value => {
+      const key = normalizeSearchText(value);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 5);
+}
+
+function productMatchesRequestedSizeWithStock(product = {}, requestedSizes = []) {
+  if (!requestedSizes.length) return true;
+  const entries = getProductVariationStockEntries(product);
+  return entries.some(entry => {
+    if (!(Number(entry.stock) > 0)) return false;
+    const label = normalizeSearchText(entry.label);
+    return requestedSizes.some(size => new RegExp(`\\b${size}\\b`, 'i').test(label));
+  });
 }
 
 function collectImageValues(value, pageUrl) {
@@ -1485,6 +1619,12 @@ function extractGenericJsonProducts(data, sourceUrl) {
         if (typeof item === 'object') return Object.values(item).map(entry => (typeof entry === 'string' || typeof entry === 'number') ? String(entry) : firstValue(entry.nome, entry.name, entry.label, entry.valor, entry.value, entry.tamanho, entry.size));
         return [String(item)];
       }).filter(Boolean).slice(0, 8);
+      const variationStocks = [
+        value.variacoes,
+        value.variations,
+        value.tamanhos,
+        value.sizes
+      ].flatMap(getVariationStockEntries);
 
       products.push({
         id: firstValue(value.id, value.sku, value.codigo, url, title),
@@ -1496,6 +1636,7 @@ function extractGenericJsonProducts(data, sourceUrl) {
         category: firstValue(value.categoria, value.category, value.categoria_nome, value.category_name, ''),
         categoryName: firstValue(value.categoria_nome, value.category_name, value.categoria, value.category, ''),
         variations,
+        variationStocks,
         images,
         score: 0
       });
@@ -1561,10 +1702,19 @@ function getRelevantProducts(products, message) {
         product.categoria_nome,
         product.variations?.join(' ')
       ].join(' '));
+      const availableStock = getProductAvailableStock(product);
+      const hasStock = Number(availableStock) > 0;
+      const hasRequestedSizeInStock = requestedSizes.length > 0 && productMatchesRequestedSizeWithStock(product, requestedSizes);
       return {
         ...product,
-        score: getProductScore(product, messageTokens) + (product.sourceType && product.sourceType !== 'link' ? 2 : 0),
+        score: getProductScore(product, messageTokens)
+          + (product.sourceType && product.sourceType !== 'link' ? 2 : 0)
+          + (hasStock ? 4 : 0)
+          + (hasRequestedSizeInStock ? 8 : 0),
         _sizes: extractProductSizes(product),
+        _availableStock: availableStock,
+        _hasStock: hasStock,
+        _hasRequestedSizeInStock: hasRequestedSizeInStock,
         _titleMatches: countTokenMatches(title, messageTokens),
         _specificMatches: countTokenMatches(haystack, specificTokens),
         _colorMatches: countTokenMatches(titleAndVariations, colorTokens),
@@ -1578,12 +1728,21 @@ function getRelevantProducts(products, message) {
       .filter(product => productMatchesRequestedSize(product, requestedSizes))
       .map(product => ({ ...product, score: product.score + 8 }));
     if (sizeMatched.length === 0) return [];
+    const sizeMatchedInStock = sizeMatched
+      .filter(product => product._hasRequestedSizeInStock || product._hasStock)
+      .sort((a, b) => Number(b._hasRequestedSizeInStock) - Number(a._hasRequestedSizeInStock) || b.score - a.score);
+    if (sizeMatchedInStock.length > 0 && (messageTokens.length === 0 || specificTokens.length === 0)) {
+      return sizeMatchedInStock.slice(0, 6);
+    }
     if (messageTokens.length === 0 || specificTokens.length === 0) {
       return sizeMatched.slice(0, 6);
     }
   }
 
-  if (messageTokens.length === 0) return uniqueProducts.slice(0, 6);
+  if (messageTokens.length === 0) {
+    const inStockProducts = uniqueProducts.filter(product => product._hasStock);
+    return (inStockProducts.length > 0 ? inStockProducts : uniqueProducts).slice(0, 6);
+  }
 
   const minSpecificMatches = specificTokens.length >= 2 ? specificTokens.length : specificTokens.length;
   const bestScore = uniqueProducts[0]?.score || 0;
@@ -1600,8 +1759,12 @@ function getRelevantProducts(products, message) {
   });
   if (matched.length > 0) {
     const titleOrCategoryMatched = matched.filter(product => product._titleMatches > 0 || countTokenMatches(normalizeSearchText([product.category, product.categoryName, product.categoria_nome].join(' ')), specificTokens) > 0);
-    if (specificTokens.length > 0 && titleOrCategoryMatched.length > 0) return titleOrCategoryMatched.slice(0, 6);
-    return matched.slice(0, 6);
+    if (specificTokens.length > 0 && titleOrCategoryMatched.length > 0) {
+      const inStockTitleOrCategoryMatched = titleOrCategoryMatched.filter(product => product._hasStock);
+      return (inStockTitleOrCategoryMatched.length > 0 ? inStockTitleOrCategoryMatched : titleOrCategoryMatched).slice(0, 6);
+    }
+    const inStockMatched = matched.filter(product => product._hasStock);
+    return (inStockMatched.length > 0 ? inStockMatched : matched).slice(0, 6);
   }
   return [];
 }
@@ -1914,8 +2077,9 @@ async function fetchProductContext(message, sourceUrls = []) {
     product.sourceName ? `Fonte: ${product.sourceName}` : '',
     product.title ? `Titulo: ${product.title}` : '',
     product.price ? `Preco: ${product.price}` : '',
-    product.stock !== null && product.stock !== undefined ? `Estoque informado: ${product.stock}` : '',
+    getProductAvailableStock(product) !== null && getProductAvailableStock(product) !== undefined ? `Estoque informado: ${getProductAvailableStock(product)}` : '',
     product._sizes?.length ? `Tamanhos encontrados: ${product._sizes.join(', ')}` : '',
+    getAvailableProductSizes(product).length ? `Tamanhos com estoque: ${getAvailableProductSizes(product).join(', ')}` : '',
     product.variations?.length ? `Variacoes: ${product.variations.join(', ')}` : '',
     product.description ? `Descricao: ${product.description}` : '',
     product.images?.length ? `Imagens disponiveis para envio: ${product.images.slice(0, 5).length}` : ''

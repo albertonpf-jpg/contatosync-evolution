@@ -462,15 +462,51 @@ function buildIntegrationEndpointSource(integration, endpointKey, params = {}) {
 }
 
 function buildProductIntegrationSources(integration) {
-  return ['products_path', 'catalog_path', 'stock_path']
+  const sources = ['products_path', 'stock_path', 'catalog_path']
     .map(key => buildIntegrationEndpointSource(integration, key))
     .filter(Boolean);
+  const integrationType = integration.integration_type || integration.type;
+  if (integrationType !== 'facilzap') return sources;
+
+  const productSources = [];
+  for (const source of sources) {
+    productSources.push(source);
+    if (source.endpointKey !== 'products_path' && source.endpointKey !== 'stock_path') continue;
+    productSources.push(
+      addQueryParam(source.url, 'limite', 100) ? { ...source, url: addQueryParam(source.url, 'limite', 100), name: `${source.name} (limite)` } : source,
+      addQueryParam(source.url, 'per_page', 100) ? { ...source, url: addQueryParam(source.url, 'per_page', 100), name: `${source.name} (per_page)` } : source
+    );
+  }
+  return productSources;
+}
+
+function getProductSearchPhrase(message) {
+  const tokens = getSpecificProductTokens(getSearchTokens(message))
+    .filter(token => !['tem', 'vende', 'vender', 'quero', 'queria', 'procuro', 'preciso', 'fotos', 'foto', 'opcoes', 'opcao'].includes(token));
+  return tokens.slice(0, 4).join(' ');
+}
+
+function expandProductSourcesForSearch(message, sources = []) {
+  const searchPhrase = getProductSearchPhrase(message);
+  if (!searchPhrase) return sources;
+  const expanded = [];
+  for (const source of sources) {
+    expanded.push(source);
+    if (!['products_path', 'stock_path'].includes(source.endpointKey)) continue;
+    for (const param of ['q', 'search', 'busca', 'nome', 'categoria', 'termo']) {
+      expanded.push({
+        ...source,
+        url: addQueryParam(source.url, param, searchPhrase),
+        name: `${source.name} (${param})`
+      });
+    }
+  }
+  return normalizeProductSources(expanded);
 }
 
 function buildConfiguredProductSources(config = {}) {
   return normalizeProductSources([
     ...(Array.isArray(config.product_integrations) ? config.product_integrations.flatMap(integration => [
-      integration,
       ...buildProductIntegrationSources(integration)
     ]) : []),
     config.product_catalog_url,
@@ -1271,10 +1307,11 @@ function firstValue(...values) {
 
 function collectImageValues(value, pageUrl) {
   const images = [];
+  const isFacilZapSource = /facilzap/i.test(String(pageUrl || ''));
   const visit = (item) => {
     if (!item) return;
     if (typeof item === 'string') {
-      const resolved = resolvePageUrl(pageUrl, item);
+      const resolved = isFacilZapSource ? getFacilZapImageUrl(item) : resolvePageUrl(pageUrl, item);
       if (resolved && /\.(?:png|jpe?g|webp|gif)(?:[?#].*)?$/i.test(resolved)) images.push(resolved);
       return;
     }
@@ -1668,7 +1705,7 @@ async function fetchFacilZapProductsFromHtml(html, pageUrl, message) {
 }
 
 async function fetchProductContext(message, sourceUrls = []) {
-  const sources = normalizeProductSources([message, ...sourceUrls]);
+  const sources = expandProductSourcesForSearch(message, normalizeProductSources([message, ...sourceUrls]));
   if (sources.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
 
   const products = [];
@@ -2542,7 +2579,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   const effectiveConfig = {
     ...config,
     product_integrations: (integrations || [])
-      .filter(integration => integration?.api_endpoint && integration.status !== 'error')
+      .filter(integration => integration?.api_endpoint)
       .map(integration => ({
         integration_type: integration.integration_type,
         integration_name: integration.integration_name,

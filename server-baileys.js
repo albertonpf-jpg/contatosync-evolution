@@ -140,13 +140,40 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       ? 'Enviei as fotos do produto acima. Seguem os detalhes que encontrei na loja.'
       : 'Encontrei estas opcoes na loja, mas nao consegui enviar as fotos automaticamente agora.';
   }
+  // Preservar aiText rico (preco/detalhes de buildProductCardsResponse) quando ja preenchido.
+  // Frase generica so entra se aiText ainda estiver vazio apos os blocos anteriores.
   if (hasProductCards && productMediaSent) {
-    aiText = 'Enviei acima as opcoes que encontrei para o que voce pediu. Se quiser, posso verificar tamanhos, cores ou disponibilidade.';
+    if (!aiText) {
+      aiText = 'Enviei acima as opcoes que encontrei para o que voce pediu. Se quiser, posso verificar tamanhos, cores ou disponibilidade.';
+    }
   }
   if (hasProductCards && !productMediaSent) {
     aiText = 'Encontrei o produto, mas nao consegui enviar as fotos automaticamente agora. Vou chamar um atendente para ajudar.';
   }
   var sendResult = await baileysService.sendTextMessage(sessionName, jid, aiText);
+
+  // Montar content para o historico: aiText enviado ao cliente + titulos dos cards enviados.
+  // O cliente nao recebe os titulos duplicados; eles ficam apenas no banco para que
+  // extractPreviouslyMentionedProductTitles consiga excluir produtos ja mostrados
+  // nas proximas buscas de "mais opcoes" ou "outros modelos".
+  var contentForHistory = aiText;
+  if (hasProductCards && productMediaSent) {
+    var seenCardTitles = new Set();
+    var uniqueCardTitles = [];
+    for (var ci = 0; ci < aiResult.product_cards.length; ci += 1) {
+      var rawCardTitle = String(aiResult.product_cards[ci].title || '')
+        .replace(/^\uD83D\uDECD\uFE0F?\s*/u, '')  // remove emoji 🛍️
+        .replace(/\s*-\s*foto\s*\d+\s*$/i, '')     // remove sufixo "- foto 1"
+        .trim();
+      if (rawCardTitle && !seenCardTitles.has(rawCardTitle)) {
+        seenCardTitles.add(rawCardTitle);
+        uniqueCardTitles.push(rawCardTitle);
+      }
+    }
+    if (uniqueCardTitles.length > 0) {
+      contentForHistory = aiText + '\n' + uniqueCardTitles.join('\n');
+    }
+  }
 
   var { data: newMessage, error: messageError } = await supabaseAdmin
     .from('evolution_messages')
@@ -155,7 +182,7 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       conversation_id: conversation.id,
       client_id: clientId,
       contact_id: contact.id,
-      content: aiText,
+      content: contentForHistory,
       message_type: 'text',
       direction: 'out',
       status: 'sent',

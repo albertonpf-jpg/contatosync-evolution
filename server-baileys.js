@@ -120,17 +120,30 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
   }
 
   var aiText = String(aiResult.response || '').trim();
-  if (!aiText && hasProductCards) {
-    aiText = productMediaSent
-      ? 'Enviei as fotos do produto acima. Seguem os detalhes que encontrei na loja.'
-      : 'Encontrei estas opcoes na loja, mas nao consegui enviar as fotos automaticamente agora.';
+  if (hasProductCards && productMediaSent && !aiText) {
+    aiText = 'Enviei as fotos acima. Se quiser saber mais sobre tamanhos, cores ou preco, e so perguntar.';
   }
-  if (hasProductCards && productMediaSent) {
-    aiText = 'Enviei acima as opcoes que encontrei para o que voce pediu. Se quiser, posso verificar tamanhos, cores ou disponibilidade.';
-  }
-  if (hasProductCards && !productMediaSent) {
+  if (hasProductCards && !productMediaSent && !aiText) {
     aiText = 'Encontrei o produto, mas nao consegui enviar as fotos automaticamente agora. Vou chamar um atendente para ajudar.';
   }
+
+  // contentForHistory: salva no banco aiText + títulos dos cards (um por linha)
+  // para que o histórico preserve os produtos mostrados ao cliente
+  var cardTitles = hasProductCards
+    ? [].concat(
+        aiResult.product_cards
+          .map(function(c) {
+            return String(c.title || '').replace(/^🛍️\s*/, '').replace(/\s*-\s*foto\s*\d+$/i, '').trim();
+          })
+          .filter(Boolean)
+      ).filter(function(t, i, arr) { return arr.indexOf(t) === i; }).slice(0, 5)
+    : [];
+  var contentForHistory = [
+    aiText,
+    cardTitles.length > 0 ? 'Produtos enviados:' : '',
+    ...cardTitles
+  ].filter(Boolean).join('\n');
+
   var sendResult = await baileysService.sendTextMessage(sessionName, jid, aiText);
 
   var { data: newMessage, error: messageError } = await supabaseAdmin
@@ -140,7 +153,7 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       conversation_id: conversation.id,
       client_id: clientId,
       contact_id: contact.id,
-      content: aiText,
+      content: contentForHistory,
       message_type: 'text',
       direction: 'out',
       status: 'sent',

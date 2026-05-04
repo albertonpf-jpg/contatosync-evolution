@@ -279,6 +279,15 @@ function shouldUseConfiguredProductSources(message) {
     'variacao',
     'variação',
     'cor ',
+    'roupa',
+    'roupas',
+    'crianca',
+    'criança',
+    'criancas',
+    'crianças',
+    'ano',
+    'anos',
+    'idade',
     'vestido',
     'vestidos',
     'conjunto',
@@ -505,7 +514,14 @@ function getSearchTokens(value) {
       'voc',
       'para',
       'com',
-      'que'
+      'que',
+      'ano',
+      'anos',
+      'idade',
+      'crianca',
+      'criancas',
+      'criança',
+      'crianças'
     ].includes(token))
     .filter(token => !/^\d+$/.test(token));
 }
@@ -516,6 +532,13 @@ function getSpecificProductTokens(tokens) {
     'roupas',
     'infantil',
     'infantis',
+    'crianca',
+    'criancas',
+    'criança',
+    'crianças',
+    'ano',
+    'anos',
+    'idade',
     'adulto',
     'adultos',
     'masculino',
@@ -555,6 +578,85 @@ function getColorTokens(tokens) {
 
 function getTitleColorTokens(title) {
   return PRODUCT_COLOR_TOKENS.filter(color => includesToken(title, color));
+}
+
+function normalizeSizeToken(value) {
+  const clean = normalizeSearchText(value);
+  if (!clean) return '';
+  if (/^\d{1,2}$/.test(clean)) {
+    const number = Number(clean);
+    if (number >= 0 && number <= 18) return String(number);
+  }
+  const letterMap = {
+    pp: 'pp',
+    p: 'p',
+    m: 'm',
+    g: 'g',
+    gg: 'gg',
+    xg: 'xg',
+    xgg: 'xgg'
+  };
+  return letterMap[clean] || '';
+}
+
+function extractRequestedSizes(message) {
+  const raw = String(message || '');
+  const normalized = normalizeSearchText(raw);
+  const sizes = new Set();
+  const patterns = [
+    /\b(?:tamanho|tamanhos|tam|numero|n)\s*(\d{1,2}|pp|p|m|g|gg|xg|xgg)\b/gi,
+    /\b(\d{1,2})\s*(?:anos|ano|idade)\b/gi,
+    /\b(?:crianca|criancas|infantil|menino|menina|beb[eê])\s*(?:de|com|para)?\s*(\d{1,2})\b/gi
+  ];
+
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(normalized))) {
+      const size = normalizeSizeToken(match[1]);
+      if (size) sizes.add(size);
+    }
+  }
+
+  return [...sizes];
+}
+
+function extractProductSizes(product = {}) {
+  const sizes = new Set();
+  const variations = Array.isArray(product.variations) ? product.variations : [];
+  const variationText = normalizeSearchText(variations.join(' '));
+  for (const match of variationText.matchAll(/\b(\d{1,2}|pp|p|m|g|gg|xg|xgg)\b/gi)) {
+    const size = normalizeSizeToken(match[1]);
+    if (size) sizes.add(size);
+  }
+
+  const text = normalizeSearchText([
+    product.title,
+    product.description,
+    product.category,
+    product.categoryName,
+    product.categoria_nome,
+    variations.join(' ')
+  ].join(' '));
+  const patterns = [
+    /\b(?:tamanho|tamanhos|tam|numero|n)\s*(\d{1,2}|pp|p|m|g|gg|xg|xgg)\b/gi,
+    /\b(\d{1,2})\s*(?:anos|ano)\b/gi
+  ];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text))) {
+      const size = normalizeSizeToken(match[1]);
+      if (size) sizes.add(size);
+    }
+  }
+
+  return [...sizes];
+}
+
+function productMatchesRequestedSize(product, requestedSizes) {
+  if (!requestedSizes.length) return true;
+  const sizes = product._sizes || extractProductSizes(product);
+  if (!sizes.length) return false;
+  return requestedSizes.some(size => sizes.includes(size));
 }
 
 function getTokenVariants(token) {
@@ -604,10 +706,25 @@ function getFacilZapVariations(product) {
   const variations = product?.variacoes && typeof product.variacoes === 'object'
     ? Object.values(product.variacoes)
     : [];
-  return variations
-    .map(variation => variation?.nome || variation?.subgrupo)
+  const values = [
+    ...(Array.isArray(product.tamanhos) ? product.tamanhos : []),
+    ...(Array.isArray(product.sizes) ? product.sizes : []),
+    ...variations
+  ];
+  return values
+    .flatMap(variation => {
+      if (typeof variation === 'string' || typeof variation === 'number') return [String(variation)];
+      return [
+        variation?.nome,
+        variation?.subgrupo,
+        variation?.tamanho,
+        variation?.size,
+        variation?.valor,
+        variation?.label
+      ].filter(Boolean);
+    })
     .filter(Boolean)
-    .slice(0, 8);
+    .slice(0, 12);
 }
 
 function getFacilZapCatalogBase(html, pageUrl) {
@@ -768,8 +885,8 @@ function extractGenericJsonProducts(data, sourceUrl) {
         value.colors
       ].flatMap(item => {
         if (!item) return [];
-        if (Array.isArray(item)) return item.map(entry => typeof entry === 'string' ? entry : firstValue(entry.nome, entry.name, entry.label, entry.valor, entry.value));
-        if (typeof item === 'object') return Object.values(item).map(entry => typeof entry === 'string' ? entry : firstValue(entry.nome, entry.name, entry.label, entry.valor, entry.value));
+        if (Array.isArray(item)) return item.map(entry => (typeof entry === 'string' || typeof entry === 'number') ? String(entry) : firstValue(entry.nome, entry.name, entry.label, entry.valor, entry.value, entry.tamanho, entry.size));
+        if (typeof item === 'object') return Object.values(item).map(entry => (typeof entry === 'string' || typeof entry === 'number') ? String(entry) : firstValue(entry.nome, entry.name, entry.label, entry.valor, entry.value, entry.tamanho, entry.size));
         return [String(item)];
       }).filter(Boolean).slice(0, 8);
 
@@ -820,6 +937,7 @@ function getRelevantProducts(products, message) {
   const messageTokens = getSearchTokens(message);
   const specificTokens = getSpecificProductTokens(messageTokens);
   const colorTokens = getColorTokens(messageTokens);
+  const requestedSizes = extractRequestedSizes(message);
   const uniqueProducts = dedupeProducts(products)
     .map(product => {
       const title = normalizeSearchText(product.title || '');
@@ -842,6 +960,7 @@ function getRelevantProducts(products, message) {
       return {
         ...product,
         score: getProductScore(product, messageTokens) + (product.sourceType && product.sourceType !== 'link' ? 2 : 0),
+        _sizes: extractProductSizes(product),
         _titleMatches: countTokenMatches(title, messageTokens),
         _specificMatches: countTokenMatches(haystack, specificTokens),
         _colorMatches: countTokenMatches(titleAndVariations, colorTokens),
@@ -850,12 +969,23 @@ function getRelevantProducts(products, message) {
     })
     .sort((a, b) => b.score - a.score);
 
+  if (requestedSizes.length > 0) {
+    const sizeMatched = uniqueProducts
+      .filter(product => productMatchesRequestedSize(product, requestedSizes))
+      .map(product => ({ ...product, score: product.score + 8 }));
+    if (sizeMatched.length === 0) return [];
+    if (messageTokens.length === 0 || specificTokens.length === 0) {
+      return sizeMatched.slice(0, 6);
+    }
+  }
+
   if (messageTokens.length === 0) return uniqueProducts.slice(0, 6);
 
   const minSpecificMatches = specificTokens.length >= 2 ? specificTokens.length : specificTokens.length;
   const bestScore = uniqueProducts[0]?.score || 0;
   const matched = uniqueProducts.filter(product => {
     if (product.score <= 0) return false;
+    if (requestedSizes.length > 0 && !productMatchesRequestedSize(product, requestedSizes)) return false;
     if (minSpecificMatches > 0 && product._specificMatches < minSpecificMatches) return false;
     if (colorTokens.length > 0 && product._colorMatches < colorTokens.length) return false;
     if (product._hasConflictingTitleColor) return false;
@@ -1172,6 +1302,7 @@ async function fetchProductContext(message, sourceUrls = []) {
     product.title ? `Titulo: ${product.title}` : '',
     product.price ? `Preco: ${product.price}` : '',
     product.stock !== null && product.stock !== undefined ? `Estoque informado: ${product.stock}` : '',
+    product._sizes?.length ? `Tamanhos encontrados: ${product._sizes.join(', ')}` : '',
     product.variations?.length ? `Variacoes: ${product.variations.join(', ')}` : '',
     product.description ? `Descricao: ${product.description}` : '',
     product.images?.length ? `Imagens disponiveis para envio: ${product.images.slice(0, 5).length}` : ''
@@ -1187,6 +1318,7 @@ async function fetchProductContext(message, sourceUrls = []) {
         title: String((product.title || 'Produto') + suffix).slice(0, 60),
         description: [
           product.price ? `Preco: ${product.price}` : '',
+          product._sizes?.length ? `Tamanhos: ${product._sizes.slice(0, 6).join(', ')}` : '',
           product.variations?.length ? `Variacoes: ${product.variations.slice(0, 4).join(', ')}` : '',
           product.description || ''
         ].filter(Boolean).join('\n').slice(0, 180),
@@ -1460,7 +1592,7 @@ async function buildProductContextForConfig(message, config, conversationHistory
 
 function buildProductContextText(productContext) {
   if (!productContext?.contextText) return '';
-  return `${productContext.contextText}\n\nEstas informacoes foram buscadas antes da resposta nas APIs de integracoes ativas e/ou no link de catalogo configurado. Use primeiro os dados coletados das integracoes e do catalogo. Use somente os produtos que batem com o pedido do cliente. Se o cliente pediu um produto especifico, nao inclua produtos parecidos, personagens, outras estampas, outras cores ou outras categorias. Se nao houver correspondencia clara, diga que nao encontrou fotos seguras para enviar. Use nomes, precos, fotos, variacoes e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque ou variacao que nao esteja no conteudo coletado.`;
+  return `${productContext.contextText}\n\nEstas informacoes foram buscadas antes da resposta nas APIs de integracoes ativas e/ou no link de catalogo configurado. Use primeiro os dados coletados das integracoes e do catalogo. Use somente os produtos que batem com o pedido do cliente. Se o cliente pediu idade/tamanho, por exemplo crianca de 6 anos, tamanho 6 ou tam 6, responda e envie somente produtos com esse tamanho explicitamente encontrado. Se o cliente pediu um produto especifico, nao inclua produtos parecidos, personagens, outras estampas, outras cores ou outras categorias. Se nao houver correspondencia clara, diga que nao encontrou fotos seguras para enviar. Use nomes, precos, fotos, variacoes, tamanhos e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque, tamanho ou variacao que nao esteja no conteudo coletado.`;
 }
 
 async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory }) {

@@ -172,13 +172,29 @@ function isSizeVariation(value, knownSizes = []) {
     || /^\d{1,2}\s*(?:anos|ano)$/.test(text);
 }
 
-function getDisplayVariations(product) {
+function stripSizeFromVariation(value, knownSizes = []) {
+  let text = String(value || '').trim();
+  if (!text) return '';
+  const sizePattern = '(?:\\d{1,2}|pp|p|m|g|gg|xg|xgg)';
+  text = text
+    .replace(new RegExp(`\\b(?:tamanho|tamanhos|tam|numero|n)\\s*${sizePattern}\\b`, 'gi'), ' ')
+    .replace(/\b\d{1,2}\s*(?:anos|ano)\b/gi, ' ');
+  for (const size of knownSizes) {
+    const escaped = String(size).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    text = text.replace(new RegExp(`(?:^|[\\s\\-/|,;:])${escaped}(?=$|[\\s\\-/|,;:])`, 'gi'), ' ');
+  }
+  return text.replace(/^[\s\-/|,;:]+|[\s\-/|,;:]+$/g, '').replace(/\s{2,}/g, ' ').trim();
+}
+
+function getDisplayColorVariations(product) {
   const knownSizes = Array.isArray(product?._sizes) ? product._sizes : [];
   const seen = new Set();
   return (Array.isArray(product?.variations) ? product.variations : [])
     .map(value => String(value || '').trim())
     .filter(Boolean)
     .filter(value => !isSizeVariation(value, knownSizes))
+    .map(value => stripSizeFromVariation(value, knownSizes))
+    .filter(Boolean)
     .filter(value => {
       const key = normalizeSearchText(value);
       if (!key || seen.has(key)) return false;
@@ -192,14 +208,14 @@ function buildCarouselCardDescription(product) {
   const sizes = Array.isArray(product?._sizes) && product._sizes.length
     ? product._sizes.slice(0, 6).join(', ')
     : '';
-  const variations = getDisplayVariations(product);
-  const variationText = variations.length
-    ? variations.join(', ')
+  const colors = getDisplayColorVariations(product);
+  const colorText = colors.length
+    ? colors.join(', ')
     : '';
   const details = [
     product?.price ? `💰 Preço: ${product.price}` : '',
     sizes ? `📏 Tamanho: ${sizes}` : '',
-    variationText ? `🎨 Variações: ${variationText}` : '',
+    colorText ? `🎨 Cor: ${colorText}` : '',
     product?.stock !== null && product?.stock !== undefined && product.stock !== '' ? `📦 Estoque: ${product.stock}` : '',
     product?.description ? `📝 Detalhes: ${String(product.description).replace(/\s+/g, ' ').trim()}` : ''
   ].filter(Boolean);

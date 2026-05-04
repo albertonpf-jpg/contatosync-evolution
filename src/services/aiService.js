@@ -155,11 +155,15 @@ function removeImageUrlsFromResponse(text) {
     .trim();
 }
 
+var FOTO_PROMISE_REGEX = /\b(aqui est[aã]o|seguem|enviei|vou enviar|mandei|estou enviando|ja enviei|mando|irei enviar|vou te mandar|te mando|abaixo est[aã]o|acima est[aã]o|segue abaixo|segue acima|confira abaixo|veja abaixo|veja acima)\b[^.!?\n]{0,100}\b(foto|fotos|imagem|imagens)\b[^\n.]*/gi;
+var FOTO_ABOVE_REGEX = /\b(foto|fotos|imagem|imagens)\b[^.!?\n]{0,60}\b(enviada[s]?|acima|abaixo|em anexo|no carrossel|ja foi|foram enviada[s]?)\b[^\n.]*/gi;
+
 function normalizeProductMediaResponse(text, productCards = []) {
   let response = removeImageUrlsFromResponse(text);
   if (!Array.isArray(productCards) || productCards.length === 0) {
     return response
-      .replace(/\b(aqui est[aã]o|seguem|enviei|vou enviar|mandei)\b.{0,80}\b(fotos|imagens)\b[^\n.]*/gi, 'Encontrei produtos no catalogo, mas nao encontrei fotos seguras para enviar automaticamente')
+      .replace(FOTO_PROMISE_REGEX, 'Nao encontrei fotos seguras para esse produto no catalogo configurado.')
+      .replace(FOTO_ABOVE_REGEX, 'Nao encontrei fotos seguras para esse produto no catalogo configurado.')
       .trim();
   }
 
@@ -216,8 +220,24 @@ function buildProductLookupEmptyResponse(searchText) {
       'modelo',
       'modelos'
     ].includes(token));
-  const requested = tokens.length > 0 ? tokens.join(' ') : 'esse pedido';
-  return `Nao encontrei fotos seguras de ${requested} no catalogo configurado. Pode me mandar outro nome, cor ou categoria para eu buscar de novo?`;
+  const requested = tokens.length > 0 ? tokens.join(' ') : 'esse produto';
+  return `Nao encontrei ${requested} no catalogo configurado. Pode me mandar outro nome, cor ou categoria para eu buscar de novo?`;
+}
+
+function buildProductNoImageResponse(searchText) {
+  const tokens = getSpecificProductTokens(getSearchTokens(searchText || ''))
+    .filter(token => !['nao', 'não', 'mais', 'outra', 'outras', 'outro', 'outros',
+      'opcao', 'opcoes', 'modelo', 'modelos', 'catalogo', 'catálogo'].includes(token));
+  const requested = tokens.length > 0 ? tokens.join(' ') : 'esse produto';
+  return `Encontrei ${requested} no catalogo, mas sem foto disponivel no momento. Posso te passar mais detalhes ou verificar outro produto?`;
+}
+
+function buildCatalogUnavailableResponse(searchText) {
+  const tokens = getSpecificProductTokens(getSearchTokens(searchText || ''))
+    .filter(token => !['nao', 'não', 'mais', 'outra', 'outras', 'outro', 'outros',
+      'opcao', 'opcoes', 'modelo', 'modelos', 'catalogo', 'catálogo'].includes(token));
+  const requested = tokens.length > 0 ? ' de ' + tokens.join(' ') : '';
+  return 'No momento nao consegui consultar o catalogo' + requested + '. Pode tentar novamente em instantes ou falar com um atendente.';
 }
 
 function buildProductCardsResponse(productCards = []) {
@@ -2056,10 +2076,11 @@ async function fetchFacilZapProductsFromHtml(html, pageUrl, message) {
 
 async function fetchProductContext(message, sourceUrls = [], options = {}) {
   const sources = expandProductSourcesForSearch(message, normalizeProductSources([message, ...sourceUrls]));
-  if (sources.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
+  if (sources.length === 0) return { contextText: '', imageUrls: [], productCards: [], productsFound: false, apiErrorOccurred: false, lookupAttempted: false };
 
   const products = [];
   const imageUrls = [];
+  var apiErrorOccurred = false;
   console.log('[AI PRODUCT] Buscando catalogo/API | query: ' + normalizeSearchText(message).slice(0, 120) + ' | fontes: ' + sources.map(source => `${source.type}:${sanitizeUrlForLog(source.url)}`).join(', '));
   for (const source of sources) {
     const url = source.url;
@@ -2073,6 +2094,7 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
       });
       if (!response.ok) {
         console.warn(`[AI PRODUCT] Fonte retornou HTTP ${response.status} | ${sanitizeUrlForLog(url)}`);
+        apiErrorOccurred = true;
         continue;
       }
       const contentType = String(response.headers.get('content-type') || '').toLowerCase();
@@ -2128,14 +2150,16 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
       products.push({ url, title, description, images: candidateImages.slice(0, 5), sourceType: source.type, sourceName: source.name });
     } catch (error) {
       console.warn(`[AI PRODUCT] Falha ao acessar fonte | ${sanitizeUrlForLog(url)} | ${error.message}`);
-      products.push({ url, title: '', description: `Nao foi possivel acessar a pagina: ${error.message}`, images: [] });
+      apiErrorOccurred = true;
     }
   }
 
   const relevantProducts = getRelevantProducts(products, message, options);
   console.log('[AI PRODUCT] Resultado catalogo | produtos_coletados: ' + products.length + ' | produtos_relevantes: ' + relevantProducts.length);
 
-  if (relevantProducts.length === 0) return { contextText: '', imageUrls: [], productCards: [], productsFound: false };
+  if (relevantProducts.length === 0) {
+    return { contextText: '', imageUrls: [], productCards: [], productsFound: false, apiErrorOccurred: apiErrorOccurred, lookupAttempted: true };
+  }
 
   const contextText = relevantProducts.map((product, index) => [
     `Produto/link ${index + 1}: ${product.url}`,
@@ -2170,6 +2194,7 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
     imageUrls: relevantProducts.flatMap(product => product.images || []).slice(0, 5),
     productCards: productCards.slice(0, 10),
     productsFound: relevantProducts.length > 0,
+    apiErrorOccurred: false,
     lookupAttempted: true
   };
 }
@@ -2481,7 +2506,7 @@ function getRecentCustomerProductRequest(conversationHistory = []) {
   const recentCustomerMessages = Array.isArray(conversationHistory)
     ? conversationHistory
       .filter(item => item && item.direction !== 'out' && !item.is_from_ai)
-      .slice(-8)
+      .slice(-12)
       .map(item => String(item.content || '').trim())
       .filter(Boolean)
     : [];
@@ -2514,11 +2539,35 @@ function extractPreviouslyMentionedProductTitles(conversationHistory = []) {
     });
 }
 
+// Sinalizadores de follow-up sem contexto de produto no historico
+var FOLLOWUP_NO_CONTEXT_FOTO = '__NO_CONTEXT_FOTO__';
+var FOLLOWUP_NO_CONTEXT_MAIS = '__NO_CONTEXT_MAIS__';
+
 function buildProductSearchText(message, conversationHistory = []) {
   const current = String(message || '').trim();
   const normalizedCurrent = normalizeSearchText(current);
   const currentIsFollowUp = isCatalogFollowUpRequest(normalizedCurrent) || isMoreProductOptionsRequest(current);
   const lastProductRequest = getRecentCustomerProductRequest(conversationHistory);
+
+  // Detectar "manda fotos" puro: intencao de midia sem token de produto especifico
+  const isFotoOnlyRequest = /\b(manda|mande|envia|envie|mostra|mostre|ver|quero ver|me manda|me envia)\b/i.test(normalizedCurrent)
+    && /\b(foto|fotos|imagem|imagens)\b/i.test(normalizedCurrent)
+    && getSpecificProductTokens(getSearchTokens(current)).length === 0;
+
+  // Detectar "mais opcoes" puro: sem token de produto especifico
+  const isMoreOptionsOnly = isMoreProductOptionsRequest(current)
+    && getSpecificProductTokens(getSearchTokens(current)).length === 0;
+
+  if (isFotoOnlyRequest) {
+    if (!lastProductRequest) return FOLLOWUP_NO_CONTEXT_FOTO;
+    return lastProductRequest;
+  }
+
+  if (isMoreOptionsOnly) {
+    if (!lastProductRequest) return FOLLOWUP_NO_CONTEXT_MAIS;
+    return lastProductRequest;
+  }
+
   const currentForIntent = currentIsFollowUp && lastProductRequest ? `${lastProductRequest}\n${current}` : current;
   const currentShouldSearch = shouldUseConfiguredProductSources(currentForIntent);
   if (!currentShouldSearch) return currentForIntent;
@@ -3115,15 +3164,67 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     }
   }
 
+  // Verificar sinalizadores de follow-up sem contexto de produto no historico
+  // buildProductSearchText retorna constante especial quando nao ha lastProductRequest
+  var rawSearchText = buildProductSearchText(message, conversationHistory);
+  if (rawSearchText === FOLLOWUP_NO_CONTEXT_FOTO) {
+    return {
+      skipped: false,
+      response: 'Claro! Fotos de qual produto voce quer ver?',
+      provider: 'system',
+      model: 'followup_no_context',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: []
+    };
+  }
+  if (rawSearchText === FOLLOWUP_NO_CONTEXT_MAIS) {
+    return {
+      skipped: false,
+      response: 'Claro! De qual produto voce quer ver mais opcoes?',
+      provider: 'system',
+      model: 'followup_no_context',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: []
+    };
+  }
+
   const deterministicProductContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
   if (deterministicProductContext.lookupAttempted) {
     const productCards = deterministicProductContext.productCards || [];
-    if (productCards.length > 0 || deterministicProductContext.productsFound) {
+
+    // Falha total na API: nao afirmar que produto nao existe, nao chamar LLM sobre produto
+    if (deterministicProductContext.apiErrorOccurred && !deterministicProductContext.productsFound) {
+      console.log('[AI PRODUCT] Falha total na consulta do catalogo | searchText: ' + (deterministicProductContext.searchText || message).slice(0, 80));
       return {
         skipped: false,
-        response: productCards.length > 0
-          ? buildProductCardsResponse(productCards)
-          : buildProductContextSummaryResponse(deterministicProductContext, deterministicProductContext.searchText || message),
+        response: buildCatalogUnavailableResponse(deterministicProductContext.searchText || message),
+        provider: 'catalog',
+        model: 'catalog_unavailable',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: [],
+        product_lookup_attempted: true,
+        product_search_text: deterministicProductContext.searchText || message,
+        products_found: false
+      };
+    }
+
+    // Produtos encontrados com imagem: retorna cards
+    if (productCards.length > 0) {
+      return {
+        skipped: false,
+        response: buildProductCardsResponse(productCards),
         provider: 'catalog',
         model: 'catalog_lookup',
         prompt_tokens: 0,
@@ -3134,7 +3235,45 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         product_cards: productCards,
         product_lookup_attempted: true,
         product_search_text: deterministicProductContext.searchText || message,
-        products_found: deterministicProductContext.productsFound === true
+        products_found: true
+      };
+    }
+
+    // Produtos encontrados mas sem imagem: informa que existe mas sem foto
+    if (deterministicProductContext.productsFound) {
+      return {
+        skipped: false,
+        response: buildProductNoImageResponse(deterministicProductContext.searchText || message),
+        provider: 'catalog',
+        model: 'catalog_no_image',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: [],
+        product_lookup_attempted: true,
+        product_search_text: deterministicProductContext.searchText || message,
+        products_found: true
+      };
+    }
+
+    // API respondeu OK, produto genuinamente nao encontrado no catalogo
+    if (!deterministicProductContext.apiErrorOccurred) {
+      return {
+        skipped: false,
+        response: buildProductLookupEmptyResponse(deterministicProductContext.searchText || message),
+        provider: 'catalog',
+        model: 'catalog_not_found',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: [],
+        product_lookup_attempted: true,
+        product_search_text: deterministicProductContext.searchText || message,
+        products_found: false
       };
     }
   }

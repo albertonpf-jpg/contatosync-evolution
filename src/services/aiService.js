@@ -221,12 +221,39 @@ function buildProductLookupEmptyResponse(searchText) {
 }
 
 function buildProductCardsResponse(productCards = []) {
-  const first = productCards[0];
+  if (!Array.isArray(productCards) || productCards.length === 0) {
+    return 'As fotos foram enviadas acima. Se quiser, posso verificar tamanho, cor ou mais modelos.';
+  }
+
+  function cleanTitle(raw) {
+    return String(raw || '')
+      .replace(/^🛍️?\s*/u, '')
+      .replace(/\s*-\s*foto\s*\d+$/i, '')
+      .trim();
+  }
+
+  function extractPriceFromDescription(desc) {
+    const match = String(desc || '').match(/💰\s*Pre[c\u00E7]o:\s*(R\$\s*[\d.,]+)/iu);
+    return match ? match[1].trim() : '';
+  }
+
+  const seen = new Set();
+  const lines = [];
+  for (const card of productCards) {
+    const title = cleanTitle(card?.title);
+    if (!title || seen.has(title)) continue;
+    seen.add(title);
+    const price = extractPriceFromDescription(card?.description);
+    lines.push(price ? title + ' — ' + price : title);
+    if (lines.length >= 5) break;
+  }
+
   return [
-    `Encontrei ${first?.title || 'opcoes'} na loja.`,
-    first?.description || '',
-    'Enviei as fotos correspondentes acima.'
-  ].filter(Boolean).join('\n');
+    lines.length === 1
+      ? 'Encontrei ' + lines[0] + ' na loja.'
+      : 'Encontrei ' + String(lines.length) + ' opcoes na loja:\n' + lines.map(function(l) { return '\u2022 ' + l; }).join('\n'),
+    'As fotos foram enviadas acima. Se quiser, posso verificar tamanho, cor ou mais modelos.'
+  ].join('\n');
 }
 
 function buildProductContextSummaryResponse(productContext, searchText) {

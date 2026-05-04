@@ -195,7 +195,22 @@ function buildProductLookupEmptyResponse(searchText) {
       'mínimo',
       'catalogo',
       'catálogo',
-      'configurado'
+      'configurado',
+      'mais',
+      'outra',
+      'outras',
+      'outro',
+      'outros',
+      'nova',
+      'novas',
+      'novo',
+      'novos',
+      'diferente',
+      'diferentes',
+      'opcao',
+      'opcoes',
+      'modelo',
+      'modelos'
     ].includes(token));
   const requested = tokens.length > 0 ? tokens.join(' ') : 'esse pedido';
   return `Nao encontrei fotos seguras de ${requested} no catalogo configurado. Pode me mandar outro nome, cor ou categoria para eu buscar de novo?`;
@@ -534,6 +549,7 @@ function buildIntegrationEndpointSource(integration, endpointKey, params = {}) {
     type: integration.integration_type || integration.type || 'api',
     name: `${integration.integration_name || integration.name || 'Integracao'} - ${endpointKey}`,
     endpointKey,
+    publicCatalogUrl: firstValue(config.public_catalog_url, config.product_public_url, config.product_catalog_url, config.catalog_url, config.store_url, config.site_url, ''),
     operational: ['orders_path', 'order_status_path', 'tracking_path', 'customers_path', 'stock_path'].includes(endpointKey),
     headers: integration.headers || buildIntegrationHeaders(integration)
   };
@@ -600,14 +616,20 @@ function hasStrongProductIntent(message) {
   const text = normalizeSearchText(message);
   if (!text) return false;
   const wantsMedia = /\b(foto|fotos|imagem|imagens|mostra|mostrar|mande|manda|envie|envia|ver)\b/i.test(text);
-  const wantsProduct = /\b(quero|queria|procuro|procurando|busco|preciso|gostaria|tem|vende)\b/i.test(text);
+  const wantsProduct = /\b(quero|queria|procuro|procurando|busco|preciso|gostaria|tem|vende|opcao|opcoes|modelos|mais|outra|outras|outro|outros)\b/i.test(text);
   const productNoun = /\b(produto|produtos|catalogo|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|tshirt|cropped)\b/i.test(text);
-  const productAttribute = /\b(preco|valor|estoque|tamanho|tamanhos|cor|cores|variacao|variacoes|tem|vende)\b/i.test(text);
+  const productAttribute = /\b(preco|valor|estoque|tamanho|tamanhos|cor|cores|variacao|variacoes|tem|vende|opcao|opcoes|modelos)\b/i.test(text);
   const tokenCount = text.split(' ').filter(Boolean).length;
   return (wantsMedia && productNoun)
     || (productNoun && (productAttribute || wantsProduct))
     || (productNoun && tokenCount <= 3)
     || extractRequestedSizes(message).length > 0;
+}
+
+function isMoreProductOptionsRequest(message) {
+  const text = normalizeSearchText(message);
+  return /\b(mais|outra|outras|outro|outros|novas|novos|diferentes|ver mais|mostrar mais|mande mais|manda mais|envie mais)\b/.test(text)
+    && /\b(opcao|opcoes|modelo|modelos|produto|produtos|foto|fotos|imagem|imagens|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|tshirt|cropped)\b/.test(text);
 }
 
 function shouldUseConfiguredProductSources(message) {
@@ -632,6 +654,15 @@ function shouldUseConfiguredProductSources(message) {
     'comprar',
     'foto',
     'imagem',
+    'opcao',
+    'opcoes',
+    'modelo',
+    'modelos',
+    'mais ',
+    'outra',
+    'outras',
+    'outro',
+    'outros',
     'tamanho',
     'variacao',
     'variação',
@@ -1091,7 +1122,22 @@ function getSearchTokens(value) {
       'mínimo',
       'catalogo',
       'catálogo',
-      'configurado'
+      'configurado',
+      'mais',
+      'outra',
+      'outras',
+      'outro',
+      'outros',
+      'nova',
+      'novas',
+      'novo',
+      'novos',
+      'diferente',
+      'diferentes',
+      'opcao',
+      'opcoes',
+      'modelo',
+      'modelos'
     ].includes(token))
     .filter(token => !/^\d+$/.test(token));
 }
@@ -1278,6 +1324,52 @@ function getFacilZapImageUrl(image) {
   return 'https://arquivos.facilzap.app.br/' + value.replace(/^\/+/, '');
 }
 
+function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') {
+  const explicitUrl = firstValue(
+    product?.url,
+    product?.link,
+    product?.permalink,
+    product?.product_url,
+    product?.link_produto,
+    product?.url_produto,
+    product?.catalog_url,
+    product?.catalogo_url,
+    ''
+  );
+  if (explicitUrl && !/api\.facilzap/i.test(String(explicitUrl))) {
+    return resolvePageUrl(sourceUrl || fallbackUrl, explicitUrl);
+  }
+
+  const productId = firstValue(product?.id, product?.produto_id, product?.codigo, '');
+  if (!productId) return fallbackUrl;
+
+  const catalogUrl = firstValue(
+    product?.catalogo?.url,
+    product?.catalogo_url,
+    product?.catalog_url,
+    product?.loja?.url,
+    product?.store_url,
+    fallbackUrl
+  );
+  try {
+    const parsed = new URL(String(catalogUrl || sourceUrl || fallbackUrl || 'https://facilzap.app.br'));
+    const pathMatch = parsed.pathname.match(/\/c\/([^/]+)(?:\/(?:produto|produtos)\/?|\b)?/i)
+      || parsed.pathname.match(/\/c\/([^/]+)/i);
+    const catalogSlug = firstValue(
+      product?.catalogo?.slug,
+      product?.catalogo_slug,
+      product?.slug_catalogo,
+      product?.loja?.slug,
+      pathMatch?.[1],
+      'varejo'
+    );
+    const origin = /api\.facilzap/i.test(parsed.hostname) ? 'https://facilzap.app.br' : parsed.origin;
+    return `${origin}/c/${catalogSlug}/produto/${productId}`;
+  } catch (error) {
+    return `https://facilzap.app.br/c/varejo/produto/${productId}`;
+  }
+}
+
 function getFacilZapPrice(product) {
   return product?.precos_produto?.promocional
     || product?.precos_produto?.preco_a_partir?.preco
@@ -1387,7 +1479,7 @@ function normalizeFacilZapProduct(product, catalogBase) {
   const variationStocks = getVariationStockEntries(product.variacoes);
   return {
     id: product.id,
-    url: String(catalogBase).replace('{PATH}', 'produto/' + product.id),
+    url: getFacilZapPublicProductUrl(product, catalogBase, String(catalogBase).replace('{PATH}', 'produto/' + product.id)),
     title: product.nome || 'Produto',
     description: stripHtml(product.descricao || ''),
     price: price ? formatCurrencyBRL(price) : '',
@@ -1560,7 +1652,7 @@ function collectImageValues(value, pageUrl) {
   return images.filter(Boolean);
 }
 
-function extractGenericJsonProducts(data, sourceUrl) {
+function extractGenericJsonProducts(data, sourceUrl, source = {}) {
   const products = [];
   const visit = (value, depth = 0) => {
     if (!value || depth > 6) return;
@@ -1605,7 +1697,11 @@ function extractGenericJsonProducts(data, sourceUrl) {
         value.precos_produto?.padrao,
         value.precos_produto?.preco_a_partir?.preco
       );
-      const url = resolvePageUrl(sourceUrl, firstValue(value.url, value.link, value.permalink, value.product_url, sourceUrl));
+      const isFacilZapSource = /facilzap/i.test(String(sourceUrl || ''));
+      const rawUrl = firstValue(value.url, value.link, value.permalink, value.product_url, value.link_produto, value.url_produto, sourceUrl);
+      const url = isFacilZapSource
+        ? getFacilZapPublicProductUrl(value, source.publicCatalogUrl || sourceUrl, resolvePageUrl(source.publicCatalogUrl || sourceUrl, rawUrl))
+        : resolvePageUrl(sourceUrl, rawUrl);
       const variations = [
         value.variacoes,
         value.variations,
@@ -1678,11 +1774,27 @@ function hasNegativeProductMatch(product, tokens = []) {
   return tokens.some(token => new RegExp(`\\b(?:nao|sem|acompanha|acompanham|acompanhar)\\b.{0,40}\\b${token}\\b|\\b${token}\\b.{0,40}\\b(?:nao|sem|acompanha|acompanham|acompanhar)\\b`, 'i').test(haystack));
 }
 
-function getRelevantProducts(products, message) {
+function isPreviouslyShownProduct(product, excludedTitleKeys = []) {
+  if (!excludedTitleKeys.length) return false;
+  const title = normalizeSearchText(product?.title || '');
+  if (!title) return false;
+  return excludedTitleKeys.some(key => key && (title === key || title.includes(key) || key.includes(title)));
+}
+
+function preferNotPreviouslyShown(products = [], excludedTitleKeys = []) {
+  if (!excludedTitleKeys.length || products.length <= 1) return products;
+  const fresh = products.filter(product => !isPreviouslyShownProduct(product, excludedTitleKeys));
+  return fresh.length > 0 ? fresh : products;
+}
+
+function getRelevantProducts(products, message, options = {}) {
   const messageTokens = getSearchTokens(message);
   const specificTokens = getSpecificProductTokens(messageTokens);
   const colorTokens = getColorTokens(messageTokens);
   const requestedSizes = extractRequestedSizes(message);
+  const excludedTitleKeys = Array.isArray(options.excludeTitles)
+    ? options.excludeTitles.map(normalizeSearchText).filter(Boolean)
+    : [];
   const uniqueProducts = dedupeProducts(products)
     .map(product => {
       const title = normalizeSearchText(product.title || '');
@@ -1715,6 +1827,7 @@ function getRelevantProducts(products, message) {
         _availableStock: availableStock,
         _hasStock: hasStock,
         _hasRequestedSizeInStock: hasRequestedSizeInStock,
+        _wasPreviouslyShown: isPreviouslyShownProduct(product, excludedTitleKeys),
         _titleMatches: countTokenMatches(title, messageTokens),
         _specificMatches: countTokenMatches(haystack, specificTokens),
         _colorMatches: countTokenMatches(titleAndVariations, colorTokens),
@@ -1732,16 +1845,16 @@ function getRelevantProducts(products, message) {
       .filter(product => product._hasRequestedSizeInStock || product._hasStock)
       .sort((a, b) => Number(b._hasRequestedSizeInStock) - Number(a._hasRequestedSizeInStock) || b.score - a.score);
     if (sizeMatchedInStock.length > 0 && (messageTokens.length === 0 || specificTokens.length === 0)) {
-      return sizeMatchedInStock.slice(0, 6);
+      return preferNotPreviouslyShown(sizeMatchedInStock, excludedTitleKeys).slice(0, 6);
     }
     if (messageTokens.length === 0 || specificTokens.length === 0) {
-      return sizeMatched.slice(0, 6);
+      return preferNotPreviouslyShown(sizeMatched, excludedTitleKeys).slice(0, 6);
     }
   }
 
   if (messageTokens.length === 0) {
     const inStockProducts = uniqueProducts.filter(product => product._hasStock);
-    return (inStockProducts.length > 0 ? inStockProducts : uniqueProducts).slice(0, 6);
+    return preferNotPreviouslyShown(inStockProducts.length > 0 ? inStockProducts : uniqueProducts, excludedTitleKeys).slice(0, 6);
   }
 
   const minSpecificMatches = specificTokens.length >= 2 ? specificTokens.length : specificTokens.length;
@@ -1761,10 +1874,10 @@ function getRelevantProducts(products, message) {
     const titleOrCategoryMatched = matched.filter(product => product._titleMatches > 0 || countTokenMatches(normalizeSearchText([product.category, product.categoryName, product.categoria_nome].join(' ')), specificTokens) > 0);
     if (specificTokens.length > 0 && titleOrCategoryMatched.length > 0) {
       const inStockTitleOrCategoryMatched = titleOrCategoryMatched.filter(product => product._hasStock);
-      return (inStockTitleOrCategoryMatched.length > 0 ? inStockTitleOrCategoryMatched : titleOrCategoryMatched).slice(0, 6);
+      return preferNotPreviouslyShown(inStockTitleOrCategoryMatched.length > 0 ? inStockTitleOrCategoryMatched : titleOrCategoryMatched, excludedTitleKeys).slice(0, 6);
     }
     const inStockMatched = matched.filter(product => product._hasStock);
-    return (inStockMatched.length > 0 ? inStockMatched : matched).slice(0, 6);
+    return preferNotPreviouslyShown(inStockMatched.length > 0 ? inStockMatched : matched, excludedTitleKeys).slice(0, 6);
   }
   return [];
 }
@@ -1989,7 +2102,7 @@ async function fetchFacilZapProductsFromHtml(html, pageUrl, message) {
   return getRelevantProducts(products, message).slice(0, 10);
 }
 
-async function fetchProductContext(message, sourceUrls = []) {
+async function fetchProductContext(message, sourceUrls = [], options = {}) {
   const sources = expandProductSourcesForSearch(message, normalizeProductSources([message, ...sourceUrls]));
   if (sources.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
 
@@ -2014,7 +2127,7 @@ async function fetchProductContext(message, sourceUrls = []) {
       const bodyText = await response.text();
       if (contentType.includes('json')) {
         const data = JSON.parse(bodyText);
-        const jsonProducts = extractGenericJsonProducts(data, url);
+        const jsonProducts = extractGenericJsonProducts(data, url, source);
         if (jsonProducts.length > 0) {
           console.log('[AI PRODUCT] API de integracao consultada | fonte: ' + source.name + ' | produtos: ' + jsonProducts.length);
           for (const product of jsonProducts) {
@@ -2067,7 +2180,7 @@ async function fetchProductContext(message, sourceUrls = []) {
     }
   }
 
-  const relevantProducts = getRelevantProducts(products, message);
+  const relevantProducts = getRelevantProducts(products, message, options);
   console.log('[AI PRODUCT] Resultado catalogo | produtos_coletados: ' + products.length + ' | produtos_relevantes: ' + relevantProducts.length);
 
   if (relevantProducts.length === 0) return { contextText: '', imageUrls: [], productCards: [], productsFound: false };
@@ -2412,33 +2525,65 @@ function formatConversationHistory(messages = []) {
   ].join('\n');
 }
 
-function buildProductSearchText(message, conversationHistory = []) {
-  const current = String(message || '').trim();
-  const currentShouldSearch = shouldUseConfiguredProductSources(current);
-  const currentIsFollowUp = /cad[eê]|foto|fotos|imagem|imagens|manda|mande|envia|envie|quero ver|mostra|mostre/i.test(current);
-  if (!currentShouldSearch) return current;
-  if (getSpecificProductTokens(getSearchTokens(current)).length > 0) return current;
-
+function getRecentCustomerProductRequest(conversationHistory = []) {
   const recentCustomerMessages = Array.isArray(conversationHistory)
     ? conversationHistory
       .filter(item => item && item.direction !== 'out' && !item.is_from_ai)
-      .slice(-6)
+      .slice(-8)
       .map(item => String(item.content || '').trim())
       .filter(Boolean)
     : [];
-  const lastProductRequest = [...recentCustomerMessages]
+  return [...recentCustomerMessages]
     .reverse()
-    .find(item => getSpecificProductTokens(getSearchTokens(item)).length > 0);
+    .find(item => shouldUseConfiguredProductSources(item) || getSpecificProductTokens(getSearchTokens(item)).length > 0)
+    || '';
+}
+
+function extractPreviouslyMentionedProductTitles(conversationHistory = []) {
+  if (!Array.isArray(conversationHistory)) return [];
+  const ignored = /^(alberto|encontrei|enviei|no momento|infelizmente|posso|quer|temos|essas opcoes|opcoes|estoque atual|na loja|aqui estao)/i;
+  const seen = new Set();
+  return conversationHistory
+    .filter(item => item && (item.direction === 'out' || item.is_from_ai))
+    .slice(-8)
+    .flatMap(item => String(item.content || '').split(/\r?\n/))
+    .map(line => stripHtml(line)
+      .replace(/^[^\p{L}\p{N}]+/u, '')
+      .replace(/^(?:produto|titulo|opcao)\s*[:\-]\s*/i, '')
+      .trim())
+    .filter(line => line.length >= 4 && line.length <= 90)
+    .filter(line => !ignored.test(normalizeSearchText(line)))
+    .filter(line => /\b(saia|short|vestido|conjunto|blusa|body|calca|macacao|jardineira|camiseta|cropped|tshirt)\b/i.test(normalizeSearchText(line)))
+    .filter(line => {
+      const key = normalizeSearchText(line);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function buildProductSearchText(message, conversationHistory = []) {
+  const current = String(message || '').trim();
+  const normalizedCurrent = normalizeSearchText(current);
+  const currentIsFollowUp = /\b(foto|fotos|imagem|imagens|manda|mande|envia|envie|ver|mostra|mostre|mais|outra|outras|outro|outros|opcao|opcoes|modelo|modelos)\b/i.test(normalizedCurrent)
+    || isMoreProductOptionsRequest(current);
+  const lastProductRequest = getRecentCustomerProductRequest(conversationHistory);
+  const currentForIntent = currentIsFollowUp && lastProductRequest ? `${lastProductRequest}\n${current}` : current;
+  const currentShouldSearch = shouldUseConfiguredProductSources(currentForIntent);
+  if (!currentShouldSearch) return currentForIntent;
+  if (!currentIsFollowUp && getSpecificProductTokens(getSearchTokens(current)).length > 0) return current;
   const parts = currentIsFollowUp && lastProductRequest ? [lastProductRequest, current] : [current];
   return [...new Set(parts)].join('\n');
 }
-
 async function buildProductContextForConfig(message, config, conversationHistory = []) {
   const searchText = buildProductSearchText(message, conversationHistory);
   const configuredSources = buildConfiguredProductSources(config);
   if (config?.product_search_enabled === false && configuredSources.length === 0) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
   const shouldSearch = shouldUseConfiguredProductSources(searchText);
-  const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : []);
+  const excludeTitles = isMoreProductOptionsRequest(message)
+    ? extractPreviouslyMentionedProductTitles(conversationHistory)
+    : [];
+  const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : [], { excludeTitles });
   return { ...productContext, lookupAttempted: shouldSearch, searchText };
 }
 

@@ -164,17 +164,42 @@ function buildCarouselCardTitle(product, suffix = '') {
   return truncateText(`🛍️ ${title}${suffix}`, 60);
 }
 
+function isSizeVariation(value, knownSizes = []) {
+  const text = normalizeSearchText(value);
+  if (!text) return false;
+  if (knownSizes.some(size => text === String(size) || text === `tamanho ${size}` || text === `tam ${size}`)) return true;
+  return /^(?:tamanho|tam|numero|n)?\s*(?:\d{1,2}|pp|p|m|g|gg|xg|xgg)$/.test(text)
+    || /^\d{1,2}\s*(?:anos|ano)$/.test(text);
+}
+
+function getDisplayVariations(product) {
+  const knownSizes = Array.isArray(product?._sizes) ? product._sizes : [];
+  const seen = new Set();
+  return (Array.isArray(product?.variations) ? product.variations : [])
+    .map(value => String(value || '').trim())
+    .filter(Boolean)
+    .filter(value => !isSizeVariation(value, knownSizes))
+    .filter(value => {
+      const key = normalizeSearchText(value);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 5);
+}
+
 function buildCarouselCardDescription(product) {
   const sizes = Array.isArray(product?._sizes) && product._sizes.length
     ? product._sizes.slice(0, 6).join(', ')
     : '';
-  const variations = Array.isArray(product?.variations) && product.variations.length
-    ? product.variations.slice(0, 5).join(', ')
+  const variations = getDisplayVariations(product);
+  const variationText = variations.length
+    ? variations.join(', ')
     : '';
   const details = [
     product?.price ? `💰 Preço: ${product.price}` : '',
     sizes ? `📏 Tamanho: ${sizes}` : '',
-    variations ? `🎨 Variações: ${variations}` : '',
+    variationText ? `🎨 Variações: ${variationText}` : '',
     product?.stock !== null && product?.stock !== undefined && product.stock !== '' ? `📦 Estoque: ${product.stock}` : '',
     product?.description ? `📝 Detalhes: ${String(product.description).replace(/\s+/g, ' ').trim()}` : ''
   ].filter(Boolean);

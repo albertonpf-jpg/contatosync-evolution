@@ -120,6 +120,21 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
   }
 
   var aiText = String(aiResult.response || '').trim();
+
+  // Filtro final de seguranca: remover qualquer promessa de foto que nao foi enviada como card
+  if (!hasProductCards && aiText) {
+    aiText = aiText
+      .replace(
+        /\b(aqui est[aã]o|seguem|enviei|vou enviar|mandei|estou enviando|ja enviei|mando|irei enviar|vou te mandar|te mando|abaixo est[aã]o|acima est[aã]o|segue abaixo|segue acima|confira abaixo|veja abaixo|veja acima)\b[^.!?\n]{0,100}\b(foto|fotos|imagem|imagens)\b[^\n.]*/gi,
+        'Nao encontrei fotos seguras para esse produto no catalogo configurado.'
+      )
+      .replace(
+        /\b(foto|fotos|imagem|imagens)\b[^.!?\n]{0,60}\b(enviada[s]?|acima|abaixo|em anexo|no carrossel|ja foi|foram enviada[s]?)\b[^\n.]*/gi,
+        'Nao encontrei fotos seguras para esse produto no catalogo configurado.'
+      )
+      .trim();
+  }
+
   if (!aiText && hasProductCards) {
     aiText = productMediaSent
       ? 'Enviei as fotos do produto acima. Seguem os detalhes que encontrei na loja.'

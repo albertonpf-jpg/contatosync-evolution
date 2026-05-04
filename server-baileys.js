@@ -109,19 +109,7 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       for (let index = 0; index < cardsToSend.length; index += 1) {
         const card = cardsToSend[index];
         try {
-          // Montar caption curto: titulo + preco + tamanhos do card correspondente
-          var cardTitle = String(card.title || '')
-            .replace(/^\uD83D\uDECD\uFE0F?\s*/u, '')
-            .replace(/\s*-\s*foto\s*\d+\s*$/i, '')
-            .trim();
-          var cardDesc = String(card.description || '');
-          var cardPriceMatch = cardDesc.match(/R\$\s*[\d.,]+/);
-          var cardSizeMatch = cardDesc.match(/📏 Tamanho: ([^\n]+)/);
-          var captionParts = cardTitle ? [cardTitle] : [];
-          if (cardPriceMatch) captionParts.push(cardPriceMatch[0]);
-          if (cardSizeMatch) captionParts.push('Tam: ' + cardSizeMatch[1].slice(0, 40));
-          var cardCaption = captionParts.join(' | ').slice(0, 200);
-          await baileysService.sendRemoteImageMessage(sessionName, jid, card.imageUrl, cardCaption);
+          await baileysService.sendRemoteImageMessage(sessionName, jid, card.imageUrl, '');
           productMediaSent = true;
         } catch (imageError) {
           console.warn('[AI AUTO] Falha ao enviar imagem do produto: ' + imageError.message);
@@ -132,60 +120,18 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
   }
 
   var aiText = String(aiResult.response || '').trim();
-
-  // Filtro final de seguranca: remover qualquer promessa de foto que nao foi enviada como card
-  if (!hasProductCards && aiText) {
-    aiText = aiText
-      .replace(
-        /\b(aqui est[aã]o|seguem|enviei|vou enviar|mandei|estou enviando|ja enviei|mando|irei enviar|vou te mandar|te mando|abaixo est[aã]o|acima est[aã]o|segue abaixo|segue acima|confira abaixo|veja abaixo|veja acima)\b[^.!?\n]{0,100}\b(foto|fotos|imagem|imagens)\b[^\n.]*/gi,
-        'Nao encontrei fotos seguras para esse produto no catalogo configurado.'
-      )
-      .replace(
-        /\b(foto|fotos|imagem|imagens)\b[^.!?\n]{0,60}\b(enviada[s]?|acima|abaixo|em anexo|no carrossel|ja foi|foram enviada[s]?)\b[^\n.]*/gi,
-        'Nao encontrei fotos seguras para esse produto no catalogo configurado.'
-      )
-      .trim();
-  }
-
   if (!aiText && hasProductCards) {
     aiText = productMediaSent
       ? 'Enviei as fotos do produto acima. Seguem os detalhes que encontrei na loja.'
       : 'Encontrei estas opcoes na loja, mas nao consegui enviar as fotos automaticamente agora.';
   }
-  // Preservar aiText rico (preco/detalhes de buildProductCardsResponse) quando ja preenchido.
-  // Frase generica so entra se aiText ainda estiver vazio apos os blocos anteriores.
   if (hasProductCards && productMediaSent) {
-    if (!aiText) {
-      aiText = 'Enviei acima as opcoes que encontrei para o que voce pediu. Se quiser, posso verificar tamanhos, cores ou disponibilidade.';
-    }
+    aiText = 'Enviei acima as opcoes que encontrei para o que voce pediu. Se quiser, posso verificar tamanhos, cores ou disponibilidade.';
   }
   if (hasProductCards && !productMediaSent) {
     aiText = 'Encontrei o produto, mas nao consegui enviar as fotos automaticamente agora. Vou chamar um atendente para ajudar.';
   }
   var sendResult = await baileysService.sendTextMessage(sessionName, jid, aiText);
-
-  // Montar content para o historico: aiText enviado ao cliente + titulos dos cards enviados.
-  // O cliente nao recebe os titulos duplicados; eles ficam apenas no banco para que
-  // extractPreviouslyMentionedProductTitles consiga excluir produtos ja mostrados
-  // nas proximas buscas de "mais opcoes" ou "outros modelos".
-  var contentForHistory = aiText;
-  if (hasProductCards && productMediaSent) {
-    var seenCardTitles = new Set();
-    var uniqueCardTitles = [];
-    for (var ci = 0; ci < aiResult.product_cards.length; ci += 1) {
-      var rawCardTitle = String(aiResult.product_cards[ci].title || '')
-        .replace(/^\uD83D\uDECD\uFE0F?\s*/u, '')  // remove emoji 🛍️
-        .replace(/\s*-\s*foto\s*\d+\s*$/i, '')     // remove sufixo "- foto 1"
-        .trim();
-      if (rawCardTitle && !seenCardTitles.has(rawCardTitle)) {
-        seenCardTitles.add(rawCardTitle);
-        uniqueCardTitles.push(rawCardTitle);
-      }
-    }
-    if (uniqueCardTitles.length > 0) {
-      contentForHistory = aiText + '\n' + uniqueCardTitles.join('\n');
-    }
-  }
 
   var { data: newMessage, error: messageError } = await supabaseAdmin
     .from('evolution_messages')
@@ -194,7 +140,7 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       conversation_id: conversation.id,
       client_id: clientId,
       contact_id: contact.id,
-      content: contentForHistory,
+      content: aiText,
       message_type: 'text',
       direction: 'out',
       status: 'sent',

@@ -19,6 +19,25 @@ function includesAnyKeyword(message, keywords) {
   return normalizeList(keywords).some(keyword => text.includes(keyword.toLowerCase()));
 }
 
+function isSimpleGreeting(message) {
+  const text = normalizeSearchText(message);
+  if (!text) return false;
+  const greetingOnly = /^(oi|ola|olá|bom dia|boa tarde|boa noite|bom noite|e ai|eai|tudo bem|td bem|boa)$/.test(String(message || '').trim().toLowerCase());
+  if (greetingOnly) return true;
+  const tokens = text.split(' ').filter(Boolean);
+  const greetingTokens = new Set(['oi', 'ola', 'bom', 'boa', 'dia', 'tarde', 'noite', 'tudo', 'bem', 'td']);
+  return tokens.length > 0 && tokens.length <= 4 && tokens.every(token => greetingTokens.has(token));
+}
+
+function buildGreetingResponse(message, config = {}) {
+  const text = normalizeSearchText(message);
+  if (text.includes('boa noite')) return 'Boa noite! Como posso ajudar?';
+  if (text.includes('boa tarde')) return 'Boa tarde! Como posso ajudar?';
+  if (text.includes('bom dia')) return 'Bom dia! Como posso ajudar?';
+  const configured = String(config.greeting_message || '').trim();
+  return configured || 'Ola! Como posso ajudar?';
+}
+
 function getProviderForModel(model) {
   return String(model || '').toLowerCase().includes('claude') ? 'claude' : 'openai';
 }
@@ -57,7 +76,7 @@ function buildSystemPrompt(config, contact, conversation) {
   const greeting = config.greeting_message
     ? `\n\nSaudacao configurada: ${config.greeting_message}\nUse essa saudacao somente na primeira resposta do atendimento. Se a conversa ja estiver em andamento, nao cumprimente de novo e responda direto ao assunto do cliente.`
     : '';
-  const fallback = config.fallback_message ? `\n\nSe nao tiver certeza, use esta orientacao de fallback: ${config.fallback_message}` : '';
+  const fallback = config.fallback_message ? `\n\nFallback configurado para casos sem resposta segura: ${config.fallback_message}\nUse esse fallback somente quando o cliente pedir algo que voce realmente nao consegue responder depois de consultar conversa, arquivos, APIs e catalogo. Nunca use fallback para saudacoes simples como oi, bom dia, boa tarde ou boa noite.` : '';
   const triggerKeywords = normalizeList(config.trigger_keywords);
   const triggerContext = triggerKeywords.length > 0
     ? `\n\nAssuntos prioritarios configurados: ${triggerKeywords.join(', ')}. Use isso como contexto de atendimento, mas responda tambem mensagens gerais do cliente.`
@@ -135,23 +154,19 @@ function buildProductCardsResponse(productCards = []) {
 }
 
 function buildAIUnavailableResponse(config) {
-  return String(config?.fallback_message || '').trim()
-    || 'No momento nao consegui processar a resposta automatica. Um atendente vai continuar o atendimento assim que possivel.';
+  return 'No momento nao consegui acessar o modelo de IA configurado. Sua mensagem foi recebida e um atendente pode continuar se necessario.';
 }
 
 function buildOutsideWorkingHoursResponse(config) {
-  return String(config?.fallback_message || '').trim()
-    || 'No momento estamos fora do horario de atendimento, mas sua mensagem foi recebida.';
+  return 'No momento estamos fora do horario de atendimento, mas sua mensagem foi recebida.';
 }
 
 function buildDailyLimitResponse(config) {
-  return String(config?.fallback_message || '').trim()
-    || 'No momento nao consegui processar mais respostas automaticas. Sua mensagem foi recebida.';
+  return 'No momento o limite diario de respostas automaticas foi atingido. Sua mensagem foi recebida.';
 }
 
 function buildAIProviderErrorResponse(config) {
-  return String(config?.fallback_message || '').trim()
-    || 'No momento tive uma instabilidade para gerar a resposta automatica. Sua mensagem foi recebida.';
+  return 'No momento tive uma instabilidade para gerar a resposta automatica. Sua mensagem foi recebida.';
 }
 
 function getTokenUsageFromOpenAI(data) {
@@ -1827,6 +1842,22 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   };
   const systemPrompt = buildSystemPrompt(effectiveConfig, contact, conversation);
   const conversationHistory = await getConversationMessagesFromStart(supabase, clientId, conversation?.id);
+
+  if (isSimpleGreeting(message)) {
+    const response = suppressRepeatedGreeting(buildGreetingResponse(message, effectiveConfig), effectiveConfig.greeting_message, conversation);
+    return {
+      skipped: false,
+      response,
+      provider: 'system',
+      model: 'simple_greeting',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: []
+    };
+  }
 
   if (!isWithinWorkingHours(config, config.timezone || 'America/Sao_Paulo')) {
     const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);

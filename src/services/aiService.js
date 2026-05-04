@@ -155,15 +155,11 @@ function removeImageUrlsFromResponse(text) {
     .trim();
 }
 
-var FOTO_PROMISE_REGEX = /\b(aqui est[aã]o|seguem|enviei|vou enviar|mandei|estou enviando|ja enviei|mando|irei enviar|vou te mandar|te mando|abaixo est[aã]o|acima est[aã]o|segue abaixo|segue acima|confira abaixo|veja abaixo|veja acima)\b[^.!?\n]{0,100}\b(foto|fotos|imagem|imagens)\b[^\n.]*/gi;
-var FOTO_ABOVE_REGEX = /\b(foto|fotos|imagem|imagens)\b[^.!?\n]{0,60}\b(enviada[s]?|acima|abaixo|em anexo|no carrossel|ja foi|foram enviada[s]?)\b[^\n.]*/gi;
-
 function normalizeProductMediaResponse(text, productCards = []) {
   let response = removeImageUrlsFromResponse(text);
   if (!Array.isArray(productCards) || productCards.length === 0) {
     return response
-      .replace(FOTO_PROMISE_REGEX, 'Nao encontrei fotos seguras para esse produto no catalogo configurado.')
-      .replace(FOTO_ABOVE_REGEX, 'Nao encontrei fotos seguras para esse produto no catalogo configurado.')
+      .replace(/\b(aqui est[aã]o|seguem|enviei|vou enviar|mandei)\b.{0,80}\b(fotos|imagens)\b[^\n.]*/gi, 'Encontrei produtos no catalogo, mas nao encontrei fotos seguras para enviar automaticamente')
       .trim();
   }
 
@@ -220,66 +216,17 @@ function buildProductLookupEmptyResponse(searchText) {
       'modelo',
       'modelos'
     ].includes(token));
-  const requested = tokens.length > 0 ? tokens.join(' ') : 'esse produto';
-  return `Nao encontrei ${requested} no catalogo configurado. Pode me mandar outro nome, cor ou categoria para eu buscar de novo?`;
-}
-
-function buildProductNoImageResponse(searchText) {
-  const tokens = getSpecificProductTokens(getSearchTokens(searchText || ''))
-    .filter(token => !['nao', 'não', 'mais', 'outra', 'outras', 'outro', 'outros',
-      'opcao', 'opcoes', 'modelo', 'modelos', 'catalogo', 'catálogo'].includes(token));
-  const requested = tokens.length > 0 ? tokens.join(' ') : 'esse produto';
-  return `Encontrei ${requested} no catalogo, mas sem foto disponivel no momento. Posso te passar mais detalhes ou verificar outro produto?`;
-}
-
-function buildCatalogUnavailableResponse(searchText) {
-  const tokens = getSpecificProductTokens(getSearchTokens(searchText || ''))
-    .filter(token => !['nao', 'não', 'mais', 'outra', 'outras', 'outro', 'outros',
-      'opcao', 'opcoes', 'modelo', 'modelos', 'catalogo', 'catálogo'].includes(token));
-  const requested = tokens.length > 0 ? ' de ' + tokens.join(' ') : '';
-  return 'No momento nao consegui consultar o catalogo' + requested + '. Pode tentar novamente em instantes ou falar com um atendente.';
+  const requested = tokens.length > 0 ? tokens.join(' ') : 'esse pedido';
+  return `Nao encontrei fotos seguras de ${requested} no catalogo configurado. Pode me mandar outro nome, cor ou categoria para eu buscar de novo?`;
 }
 
 function buildProductCardsResponse(productCards = []) {
-  if (!Array.isArray(productCards) || productCards.length === 0) {
-    return 'Enviei as fotos dos produtos acima.';
-  }
-
-  // Extrair preco do campo description do card ("💰 Preço: R$ 79,90\n...")
-  function extractPriceFromCardDescription(desc) {
-    var match = String(desc || '').match(/R\$\s*[\d.,]+/);
-    return match ? match[0] : '';
-  }
-
-  // Desduplicar por titulo limpo (sem emoji 🛍️ e sufixo "-foto N")
-  var seen = new Set();
-  var uniqueCards = [];
-  for (var i = 0; i < productCards.length; i += 1) {
-    var rawTitle = String(productCards[i].title || '')
-      .replace(/^\uD83D\uDECD\uFE0F?\s*/u, '')
-      .replace(/\s*-\s*foto\s*\d+\s*$/i, '')
-      .trim();
-    if (rawTitle && !seen.has(rawTitle)) {
-      seen.add(rawTitle);
-      uniqueCards.push({ title: rawTitle, desc: productCards[i].description || '' });
-    }
-  }
-
-  // Limitar a 5 produtos no texto para nao gerar mensagem enorme
-  var lines = uniqueCards.slice(0, 5).map(function(c, idx) {
-    var price = extractPriceFromCardDescription(c.desc);
-    return (idx + 1) + '. ' + c.title + (price ? ' — ' + price : '');
-  });
-
-  var header = lines.length === 1
-    ? 'Encontrei esta opcao disponivel:'
-    : 'Encontrei estas opcoes disponiveis:';
-
+  const first = productCards[0];
   return [
-    header,
-    lines.join('\n'),
-    'As fotos foram enviadas acima. Se quiser, posso verificar tamanho, cor ou mais modelos.'
-  ].join('\n');
+    `Encontrei ${first?.title || 'opcoes'} na loja.`,
+    first?.description || '',
+    'Enviei as fotos correspondentes acima.'
+  ].filter(Boolean).join('\n');
 }
 
 function buildProductContextSummaryResponse(productContext, searchText) {
@@ -601,30 +548,12 @@ function buildIntegrationEndpointSource(integration, endpointKey, params = {}) {
   if (authType === 'query' && integration.api_key) {
     finalUrl = addQueryParam(finalUrl, config.token_param || 'token', integration.api_key);
   }
-
-  // Resolver publicCatalogUrl para que getFacilZapPublicProductUrl possa montar
-  // a URL publica correta do produto (/c/{slug}/produto/{id}).
-  // getIntegrationApiBaseUrl troca facilzap.app.br/c/{slug} por api.facilzap.app.br,
-  // perdendo o slug. Recuperamos o slug do api_endpoint original quando necessario.
-  const configuredPublicCatalogUrl = firstValue(
-    config.public_catalog_url, config.product_public_url, config.product_catalog_url,
-    config.catalog_url, config.store_url, config.site_url, ''
-  );
-  let publicCatalogUrl = configuredPublicCatalogUrl;
-  if (!publicCatalogUrl && integrationType === 'facilzap') {
-    const rawEndpoint = String(integration.api_endpoint || integration.url || '').trim();
-    const slugMatch = rawEndpoint.match(/\/c\/([^/?#]+)/i);
-    if (slugMatch && slugMatch[1]) {
-      publicCatalogUrl = 'https://facilzap.app.br/c/' + slugMatch[1];
-    }
-  }
-
   return {
     url: finalUrl,
     type: integration.integration_type || integration.type || 'api',
     name: `${integration.integration_name || integration.name || 'Integracao'} - ${endpointKey}`,
     endpointKey,
-    publicCatalogUrl,
+    publicCatalogUrl: firstValue(config.public_catalog_url, config.product_public_url, config.product_catalog_url, config.catalog_url, config.store_url, config.site_url, ''),
     operational: ['orders_path', 'order_status_path', 'tracking_path', 'customers_path', 'stock_path'].includes(endpointKey),
     headers: integration.headers || buildIntegrationHeaders(integration)
   };
@@ -1348,6 +1277,7 @@ function getFacilZapImageUrl(image) {
 }
 
 function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') {
+  // Regra 1: campo explícito no produto, não-API — usar diretamente
   const explicitUrl = firstValue(
     product?.url,
     product?.link,
@@ -1364,41 +1294,101 @@ function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') 
   }
 
   const productId = firstValue(product?.id, product?.produto_id, product?.codigo, '');
-  if (!productId) return fallbackUrl;
 
-  const catalogUrl = firstValue(
+  // URL base do catálogo vinda do próprio produto (campos aninhados)
+  const productCatalogUrl = firstValue(
     product?.catalogo?.url,
     product?.catalogo_url,
     product?.catalog_url,
     product?.loja?.url,
     product?.store_url,
-    fallbackUrl
+    ''
   );
+
+  // Selecionar melhor base disponível excluindo sempre endpoints de API
+  const baseUrl = [productCatalogUrl, sourceUrl, fallbackUrl]
+    .find(u => u && !/api\.facilzap/i.test(String(u))) || '';
+
+  // Fallback seguro: URL do catálogo sem inventar caminho de produto
+  const safeCatalogFallback = baseUrl
+    ? (() => { try { const p = new URL(String(baseUrl)); return `${p.origin}${p.pathname}`.replace(/\/+$/, ''); } catch (_) { return ''; } })()
+    : '';
+
+  if (!productId) return safeCatalogFallback;
+
+  if (!baseUrl) return '';
+
   try {
-    const parsed = new URL(String(catalogUrl || sourceUrl || fallbackUrl || 'https://facilzap.app.br'));
-    const pathMatch = parsed.pathname.match(/\/c\/([^/]+)(?:\/(?:produto|produtos)\/?|\b)?/i)
+    const parsed = new URL(String(baseUrl));
+    const isCustomDomain = !/^(www\.)?facilzap\.app\.br$/i.test(parsed.hostname);
+
+    // Regra 2: domínio customizado com /c/{slug}/{lojaId} → formato âncora #produto{id}
+    const customPathMatch = parsed.pathname.match(/^\/c\/([^/]+)\/(\d+)/);
+    if (isCustomDomain && customPathMatch) {
+      const [, slug, lojaId] = customPathMatch;
+      return `${parsed.origin}/c/${slug}/${lojaId}#produto${productId}`;
+    }
+
+    // Regra 3: extrair slug real do path — sem fallback hardcoded
+    const slugMatch = parsed.pathname.match(/\/c\/([^/]+)(?:\/(?:produto|produtos)\/?)?/i)
       || parsed.pathname.match(/\/c\/([^/]+)/i);
     const catalogSlug = firstValue(
       product?.catalogo?.slug,
       product?.catalogo_slug,
       product?.slug_catalogo,
       product?.loja?.slug,
-      pathMatch?.[1],
-      'varejo'
+      slugMatch?.[1],
+      ''  // sem 'varejo' hardcoded
     );
-    const origin = /api\.facilzap/i.test(parsed.hostname) ? 'https://facilzap.app.br' : parsed.origin;
+
+    if (!catalogSlug) {
+      // Regra 4: sem slug confiável → URL do catálogo principal como fallback seguro
+      return safeCatalogFallback;
+    }
+
+    const origin = isCustomDomain ? parsed.origin : 'https://facilzap.app.br';
     return `${origin}/c/${catalogSlug}/produto/${productId}`;
+
   } catch (error) {
-    return `https://facilzap.app.br/c/varejo/produto/${productId}`;
+    // Regra 5: erro de parse → catálogo seguro ou vazio
+    return safeCatalogFallback;
   }
 }
 
 function getFacilZapPrice(product) {
-  return product?.precos_produto?.promocional
-    || product?.precos_produto?.preco_a_partir?.preco
-    || product?.precos_produto?.padrao
-    || product?.preco
-    || null;
+  function validPrice(v) {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(String(v).replace(',', '.').replace(/[^\d.-]/g, ''));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  const candidates = [
+    product?.precos_produto?.promocional,
+    product?.precos_produto?.preco_a_partir?.preco,
+    product?.precos_produto?.preco_minimo,
+    product?.precos_produto?.padrao,
+    product?.preco_promocional,
+    product?.preco_venda,
+    product?.valor_venda,
+    product?.sale_price,
+    product?.price,
+    product?.preco,
+    product?.valor
+  ];
+  for (const c of candidates) {
+    const n = validPrice(c);
+    if (n !== null) return n;
+  }
+  // Fallback: primeiro preço positivo dentro de variações
+  const variacoes = product?.variacoes;
+  if (variacoes && typeof variacoes === 'object') {
+    const entries = Array.isArray(variacoes) ? variacoes : Object.values(variacoes);
+    for (const v of entries) {
+      if (!v || typeof v !== 'object') continue;
+      const n = validPrice(v.preco) ?? validPrice(v.valor) ?? validPrice(v.price);
+      if (n !== null) return n;
+    }
+  }
+  return null;
 }
 
 function getFacilZapVariations(product) {
@@ -2127,11 +2117,10 @@ async function fetchFacilZapProductsFromHtml(html, pageUrl, message) {
 
 async function fetchProductContext(message, sourceUrls = [], options = {}) {
   const sources = expandProductSourcesForSearch(message, normalizeProductSources([message, ...sourceUrls]));
-  if (sources.length === 0) return { contextText: '', imageUrls: [], productCards: [], productsFound: false, apiErrorOccurred: false, lookupAttempted: false };
+  if (sources.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
 
   const products = [];
   const imageUrls = [];
-  var apiErrorOccurred = false;
   console.log('[AI PRODUCT] Buscando catalogo/API | query: ' + normalizeSearchText(message).slice(0, 120) + ' | fontes: ' + sources.map(source => `${source.type}:${sanitizeUrlForLog(source.url)}`).join(', '));
   for (const source of sources) {
     const url = source.url;
@@ -2145,7 +2134,6 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
       });
       if (!response.ok) {
         console.warn(`[AI PRODUCT] Fonte retornou HTTP ${response.status} | ${sanitizeUrlForLog(url)}`);
-        apiErrorOccurred = true;
         continue;
       }
       const contentType = String(response.headers.get('content-type') || '').toLowerCase();
@@ -2201,16 +2189,14 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
       products.push({ url, title, description, images: candidateImages.slice(0, 5), sourceType: source.type, sourceName: source.name });
     } catch (error) {
       console.warn(`[AI PRODUCT] Falha ao acessar fonte | ${sanitizeUrlForLog(url)} | ${error.message}`);
-      apiErrorOccurred = true;
+      products.push({ url, title: '', description: `Nao foi possivel acessar a pagina: ${error.message}`, images: [] });
     }
   }
 
   const relevantProducts = getRelevantProducts(products, message, options);
   console.log('[AI PRODUCT] Resultado catalogo | produtos_coletados: ' + products.length + ' | produtos_relevantes: ' + relevantProducts.length);
 
-  if (relevantProducts.length === 0) {
-    return { contextText: '', imageUrls: [], productCards: [], productsFound: false, apiErrorOccurred: apiErrorOccurred, lookupAttempted: true };
-  }
+  if (relevantProducts.length === 0) return { contextText: '', imageUrls: [], productCards: [], productsFound: false };
 
   const contextText = relevantProducts.map((product, index) => [
     `Produto/link ${index + 1}: ${product.url}`,
@@ -2245,7 +2231,6 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
     imageUrls: relevantProducts.flatMap(product => product.images || []).slice(0, 5),
     productCards: productCards.slice(0, 10),
     productsFound: relevantProducts.length > 0,
-    apiErrorOccurred: false,
     lookupAttempted: true
   };
 }
@@ -2557,7 +2542,7 @@ function getRecentCustomerProductRequest(conversationHistory = []) {
   const recentCustomerMessages = Array.isArray(conversationHistory)
     ? conversationHistory
       .filter(item => item && item.direction !== 'out' && !item.is_from_ai)
-      .slice(-12)
+      .slice(-8)
       .map(item => String(item.content || '').trim())
       .filter(Boolean)
     : [];
@@ -2590,35 +2575,11 @@ function extractPreviouslyMentionedProductTitles(conversationHistory = []) {
     });
 }
 
-// Sinalizadores de follow-up sem contexto de produto no historico
-var FOLLOWUP_NO_CONTEXT_FOTO = '__NO_CONTEXT_FOTO__';
-var FOLLOWUP_NO_CONTEXT_MAIS = '__NO_CONTEXT_MAIS__';
-
 function buildProductSearchText(message, conversationHistory = []) {
   const current = String(message || '').trim();
   const normalizedCurrent = normalizeSearchText(current);
   const currentIsFollowUp = isCatalogFollowUpRequest(normalizedCurrent) || isMoreProductOptionsRequest(current);
   const lastProductRequest = getRecentCustomerProductRequest(conversationHistory);
-
-  // Detectar "manda fotos" puro: intencao de midia sem token de produto especifico
-  const isFotoOnlyRequest = /\b(manda|mande|envia|envie|mostra|mostre|ver|quero ver|me manda|me envia)\b/i.test(normalizedCurrent)
-    && /\b(foto|fotos|imagem|imagens)\b/i.test(normalizedCurrent)
-    && getSpecificProductTokens(getSearchTokens(current)).length === 0;
-
-  // Detectar "mais opcoes" puro: sem token de produto especifico
-  const isMoreOptionsOnly = isMoreProductOptionsRequest(current)
-    && getSpecificProductTokens(getSearchTokens(current)).length === 0;
-
-  if (isFotoOnlyRequest) {
-    if (!lastProductRequest) return FOLLOWUP_NO_CONTEXT_FOTO;
-    return lastProductRequest;
-  }
-
-  if (isMoreOptionsOnly) {
-    if (!lastProductRequest) return FOLLOWUP_NO_CONTEXT_MAIS;
-    return lastProductRequest;
-  }
-
   const currentForIntent = currentIsFollowUp && lastProductRequest ? `${lastProductRequest}\n${current}` : current;
   const currentShouldSearch = shouldUseConfiguredProductSources(currentForIntent);
   if (!currentShouldSearch) return currentForIntent;
@@ -3215,67 +3176,15 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     }
   }
 
-  // Verificar sinalizadores de follow-up sem contexto de produto no historico
-  // buildProductSearchText retorna constante especial quando nao ha lastProductRequest
-  var rawSearchText = buildProductSearchText(message, conversationHistory);
-  if (rawSearchText === FOLLOWUP_NO_CONTEXT_FOTO) {
-    return {
-      skipped: false,
-      response: 'Claro! Fotos de qual produto voce quer ver?',
-      provider: 'system',
-      model: 'followup_no_context',
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      processing_time_ms: 0,
-      product_images: [],
-      product_cards: []
-    };
-  }
-  if (rawSearchText === FOLLOWUP_NO_CONTEXT_MAIS) {
-    return {
-      skipped: false,
-      response: 'Claro! De qual produto voce quer ver mais opcoes?',
-      provider: 'system',
-      model: 'followup_no_context',
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      processing_time_ms: 0,
-      product_images: [],
-      product_cards: []
-    };
-  }
-
   const deterministicProductContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
   if (deterministicProductContext.lookupAttempted) {
     const productCards = deterministicProductContext.productCards || [];
-
-    // Falha total na API: nao afirmar que produto nao existe, nao chamar LLM sobre produto
-    if (deterministicProductContext.apiErrorOccurred && !deterministicProductContext.productsFound) {
-      console.log('[AI PRODUCT] Falha total na consulta do catalogo | searchText: ' + (deterministicProductContext.searchText || message).slice(0, 80));
+    if (productCards.length > 0 || deterministicProductContext.productsFound) {
       return {
         skipped: false,
-        response: buildCatalogUnavailableResponse(deterministicProductContext.searchText || message),
-        provider: 'catalog',
-        model: 'catalog_unavailable',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: [],
-        product_cards: [],
-        product_lookup_attempted: true,
-        product_search_text: deterministicProductContext.searchText || message,
-        products_found: false
-      };
-    }
-
-    // Produtos encontrados com imagem: retorna cards
-    if (productCards.length > 0) {
-      return {
-        skipped: false,
-        response: buildProductCardsResponse(productCards),
+        response: productCards.length > 0
+          ? buildProductCardsResponse(productCards)
+          : buildProductContextSummaryResponse(deterministicProductContext, deterministicProductContext.searchText || message),
         provider: 'catalog',
         model: 'catalog_lookup',
         prompt_tokens: 0,
@@ -3286,45 +3195,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         product_cards: productCards,
         product_lookup_attempted: true,
         product_search_text: deterministicProductContext.searchText || message,
-        products_found: true
-      };
-    }
-
-    // Produtos encontrados mas sem imagem: informa que existe mas sem foto
-    if (deterministicProductContext.productsFound) {
-      return {
-        skipped: false,
-        response: buildProductNoImageResponse(deterministicProductContext.searchText || message),
-        provider: 'catalog',
-        model: 'catalog_no_image',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: [],
-        product_cards: [],
-        product_lookup_attempted: true,
-        product_search_text: deterministicProductContext.searchText || message,
-        products_found: true
-      };
-    }
-
-    // API respondeu OK, produto genuinamente nao encontrado no catalogo
-    if (!deterministicProductContext.apiErrorOccurred) {
-      return {
-        skipped: false,
-        response: buildProductLookupEmptyResponse(deterministicProductContext.searchText || message),
-        provider: 'catalog',
-        model: 'catalog_not_found',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: [],
-        product_cards: [],
-        product_lookup_attempted: true,
-        product_search_text: deterministicProductContext.searchText || message,
-        products_found: false
+        products_found: deterministicProductContext.productsFound === true
       };
     }
   }

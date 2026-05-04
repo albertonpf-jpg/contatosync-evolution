@@ -1786,6 +1786,40 @@ function extractGenericJsonProducts(data, sourceUrl, source = {}) {
         value.sizes
       ].flatMap(getVariationStockEntries);
 
+      // LOG TEMPORARIO DIAGNOSTICO RAW — remover apos confirmar preco e url
+      try {
+        const _isTarget = String(value.id || '') === '3993874' || /ursinha\s*fashion/i.test(String(value.nome || value.name || value.title || title || ''));
+        if (_isTarget) {
+          const _varSample = (function() {
+            const vv = value.variacoes || value.variations;
+            if (!vv) return null;
+            const arr = Array.isArray(vv) ? vv : Object.values(vv);
+            return arr.slice(0, 3);
+          })();
+          const _imgSample = (function() {
+            const imgs = value.imagens || value.images || value.fotos;
+            if (!imgs) return null;
+            const arr = Array.isArray(imgs) ? imgs : Object.values(imgs);
+            return arr.slice(0, 2);
+          })();
+          console.log('[DIAG RAW FACILZAP PRODUCT] keys=' + JSON.stringify(Object.keys(value)));
+          console.log('[DIAG RAW FACILZAP PRODUCT] id=' + value.id + ' nome=' + (value.nome || value.name || value.title) + ' titulo=' + value.titulo);
+          console.log('[DIAG RAW FACILZAP PRODUCT] preco=' + value.preco + ' price=' + value.price + ' valor=' + value.valor);
+          console.log('[DIAG RAW FACILZAP PRODUCT] preco_venda=' + value.preco_venda + ' valor_venda=' + value.valor_venda + ' preco_promocional=' + value.preco_promocional + ' sale_price=' + value.sale_price);
+          console.log('[DIAG RAW FACILZAP PRODUCT] precos_produto=' + JSON.stringify(value.precos_produto ?? null));
+          console.log('[DIAG RAW FACILZAP PRODUCT] variacoes_amostra=' + JSON.stringify(_varSample));
+          console.log('[DIAG RAW FACILZAP PRODUCT] imagens_amostra=' + JSON.stringify(_imgSample));
+          console.log('[DIAG RAW FACILZAP PRODUCT] url=' + value.url + ' link=' + value.link + ' permalink=' + value.permalink);
+          console.log('[DIAG RAW FACILZAP PRODUCT] product_url=' + value.product_url + ' link_produto=' + value.link_produto + ' url_produto=' + value.url_produto);
+          console.log('[DIAG RAW FACILZAP PRODUCT] catalog_url=' + value.catalog_url + ' catalogo_url=' + value.catalogo_url);
+          console.log('[DIAG RAW FACILZAP PRODUCT] catalogo=' + JSON.stringify(value.catalogo ?? null) + ' loja=' + JSON.stringify(value.loja ?? null));
+          console.log('[DIAG RAW FACILZAP PRODUCT] source.publicCatalogUrl=' + (source && source.publicCatalogUrl) + ' sourceUrl=' + sourceUrl);
+          console.log('[DIAG RAW FACILZAP PRODUCT] price_calculado=' + price + ' url_calculada=' + url);
+          console.log('[DIAG RAW FACILZAP PRODUCT] descricao_preview=' + String(value.descricao || value.description || '').slice(0, 100));
+        }
+      } catch(_logErr) { console.log('[DIAG RAW FACILZAP PRODUCT] erro no log: ' + _logErr.message); }
+      // FIM LOG TEMPORARIO
+
       products.push({
         id: firstValue(value.id, value.sku, value.codigo, url, title),
         url,

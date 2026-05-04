@@ -211,6 +211,21 @@ class ApiService {
     return response.data.data;
   }
 
+  async uploadAIKnowledgeFile(file: File) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await this.api.post('/ai/knowledge-files', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 60000
+    });
+    return response.data.data;
+  }
+
+  async deleteAIKnowledgeFile(id: string) {
+    const response = await this.api.delete(`/ai/knowledge-files/${id}`);
+    return response.data.data;
+  }
+
   async getAIStats(period = 'today') {
     const response = await this.api.get('/ai/stats', { params: { period } });
     return response.data.data;

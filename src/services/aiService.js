@@ -1221,7 +1221,16 @@ function getMimeTypeFromPath(filePath, fallback = 'application/octet-stream') {
     '.txt': 'text/plain',
     '.csv': 'text/csv',
     '.json': 'application/json',
-    '.md': 'text/markdown'
+    '.md': 'text/markdown',
+    '.markdown': 'text/markdown',
+    '.html': 'text/html',
+    '.htm': 'text/html',
+    '.xml': 'application/xml',
+    '.log': 'text/plain',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   };
   return map[ext] || fallback;
 }
@@ -1238,9 +1247,73 @@ function fileToBase64(filePath) {
 function canReadTextFile(filePath, mimeType) {
   const ext = path.extname(filePath || '').toLowerCase();
   const mime = String(mimeType || '').toLowerCase();
-  return ['.txt', '.csv', '.json', '.md', '.log', '.xml'].includes(ext)
+  return ['.txt', '.csv', '.json', '.md', '.markdown', '.log', '.xml', '.html', '.htm'].includes(ext)
     || mime.startsWith('text/')
-    || ['application/json', 'application/xml'].includes(mime);
+    || ['application/json', 'application/xml', 'application/xhtml+xml'].includes(mime);
+}
+
+function getKnowledgeFiles(config = {}) {
+  return Array.isArray(config.knowledge_files)
+    ? config.knowledge_files.filter(file => file && (file.extractedText || file.path || file.originalName))
+    : [];
+}
+
+function buildKnowledgeContextForConfig(config = {}) {
+  const files = getKnowledgeFiles(config);
+  if (files.length === 0) return '';
+
+  let remaining = 50000;
+  const blocks = [];
+  for (const file of files.slice(0, 20)) {
+    const name = file.originalName || file.fileName || 'arquivo';
+    const mimeType = file.mimetype || getMimeTypeFromPath(file.path || '');
+    let text = String(file.extractedText || '').trim();
+
+    if (!text && file.path && fs.existsSync(file.path)) {
+      try {
+        const stat = fs.statSync(file.path);
+        if (canReadTextFile(file.path, mimeType) && stat.size <= 1024 * 1024) {
+          text = fs.readFileSync(file.path, 'utf8').slice(0, 20000).trim();
+        }
+      } catch (readError) {
+        text = '';
+      }
+    }
+
+    if (!text) {
+      blocks.push(`Arquivo: ${name}\nTipo: ${mimeType}\nObservacao: arquivo anexado como fonte de conhecimento. Use o nome e metadados quando forem relevantes; se o conteudo nao estiver legivel no contexto, nao invente informacoes.`);
+      continue;
+    }
+
+    const slice = text.slice(0, Math.max(0, Math.min(remaining, 12000)));
+    if (!slice) break;
+    blocks.push(`Arquivo: ${name}\nTipo: ${mimeType}\nConteudo:\n${slice}`);
+    remaining -= slice.length;
+    if (remaining <= 0) break;
+  }
+
+  if (blocks.length === 0) return '';
+  return `Arquivos de conhecimento configurados para a IA:\n\n${blocks.join('\n\n---\n\n')}\n\nUse estes arquivos como fonte antes de responder. Nao invente dados que nao estejam nos arquivos, APIs, catalogo ou conversa.`;
+}
+
+function buildOpenAIKnowledgeFileParts(config = {}) {
+  return getKnowledgeFiles(config)
+    .filter(file => {
+      const mimeType = file.mimetype || getMimeTypeFromPath(file.path || '');
+      if (mimeType !== 'application/pdf') return false;
+      if (!file.path || !fs.existsSync(file.path)) return false;
+      try {
+        return fs.statSync(file.path).size <= 50 * 1024 * 1024;
+      } catch (error) {
+        return false;
+      }
+    })
+    .slice(0, 5)
+    .map(file => ({
+      type: 'input_file',
+      filename: file.originalName || file.fileName || path.basename(file.path),
+      file_data: fileToBase64(file.path)
+    }));
 }
 
 async function convertMediaToMp3(filePath) {
@@ -1377,6 +1450,7 @@ function buildProductContextText(productContext) {
 
 async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory }) {
   const productContext = await buildProductContextForConfig(message, config, conversationHistory);
+  const knowledgeContext = buildKnowledgeContextForConfig(config);
   const content = [{
     type: 'input_text',
     text: message && String(message).trim()
@@ -1391,6 +1465,11 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
       text: `Historico da conversa desde a primeira mensagem disponivel:\n${historyText}\n\nUse esse historico para nao repetir perguntas, nao pedir de novo dados ja informados e manter o contexto do atendimento desde o inicio.`
     });
   }
+
+  if (knowledgeContext) {
+    content.push({ type: 'input_text', text: knowledgeContext });
+  }
+  content.push(...buildOpenAIKnowledgeFileParts(config));
 
   if (productContext.contextText) {
     content.push({
@@ -1548,10 +1627,12 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
 
 async function buildClaudeInputContent({ input, media, config, conversationHistory }) {
   const productContext = await buildProductContextForConfig(input, config, conversationHistory);
+  const knowledgeContext = buildKnowledgeContextForConfig(config);
   const parts = [];
   const historyText = formatConversationHistory(conversationHistory);
   if (historyText) parts.push(`Historico da conversa desde a primeira mensagem disponivel:\n${historyText}`);
   if (input) parts.push(String(input));
+  if (knowledgeContext) parts.push(knowledgeContext);
   if (productContext.contextText) parts.push(buildProductContextText(productContext));
   else if (productContext.lookupAttempted) parts.push('O cliente pediu fotos ou produtos, mas nenhum produto com imagem foi encontrado no catalogo configurado. Nao diga que vai enviar fotos e nao prometa encaminhar para atendente apenas por falta de imagem. Responda de forma transparente que nao encontrei fotos seguras desse pedido no catalogo e peca para o cliente confirmar o nome do produto, cor ou categoria.');
   if (media) parts.push(`Midia recebida:\n${getMediaDescription(media)}`);

@@ -1,13 +1,59 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
+const fs = require('fs');
+const multer = require('multer');
 const { executeWithRLS, supabaseAdmin } = require('../config/supabase');
 const { aiConfigSchemas, validate } = require('../utils/validation');
 const { isWithinWorkingHours, getPagination, formatPaginationMeta, formatActivity } = require('../utils/helpers');
 const { success, error, notFound, asyncHandler, handleSupabaseError, paginated } = require('../utils/response');
 const { emitConfigUpdate, emitAIResponse } = require('../services/socketService');
 const { generateAIResponse } = require('../services/aiService');
+const { createStoredFile, mediaRoot } = require('../utils/mediaStore');
 
 const router = express.Router();
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 }
+});
+
+function normalizeSourceUrls(value) {
+  const items = Array.isArray(value) ? value : [];
+  const seen = new Set();
+  const urls = [];
+  for (const item of items) {
+    const url = String(item || '').trim();
+    if (!url) continue;
+    if (!/^https?:\/\//i.test(url)) {
+      return { error: 'Todos os links adicionais devem comecar com http:// ou https://' };
+    }
+    const key = url.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    urls.push(url);
+  }
+  return { urls: urls.slice(0, 20) };
+}
+
+function extractKnowledgeText(file) {
+  const mimetype = String(file.mimetype || '').toLowerCase();
+  const name = String(file.originalname || '').toLowerCase();
+  const isReadable = mimetype.startsWith('text/')
+    || ['application/json', 'application/xml', 'application/xhtml+xml'].includes(mimetype)
+    || /\.(txt|csv|json|md|markdown|html|htm|xml|log)$/i.test(name);
+  if (!isReadable) return '';
+  return file.buffer.toString('utf8').slice(0, 50000);
+}
+
+async function getClientAIConfig(clientId) {
+  const { data: config, error: configError } = await executeWithRLS(clientId, (client) =>
+    client
+      .from('evolution_ai_config')
+      .select('*')
+      .eq('client_id', clientId)
+      .single()
+  );
+  return { config, configError };
+}
 
 /**
  * GET /api/ai/config
@@ -45,6 +91,8 @@ router.get('/config',
         reply_delay_seconds: 8,
         monthly_limit: 1500,
         product_catalog_url: '',
+        product_source_urls: [],
+        knowledge_files: [],
         product_search_enabled: true,
         system_prompt: 'Você é um assistente virtual amigável e prestativo.',
         greeting_message: 'Olá! Como posso ajudar você hoje? 😊',
@@ -91,6 +139,11 @@ router.put('/config',
     if (updateData.product_catalog_url && !/^https?:\/\//i.test(updateData.product_catalog_url)) {
       return error(res, 'Link do catalogo deve comecar com http:// ou https://', 400);
     }
+    if (Object.prototype.hasOwnProperty.call(updateData, 'product_source_urls')) {
+      const normalized = normalizeSourceUrls(updateData.product_source_urls);
+      if (normalized.error) return error(res, normalized.error, 400);
+      updateData.product_source_urls = normalized.urls;
+    }
 
     const { data: updatedConfig, error } = await executeWithRLS(req.user.id, (client) =>
       client
@@ -122,6 +175,85 @@ router.put('/config',
     emitConfigUpdate(req.user.id, updatedConfig);
 
     success(res, updatedConfig, 'Configuração atualizada com sucesso');
+  })
+);
+
+/**
+ * POST /api/ai/knowledge-files
+ * Adicionar arquivo de conhecimento para a IA consultar
+ */
+router.post('/knowledge-files',
+  upload.single('file'),
+  asyncHandler(async (req, res) => {
+    if (!req.file) return error(res, 'Arquivo e obrigatorio', 400);
+
+    const { config, configError } = await getClientAIConfig(req.user.id);
+    if (configError || !config) {
+      return handleSupabaseError(res, configError, 'Erro ao buscar configuracao de IA');
+    }
+
+    const stored = createStoredFile(req.file.buffer, {
+      clientId: req.user.id,
+      messageType: 'ai-knowledge',
+      originalName: req.file.originalname,
+      mimetype: req.file.mimetype
+    });
+    const knowledgeFile = {
+      ...stored,
+      uploadedAt: new Date().toISOString(),
+      extractedText: extractKnowledgeText(req.file)
+    };
+    const files = Array.isArray(config.knowledge_files) ? config.knowledge_files : [];
+    const nextFiles = [knowledgeFile, ...files].slice(0, 50);
+
+    const { data: updatedConfig, error: updateError } = await executeWithRLS(req.user.id, (client) =>
+      client
+        .from('evolution_ai_config')
+        .update({ knowledge_files: nextFiles, updated_at: new Date().toISOString() })
+        .eq('client_id', req.user.id)
+        .select('*')
+        .single()
+    );
+
+    if (updateError) return handleSupabaseError(res, updateError, 'Erro ao salvar arquivo da IA');
+    emitConfigUpdate(req.user.id, updatedConfig);
+    success(res, knowledgeFile, 'Arquivo adicionado para consulta da IA');
+  })
+);
+
+/**
+ * DELETE /api/ai/knowledge-files/:id
+ * Remover arquivo de conhecimento da IA
+ */
+router.delete('/knowledge-files/:id',
+  asyncHandler(async (req, res) => {
+    const { config, configError } = await getClientAIConfig(req.user.id);
+    if (configError || !config) {
+      return handleSupabaseError(res, configError, 'Erro ao buscar configuracao de IA');
+    }
+
+    const files = Array.isArray(config.knowledge_files) ? config.knowledge_files : [];
+    const removed = files.find(file => file.id === req.params.id);
+    const nextFiles = files.filter(file => file.id !== req.params.id);
+    if (!removed) return notFound(res, 'Arquivo nao encontrado');
+
+    const { data: updatedConfig, error: updateError } = await executeWithRLS(req.user.id, (client) =>
+      client
+        .from('evolution_ai_config')
+        .update({ knowledge_files: nextFiles, updated_at: new Date().toISOString() })
+        .eq('client_id', req.user.id)
+        .select('*')
+        .single()
+    );
+
+    if (updateError) return handleSupabaseError(res, updateError, 'Erro ao remover arquivo da IA');
+
+    const root = mediaRoot();
+    if (removed.path && String(removed.path).startsWith(root)) {
+      fs.promises.unlink(removed.path).catch(() => {});
+    }
+    emitConfigUpdate(req.user.id, updatedConfig);
+    success(res, { id: req.params.id }, 'Arquivo removido');
   })
 );
 

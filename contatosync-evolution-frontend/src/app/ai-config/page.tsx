@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { apiService } from '@/lib/api';
-import { Bot, CheckCircle2, KeyRound, Loader2, Plus, RefreshCw, Save, Trash2, Zap } from 'lucide-react';
+import { Bot, CheckCircle2, FileText, KeyRound, Loader2, Plus, RefreshCw, Save, Trash2, Upload, Zap } from 'lucide-react';
 
 interface AIConfig {
   enabled: boolean;
@@ -20,6 +20,8 @@ interface AIConfig {
   reply_delay_seconds: number;
   monthly_limit: number;
   product_catalog_url: string;
+  product_source_urls: string[];
+  knowledge_files: KnowledgeFile[];
   product_search_enabled: boolean;
   system_prompt: string;
   greeting_message: string;
@@ -73,17 +75,33 @@ function FieldHelp({ children }: { children: ReactNode }) {
   return <p className="mt-1 text-xs leading-5 text-gray-500">{children}</p>;
 }
 
+interface KnowledgeFile {
+  id: string;
+  fileName?: string;
+  originalName?: string;
+  mimetype?: string;
+  size?: number;
+  uploadedAt?: string;
+}
+
 function listToText(items?: string[]) {
   return (items || []).join(', ');
 }
 
 function textToList(value: string) {
-  return value.split(',').map(item => item.trim()).filter(Boolean);
+  return value.split(/[\n,]+/).map(item => item.trim()).filter(Boolean);
 }
 
 function formatSync(value?: string) {
   if (!value) return 'Nunca';
   return new Date(value).toLocaleString('pt-BR');
+}
+
+function formatFileSize(value?: number) {
+  const size = Number(value || 0);
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export default function AIConfigPage() {
@@ -94,8 +112,10 @@ export default function AIConfigPage() {
   const [showIntegrationForm, setShowIntegrationForm] = useState(false);
   const [triggerText, setTriggerText] = useState('');
   const [blacklistText, setBlacklistText] = useState('');
+  const [productSourceText, setProductSourceText] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [uploadingFiles, setUploadingFiles] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +143,7 @@ export default function AIConfigPage() {
       setConfig(aiConfig);
       setTriggerText(listToText(aiConfig.trigger_keywords));
       setBlacklistText(listToText(aiConfig.blacklist_keywords));
+      setProductSourceText((aiConfig.product_source_urls || []).join('\n'));
       setIntegrations(integrationList || []);
       setIntegrationTypes(typeList || []);
     } catch (err: any) {
@@ -146,6 +167,7 @@ export default function AIConfigPage() {
       const updated = await apiService.updateAIConfig({
         ...config,
         product_catalog_url: (config.product_catalog_url || '').trim(),
+        product_source_urls: textToList(productSourceText),
         working_days: [1, 2, 3, 4, 5, 6, 7],
         trigger_keywords: textToList(triggerText),
         blacklist_keywords: textToList(blacklistText)
@@ -213,6 +235,35 @@ export default function AIConfigPage() {
       await loadPage();
     } catch (err: any) {
       setError(err.response?.data?.error || err.message || 'Erro ao remover integracao');
+    }
+  };
+
+  const uploadKnowledgeFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    try {
+      setUploadingFiles(true);
+      setError(null);
+      await Promise.all(Array.from(files).map(file => apiService.uploadAIKnowledgeFile(file)));
+      setMessage('Arquivo(s) adicionados para consulta da IA.');
+      await loadPage();
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.message || 'Erro ao enviar arquivo');
+    } finally {
+      setUploadingFiles(false);
+    }
+  };
+
+  const deleteKnowledgeFile = async (file: KnowledgeFile) => {
+    if (!confirm(`Remover o arquivo "${file.originalName || file.fileName || file.id}"?`)) return;
+
+    try {
+      setError(null);
+      await apiService.deleteAIKnowledgeFile(file.id);
+      setMessage('Arquivo removido.');
+      await loadPage();
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.message || 'Erro ao remover arquivo');
     }
   };
 
@@ -302,6 +353,45 @@ export default function AIConfigPage() {
                 <input type="checkbox" checked={config.product_search_enabled !== false} onChange={event => updateConfigField('product_search_enabled', event.target.checked)} className="h-4 w-4" />
                 Buscar produtos
               </label>
+            </div>
+
+            <label className="block text-sm font-medium text-gray-700">
+              Links adicionais para consulta
+              <textarea placeholder={'https://sualoja.com.br/vestidos\nhttps://sualoja.com.br/conjuntos\nhttps://catalogo.exemplo.com.br'} value={productSourceText} onChange={event => setProductSourceText(event.target.value)} rows={4} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
+              <FieldHelp>Coloque um link por linha. A IA consulta integracoes ativas, o link principal e todos estes links antes de responder sobre produtos, fotos, precos ou disponibilidade.</FieldHelp>
+            </label>
+
+            <div className="rounded-lg border border-gray-200 p-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div className="flex items-start">
+                  <FileText className="mr-3 mt-1 h-5 w-5 text-blue-600" />
+                  <div>
+                    <h3 className="text-sm font-semibold text-gray-900">Arquivos para a IA consultar</h3>
+                    <FieldHelp>Envie tabelas, textos, JSON, CSV, HTML, XML, PDF e outros documentos. Arquivos de texto ficam legiveis no contexto da IA; PDFs tambem podem ser analisados pelo modelo OpenAI.</FieldHelp>
+                  </div>
+                </div>
+                <label className="inline-flex cursor-pointer items-center justify-center rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50">
+                  {uploadingFiles ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+                  Enviar arquivos
+                  <input type="file" multiple disabled={uploadingFiles} onChange={event => void uploadKnowledgeFiles(event.target.files)} className="hidden" accept=".txt,.csv,.json,.md,.markdown,.html,.htm,.xml,.log,.pdf,.doc,.docx,.xls,.xlsx,image/*" />
+                </label>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                {(config.knowledge_files || []).length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-gray-300 p-4 text-center text-sm text-gray-500">Nenhum arquivo cadastrado.</div>
+                ) : config.knowledge_files.map(file => (
+                  <div key={file.id} className="flex items-center justify-between gap-3 rounded-lg border border-gray-200 px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-gray-900">{file.originalName || file.fileName || 'Arquivo'}</p>
+                      <p className="text-xs text-gray-500">{file.mimetype || 'tipo nao informado'} · {formatFileSize(file.size)}{file.uploadedAt ? ` · ${formatSync(file.uploadedAt)}` : ''}</p>
+                    </div>
+                    <button type="button" onClick={() => void deleteKnowledgeFile(file)} className="inline-flex items-center rounded-lg border border-red-200 px-2 py-1 text-sm text-red-600 hover:bg-red-50">
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <label className="block text-sm font-medium text-gray-700">

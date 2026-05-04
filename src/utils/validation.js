@@ -128,6 +128,18 @@ const aiConfigSchemas = {
     reply_delay_seconds: Joi.number().integer().min(1).max(60).optional(),
     monthly_limit: Joi.number().integer().min(1).max(50000).optional(),
     product_catalog_url: Joi.string().max(1000).optional().allow(''),
+    product_source_urls: Joi.array().items(Joi.string().max(1000)).max(20).optional(),
+    knowledge_files: Joi.array().items(Joi.object({
+      id: Joi.string().max(120).required(),
+      fileName: Joi.string().max(255).optional().allow(''),
+      originalName: Joi.string().max(255).optional().allow(''),
+      mimetype: Joi.string().max(255).optional().allow(''),
+      size: Joi.number().integer().min(0).optional(),
+      path: Joi.string().max(2000).optional().allow(''),
+      publicPath: Joi.string().max(1000).optional().allow(''),
+      extractedText: Joi.string().max(50000).optional().allow(''),
+      uploadedAt: Joi.string().max(80).optional().allow('')
+    }).unknown(true)).max(50).optional(),
     product_search_enabled: Joi.boolean().optional(),
     system_prompt: Joi.string().optional().allow(''),
     greeting_message: Joi.string().optional().allow(''),

@@ -2247,6 +2247,18 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
   const relevantProducts = getRelevantProducts(products, message, options);
   console.log('[AI PRODUCT] Resultado catalogo | produtos_coletados: ' + products.length + ' | produtos_relevantes: ' + relevantProducts.length);
 
+  // LOG TEMPORARIO DIAGNOSTICO — remover apos confirmar preco
+  try {
+    relevantProducts.slice(0, 6).forEach(function(p, i) {
+      const priceFields = {};
+      Object.keys(p).forEach(function(k) {
+        if (/prec|price|valor|venda|sale|promo/i.test(k)) priceFields[k] = p[k];
+      });
+      console.log('[DIAG RELEVANT PRODUCTS] #' + i + ' id=' + p.id + ' title=' + String(p.title || '').slice(0, 60) + ' price=' + JSON.stringify(p.price) + ' stock=' + p.stock + ' keys=' + JSON.stringify(Object.keys(p)) + ' priceFields=' + JSON.stringify(priceFields) + ' descPreview=' + String(p.description || '').slice(0, 80));
+    });
+  } catch(e) { console.log('[DIAG RELEVANT PRODUCTS] erro no log: ' + e.message); }
+  // FIM LOG TEMPORARIO
+
   if (relevantProducts.length === 0) return { contextText: '', imageUrls: [], productCards: [], productsFound: false };
 
   const contextText = relevantProducts.map((product, index) => [
@@ -2276,6 +2288,14 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
       });
     }
   }
+
+  // LOG TEMPORARIO DIAGNOSTICO — remover apos confirmar preco
+  try {
+    productCards.slice(0, 10).forEach(function(c, i) {
+      console.log('[DIAG PRODUCT CARDS] #' + i + ' title=' + String(c.title || '').slice(0, 60) + ' hasImage=' + (c.imageUrl ? 'sim' : 'nao') + ' url=' + String(c.url || '(vazio)').slice(0, 80) + ' descPreview=' + String(c.description || '').slice(0, 120));
+    });
+  } catch(e) { console.log('[DIAG PRODUCT CARDS] erro no log: ' + e.message); }
+  // FIM LOG TEMPORARIO
 
   return {
     contextText: `Informacoes coletadas da loja virtual:\n${contextText}`,

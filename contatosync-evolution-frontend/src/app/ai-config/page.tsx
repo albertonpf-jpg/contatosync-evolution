@@ -85,7 +85,7 @@ const defaultIntegrationForm = {
     stock_path: '/produtos',
     query_param: 'q',
     phone_param: 'telefone',
-    order_param: 'pedido'
+    order_param: 'codigo'
   } as IntegrationConfig,
   enabled: true
 };

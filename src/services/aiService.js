@@ -19,7 +19,7 @@ const DEFAULT_INTEGRATION_CONFIG = {
     stock_path: '/produtos',
     query_param: 'q',
     phone_param: 'telefone',
-    order_param: 'pedido'
+    order_param: 'codigo'
   },
   ecommerce: {
     auth_type: 'bearer',
@@ -356,6 +356,8 @@ function normalizeProductSources(values = []) {
       url,
       type: source.type || source.integration_type || 'link',
       name: source.name || source.integration_name || 'Fonte configurada',
+      endpointKey: source.endpointKey,
+      operational: source.operational === true,
       headers: source.headers || {}
     });
   };
@@ -404,6 +406,30 @@ function addQueryParam(url, key, value) {
   }
 }
 
+function sanitizeUrlForLog(url) {
+  try {
+    const parsed = new URL(url);
+    for (const key of parsed.searchParams.keys()) {
+      if (/token|api[_-]?key|secret|senha|password/i.test(key)) parsed.searchParams.set(key, '[redacted]');
+    }
+    return parsed.toString();
+  } catch (error) {
+    return String(url || '').replace(/(token|api[_-]?key|secret|senha|password)=([^&\s]+)/ig, '$1=[redacted]');
+  }
+}
+
+function addQueryParamVariants(source, variants = []) {
+  const urls = [];
+  const seen = new Set();
+  for (const [key, value] of variants) {
+    const url = addQueryParam(source?.url, key, value);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    urls.push({ ...source, url, name: `${source.name} (${key})` });
+  }
+  return urls;
+}
+
 function extractOrderReference(message) {
   const text = normalizeSearchText(message);
   return text.match(/\b(?:pedido|numero|n)\s*(\d{2,})\b/i)?.[1]
@@ -429,6 +455,8 @@ function buildIntegrationEndpointSource(integration, endpointKey, params = {}) {
     url: finalUrl,
     type: integration.integration_type || integration.type || 'api',
     name: `${integration.integration_name || integration.name || 'Integracao'} - ${endpointKey}`,
+    endpointKey,
+    operational: ['orders_path', 'order_status_path', 'tracking_path', 'customers_path', 'stock_path'].includes(endpointKey),
     headers: integration.headers || buildIntegrationHeaders(integration)
   };
 }
@@ -584,19 +612,41 @@ function buildOperationalIntegrationSources(config = {}, message = '', contact =
   const pedido = extractOrderReference(message);
   const sources = [];
   for (const integration of integrations) {
-    const cfg = integration.config || {};
+    const integrationType = integration.integration_type || integration.type;
+    const cfg = {
+      ...(DEFAULT_INTEGRATION_CONFIG[integrationType] || {}),
+      ...(integration.config || {})
+    };
     const params = { phone, telefone: phone, query, q: query, pedido, order: pedido };
     const endpointKeys = shouldUseOperationalIntegrationSources(message)
-      ? ['orders_path', 'order_status_path', 'tracking_path', 'customers_path', 'stock_path']
+      ? ['order_status_path', 'tracking_path', 'orders_path', 'customers_path', 'stock_path']
       : [];
     for (const key of endpointKeys) {
       if ((key === 'order_status_path' || key === 'tracking_path') && !pedido && String(cfg[key] || '').includes('{pedido}')) continue;
       let source = buildIntegrationEndpointSource(integration, key, params);
       if (!source) continue;
+      const rawSource = { ...source };
       if (phone && cfg.phone_param && ['orders_path', 'customers_path'].includes(key)) source.url = addQueryParam(source.url, cfg.phone_param, phone);
       if (pedido && cfg.order_param && ['orders_path'].includes(key)) source.url = addQueryParam(source.url, cfg.order_param, pedido);
       if (query && cfg.query_param && ['stock_path'].includes(key)) source.url = addQueryParam(source.url, cfg.query_param, query);
       sources.push(source);
+      if (integrationType === 'facilzap' && key === 'orders_path') {
+        if (pedido) {
+          sources.push(...addQueryParamVariants(rawSource, [
+            ['codigo', pedido],
+            ['id', pedido],
+            ['pedido', pedido],
+            ['q', pedido]
+          ]));
+        }
+        if (phone) {
+          sources.push(...addQueryParamVariants(rawSource, [
+            ['telefone', phone],
+            ['whatsapp', phone],
+            ['whatsapp_e164', `+${phone}`]
+          ]));
+        }
+      }
     }
   }
   return normalizeProductSources(sources);
@@ -798,6 +848,35 @@ function flattenJsonText(value, depth = 0) {
     });
   }
   return [];
+}
+
+function getOperationalJsonSnippets(value, message, source = {}) {
+  const lines = flattenJsonText(value)
+    .map(line => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  if (lines.length === 0) return [];
+
+  const pedido = extractOrderReference(message);
+  const phone = String(message || '').match(/\b\d{10,13}\b/)?.[0] || '';
+  const needles = [pedido, phone, phone ? phone.slice(-8) : ''].filter(Boolean);
+  const matchingLines = needles.length > 0
+    ? lines.filter(line => needles.some(needle => normalizeSearchText(line).includes(normalizeSearchText(needle))))
+    : [];
+
+  if (pedido && source.endpointKey === 'orders_path' && matchingLines.length === 0) {
+    return [`A API retornou JSON para consulta de pedidos, mas o numero ${pedido} nao apareceu nos campos retornados por este endpoint.`];
+  }
+
+  const statusLines = lines.filter(line => /(pedido|codigo|cliente|whatsapp|telefone|status|pago|separacao|separado|despachado|entregue|rastreio|frete|entrega|total|pagamento|observacoes)/i.test(line));
+  const selected = matchingLines.length > 0
+    ? [...matchingLines, ...statusLines]
+    : statusLines.length > 0
+      ? statusLines
+      : lines;
+
+  return [...new Set(selected)]
+    .map(line => truncateText(line, 500))
+    .slice(0, source.operational ? 40 : 12);
 }
 
 function normalizeSearchText(value) {
@@ -1707,8 +1786,9 @@ async function fetchSiteInfoContext(message, sourceUrls = []) {
   if (sources.length === 0) return { contextText: '', lookupAttempted: false };
 
   const entries = [];
-  console.log('[AI SITE] Buscando informacoes gerais | query: ' + normalizeSearchText(message).slice(0, 120) + ' | fontes: ' + sources.map(source => `${source.type}:${source.url}`).join(', '));
-  for (const source of sources.slice(0, 6)) {
+  console.log('[AI SITE] Buscando informacoes gerais | query: ' + normalizeSearchText(message).slice(0, 120) + ' | fontes: ' + sources.map(source => `${source.type}:${sanitizeUrlForLog(source.url)}`).join(', '));
+  const sourceLimit = sources.some(source => source.operational) ? 8 : 6;
+  for (const source of sources.slice(0, sourceLimit)) {
     try {
       const response = await fetch(source.url, {
         headers: {
@@ -1717,14 +1797,29 @@ async function fetchSiteInfoContext(message, sourceUrls = []) {
         },
         signal: AbortSignal.timeout(8000)
       });
-      if (!response.ok) continue;
+      if (!response.ok) {
+        console.warn(`[AI SITE] Fonte retornou HTTP ${response.status} | ${sanitizeUrlForLog(source.url)}`);
+        if (source.operational) {
+          entries.push({
+            url: sanitizeUrlForLog(source.url),
+            sourceName: source.name,
+            title: source.name || 'API configurada',
+            description: '',
+            snippets: [`A consulta da integracao retornou HTTP ${response.status}. O sistema nao deve afirmar que o pedido nao existe sem outra fonte com dados do pedido.`]
+          });
+        }
+        continue;
+      }
       const contentType = String(response.headers.get('content-type') || '').toLowerCase();
       const bodyText = await response.text();
       if (contentType.includes('json')) {
-        const snippets = getRelevantSiteSnippets(flattenJsonText(JSON.parse(bodyText)).join('\n'), message);
+        const parsedJson = JSON.parse(bodyText);
+        const snippets = source.operational
+          ? getOperationalJsonSnippets(parsedJson, message, source)
+          : getRelevantSiteSnippets(flattenJsonText(parsedJson).join('\n'), message);
         if (snippets.length > 0) {
           entries.push({
-            url: source.url,
+            url: sanitizeUrlForLog(source.url),
             sourceName: source.name,
             title: source.name || 'API configurada',
             description: '',
@@ -1736,10 +1831,11 @@ async function fetchSiteInfoContext(message, sourceUrls = []) {
 
       const siteInfo = extractSiteInfoFromHtml(bodyText, source.url, message);
       const hasUsefulInfo = siteInfo.title || siteInfo.description || siteInfo.snippets.length > 0;
-      if (hasUsefulInfo) entries.push({ ...siteInfo, sourceName: source.name });
+      if (hasUsefulInfo) entries.push({ ...siteInfo, url: sanitizeUrlForLog(siteInfo.url), sourceName: source.name });
     } catch (error) {
+      console.warn(`[AI SITE] Falha ao acessar fonte | ${sanitizeUrlForLog(source.url)} | ${error.message}`);
       entries.push({
-        url: source.url,
+        url: sanitizeUrlForLog(source.url),
         sourceName: source.name,
         title: '',
         description: '',
@@ -2049,7 +2145,7 @@ function buildSiteContextText(siteContext) {
 
 function buildOperationalContextText(operationalContext) {
   if (!operationalContext?.contextText) return '';
-  return `${operationalContext.contextText}\n\nEstas informacoes foram consultadas em integracoes ativas antes da resposta. Use esses dados para responder sobre pedido, status, envio, rastreio, estoque, cliente, pagamento ou entrega. Nao invente status, rastreio, estoque ou prazo. Se a integracao nao trouxer o dado solicitado, diga que nao encontrou essa informacao na integracao configurada.`;
+  return `${operationalContext.contextText}\n\nEstas informacoes foram consultadas em integracoes ativas antes da resposta. Use esses dados para responder sobre pedido, status, envio, rastreio, estoque, cliente, pagamento ou entrega. Nao invente status, rastreio, estoque ou prazo. Se uma fonte retornou erro HTTP ou falha de acesso, diga que nao foi possivel consultar a integracao naquele momento, sem afirmar que o pedido nao existe. Se a integracao respondeu com dados mas o pedido/cliente solicitado nao apareceu, diga que nao encontrou essa informacao na integracao configurada.`;
 }
 
 function buildSiteContextSummaryResponse(siteContext) {

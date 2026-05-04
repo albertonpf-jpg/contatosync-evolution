@@ -21,7 +21,7 @@ const DEFAULT_INTEGRATION_CONFIG = {
     stock_path: '/produtos',
     query_param: 'q',
     phone_param: 'telefone',
-    order_param: 'pedido'
+    order_param: 'codigo'
   },
   ecommerce: {
     auth_type: 'bearer',

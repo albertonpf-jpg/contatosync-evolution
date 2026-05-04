@@ -222,6 +222,50 @@ function buildProductContextSummaryResponse(productContext, searchText) {
   ].join('\n');
 }
 
+function buildOperationalSummaryResponse(operationalContext, message) {
+  const text = String(operationalContext?.contextText || '');
+  if (!text) return '';
+  const pedido = extractOrderReference(message);
+  const getLineValue = (pattern) => text.match(pattern)?.[1]?.trim() || '';
+  const cliente = getLineValue(/cliente: nome:\s*([^\n]+)/i);
+  const codigo = getLineValue(/^-\s*codigo:\s*([^\n]+)/im) || getLineValue(/\ncodigo:\s*([^\n]+)/i);
+  const formaEntrega = getLineValue(/forma_entrega: nome:\s*([^\n]+)/i);
+  const pagamentoStatus = getLineValue(/pagamentos: status:\s*([^\n]+)/i);
+  const total = getLineValue(/^-\s*total:\s*([^\n]+)/im) || getLineValue(/\ntotal:\s*([^\n]+)/i);
+  const pago = /status_pago:\s*true/i.test(text);
+  const emSeparacao = /status_em_separacao:\s*true/i.test(text);
+  const separado = /status_separado:\s*true/i.test(text);
+  const despachado = /status_despachado:\s*true/i.test(text);
+  const entregue = /status_entregue:\s*true/i.test(text);
+
+  if (!pedido && !codigo && !cliente && !pagamentoStatus && !formaEntrega) return '';
+
+  const statusAtual = entregue
+    ? 'Entregue'
+    : despachado
+      ? 'Despachado/enviado'
+      : separado
+        ? 'Separado'
+        : emSeparacao
+          ? 'Em separacao'
+          : pago || /pago/i.test(pagamentoStatus)
+            ? 'Pagamento confirmado, aguardando separacao/envio'
+            : 'Pedido localizado';
+
+  return [
+    pedido ? `Encontrei o pedido ${pedido} na integracao.` : 'Encontrei o pedido na integracao.',
+    codigo ? `Codigo interno: ${codigo}.` : '',
+    cliente ? `Cliente: ${cliente}.` : '',
+    total ? `Total: ${formatCurrencyBRL(total) || total}.` : '',
+    formaEntrega ? `Entrega: ${formaEntrega}.` : '',
+    `Status atual: ${statusAtual}.`,
+    `Pagamento: ${pago || /pago/i.test(pagamentoStatus) ? 'pago/confirmado' : 'nao confirmado nos dados consultados'}.`,
+    `Separacao: ${emSeparacao ? 'em separacao' : separado ? 'separado' : 'ainda nao consta como separado'}.`,
+    `Envio: ${despachado ? 'despachado' : 'ainda nao consta como despachado'}.`,
+    `Entrega: ${entregue ? 'entregue' : 'ainda nao consta como entregue'}.`
+  ].filter(Boolean).join('\n');
+}
+
 function truncateText(value, maxLength) {
   const text = String(value || '').replace(/\s+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   if (text.length <= maxLength) return text;
@@ -2228,7 +2272,7 @@ function buildProductSearchText(message, conversationHistory = []) {
 async function buildProductContextForConfig(message, config, conversationHistory = []) {
   const searchText = buildProductSearchText(message, conversationHistory);
   const configuredSources = buildConfiguredProductSources(config);
-  if (config?.product_search_enabled === false) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
+  if (config?.product_search_enabled === false && configuredSources.length === 0) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
   const shouldSearch = shouldUseConfiguredProductSources(searchText);
   const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : []);
   return { ...productContext, lookupAttempted: shouldSearch, searchText };
@@ -2788,6 +2832,51 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       product_images: [],
       product_cards: []
     };
+  }
+
+  if (shouldUseOperationalIntegrationSources(message)) {
+    const operationalContext = await buildOperationalContextForConfig(message, effectiveConfig, contact, conversation);
+    const operationalResponse = buildOperationalSummaryResponse(operationalContext, message);
+    if (operationalResponse) {
+      return {
+        skipped: false,
+        response: operationalResponse,
+        provider: 'integration',
+        model: 'facilzap_operational_lookup',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: [],
+        product_lookup_attempted: false,
+        product_search_text: ''
+      };
+    }
+  }
+
+  const deterministicProductContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+  if (deterministicProductContext.lookupAttempted) {
+    const productCards = deterministicProductContext.productCards || [];
+    if (productCards.length > 0 || deterministicProductContext.productsFound) {
+      return {
+        skipped: false,
+        response: productCards.length > 0
+          ? buildProductCardsResponse(productCards)
+          : buildProductContextSummaryResponse(deterministicProductContext, deterministicProductContext.searchText || message),
+        provider: 'catalog',
+        model: 'catalog_lookup',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: deterministicProductContext.imageUrls || [],
+        product_cards: productCards,
+        product_lookup_attempted: true,
+        product_search_text: deterministicProductContext.searchText || message,
+        products_found: deterministicProductContext.productsFound === true
+      };
+    }
   }
 
   const apiKey = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;

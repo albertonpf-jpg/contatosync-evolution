@@ -1307,7 +1307,28 @@ function getFacilZapImageUrl(image) {
   return 'https://arquivos.facilzap.app.br/' + value.replace(/^\/+/, '');
 }
 
+// --- CORREÇÃO PRINCIPAL: getFacilZapPublicProductUrl ---
+// Regra central: se sourceUrl é uma URL pública válida (não api.) e há productId,
+// monta sempre: `${publicCatalogUrl}#produto${productId}`
+// Exemplo: https://cabiderosakids.com.br/c/atacado/11991280903#produto3993874
 function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') {
+  const productId = firstValue(product?.id, product?.produto_id, product?.codigo, '');
+
+  // Padrão preferencial: publicCatalogUrl#produto{id}
+  // sourceUrl deve ser o publicCatalogUrl limpo (sem /{PATH}), passado por
+  // normalizeFacilZapProduct e extractGenericJsonProducts
+  const publicBase = String(sourceUrl || '').trim();
+  if (productId && publicBase && !/api\.facilzap/i.test(publicBase)) {
+    try {
+      const parsed = new URL(publicBase);
+      if (!/api\./i.test(parsed.hostname)) {
+        return `${publicBase.replace(/\/$/, '')}#produto${productId}`;
+      }
+    } catch (error) {
+      // publicBase inválido como URL — continua para fallbacks abaixo
+    }
+  }
+
   // Regra 1: campo explícito no produto, não-API — usar diretamente
   const explicitUrl = firstValue(
     product?.url,
@@ -1324,7 +1345,7 @@ function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') 
     return resolvePageUrl(sourceUrl || fallbackUrl, explicitUrl);
   }
 
-  const productId = firstValue(product?.id, product?.produto_id, product?.codigo, '');
+  if (!productId) return fallbackUrl;
 
   // URL base do catálogo vinda do próprio produto (campos aninhados)
   const productCatalogUrl = firstValue(
@@ -1344,8 +1365,6 @@ function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') 
   const safeCatalogFallback = baseUrl
     ? (() => { try { const p = new URL(String(baseUrl)); return `${p.origin}${p.pathname}`.replace(/\/+$/, ''); } catch (_) { return ''; } })()
     : '';
-
-  if (!productId) return safeCatalogFallback;
 
   if (!baseUrl) return '';
 
@@ -1373,7 +1392,6 @@ function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') 
     );
 
     if (!catalogSlug) {
-      // Regra 4: sem slug confiável → URL do catálogo principal como fallback seguro
       return safeCatalogFallback;
     }
 
@@ -1381,10 +1399,10 @@ function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') 
     return `${origin}/c/${catalogSlug}/produto/${productId}`;
 
   } catch (error) {
-    // Regra 5: erro de parse → catálogo seguro ou vazio
     return safeCatalogFallback;
   }
 }
+// --- FIM CORREÇÃO getFacilZapPublicProductUrl ---
 
 function getFacilZapPrice(product) {
   function validPrice(v) {
@@ -1513,6 +1531,9 @@ function getFacilZapMatchingCategoryIds(categories, messageTokens) {
     .slice(0, 4);
 }
 
+// --- CORREÇÃO: normalizeFacilZapProduct ---
+// Calcula publicCatalogUrl limpo (remove /{PATH} do catalogBase) antes de
+// passar para getFacilZapPublicProductUrl, garantindo o padrão #produto{id}
 function normalizeFacilZapProduct(product, catalogBase) {
   const images = [
     ...(Array.isArray(product.imagens) ? product.imagens : []),
@@ -1521,9 +1542,12 @@ function normalizeFacilZapProduct(product, catalogBase) {
   const price = getFacilZapPrice(product);
   const variations = getFacilZapVariations(product);
   const variationStocks = getVariationStockEntries(product.variacoes);
+  // publicCatalogUrl: URL base pública sem /{PATH}, usada para montar #produto{id}
+  // catalogBase tipicamente: https://cabiderosakids.com.br/c/atacado/11991280903/{PATH}
+  const publicCatalogUrl = String(catalogBase || '').replace(/\/\{PATH\}.*$/, '').replace(/\/$/, '');
   return {
     id: product.id,
-    url: getFacilZapPublicProductUrl(product, catalogBase, String(catalogBase).replace('{PATH}', 'produto/' + product.id)),
+    url: getFacilZapPublicProductUrl(product, publicCatalogUrl, String(catalogBase).replace('{PATH}', 'produto/' + product.id)),
     title: product.nome || 'Produto',
     description: stripHtml(product.descricao || ''),
     price: price ? formatCurrencyBRL(price) : '',
@@ -1536,6 +1560,7 @@ function normalizeFacilZapProduct(product, catalogBase) {
     score: 0
   };
 }
+// --- FIM CORREÇÃO normalizeFacilZapProduct ---
 
 function firstValue(...values) {
   return values.find(value => value !== undefined && value !== null && String(value).trim() !== '');

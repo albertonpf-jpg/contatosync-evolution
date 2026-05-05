@@ -217,8 +217,9 @@ function buildProductLookupEmptyResponse(searchText) {
       'modelo',
       'modelos'
     ].includes(token));
-  const requested = tokens.length > 0 ? tokens.join(' ') : 'esse pedido';
-  return `Nao encontrei fotos seguras de ${requested} no catalogo configurado. Pode me mandar outro nome, cor ou categoria para eu buscar de novo?`;
+  const requested = tokens.length > 0 ? tokens.join(' ') : 'esse produto';
+  console.log('[PRODUCT FALLBACK HUMAN] reason=lookup_empty requested="' + requested + '"');
+  return `Nao encontrei exatamente ${requested} no momento. Posso procurar opcoes parecidas para voce?`;
 }
 
 function buildProductCardsResponse(productCards = []) {
@@ -3230,7 +3231,7 @@ async function buildOperationalContextForConfig(message, config, contact, conver
 
 function buildProductContextText(productContext) {
   if (!productContext?.contextText) return '';
-  return `${productContext.contextText}\n\nEstas informacoes foram buscadas antes da resposta nas APIs de integracoes ativas e/ou no link de catalogo configurado. Use primeiro os dados coletados das integracoes e do catalogo. Use somente os produtos que batem com o pedido do cliente. Se o cliente pediu idade/tamanho, por exemplo crianca de 6 anos, tamanho 6 ou tam 6, responda e envie somente produtos com esse tamanho explicitamente encontrado. Se o cliente pediu um produto especifico, nao inclua produtos parecidos, personagens, outras estampas, outras cores ou outras categorias. Se nao houver correspondencia clara, diga que nao encontrou fotos seguras para enviar. Use nomes, precos, fotos, variacoes, tamanhos e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque, tamanho ou variacao que nao esteja no conteudo coletado.`;
+  return `${productContext.contextText}\n\nEstas informacoes foram buscadas antes da resposta nas APIs de integracoes ativas e/ou no link de catalogo configurado. Use primeiro os dados coletados das integracoes e do catalogo. Use somente os produtos que batem com o pedido do cliente. Se o cliente pediu idade/tamanho, por exemplo crianca de 6 anos, tamanho 6 ou tam 6, responda e envie somente produtos com esse tamanho explicitamente encontrado. Se o cliente pediu um produto especifico, nao inclua produtos parecidos, personagens, outras estampas, outras cores ou outras categorias. Se nao houver correspondencia clara com o pedido do cliente, diga que nao encontrou esse produto no momento e oferea opcoes relacionadas se existirem. Use nomes, precos, fotos, variacoes, tamanhos e disponibilidade quando existirem. Nao pergunte se pode enviar fotos: quando houver imagens, responda considerando que o sistema enviara as fotos antes do texto. Nao escreva URLs de imagens na resposta. As imagens serao enviadas pelo sistema como carrossel interativo fora do texto. Nao responda apenas com o link da loja se houver dados de produtos acima. Nao invente preco, estoque, tamanho ou variacao que nao esteja no conteudo coletado.`;
 }
 
 function buildProductInputResult(extra, productContext) {
@@ -3307,7 +3308,7 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
   } else if (productContext.lookupAttempted) {
     content.push({
       type: 'input_text',
-      text: 'O cliente pediu fotos ou produtos, mas nenhum produto com imagem foi encontrado no catalogo configurado. Nao diga que vai enviar fotos e nao prometa encaminhar para atendente apenas por falta de imagem. Responda de forma transparente que nao encontrei fotos seguras desse pedido no catalogo e peca para o cliente confirmar o nome do produto, cor ou categoria.'
+      text: 'O cliente pediu fotos ou produtos, mas nenhum produto com imagem foi encontrado agora. Nao diga que vai enviar fotos e nao prometa encaminhar para atendente. Responda de forma natural que nao encontrou esse produto no momento e pergunte se o cliente quer buscar por outro nome, cor ou categoria.'
     });
   }
 
@@ -3468,7 +3469,7 @@ async function buildClaudeInputContent({ input, media, config, conversationHisto
   if (siteContext.contextText) parts.push(buildSiteContextText(siteContext));
   if (operationalContext.contextText) parts.push(buildOperationalContextText(operationalContext));
   if (productContext.contextText) parts.push(buildProductContextText(productContext));
-  else if (productContext.lookupAttempted) parts.push('O cliente pediu fotos ou produtos, mas nenhum produto com imagem foi encontrado no catalogo configurado. Nao diga que vai enviar fotos e nao prometa encaminhar para atendente apenas por falta de imagem. Responda de forma transparente que nao encontrei fotos seguras desse pedido no catalogo e peca para o cliente confirmar o nome do produto, cor ou categoria.');
+  else if (productContext.lookupAttempted) parts.push('O cliente pediu fotos ou produtos, mas nenhum produto com imagem foi encontrado agora. Nao diga que vai enviar fotos e nao prometa encaminhar para atendente. Responda de forma natural que nao encontrou esse produto no momento e pergunte se o cliente quer buscar por outro nome, cor ou categoria.');
   if (media) parts.push(`Midia recebida:\n${getMediaDescription(media)}`);
   return {
     inputText: parts.filter(Boolean).join('\n\n'),
@@ -4034,7 +4035,25 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         //   E uma das condições:
         //   A) productCards.length === 0 (busca normal não achou nada), OU
         //   B) customerIntent.theme existe e nenhum card encontrado tem relação com o tema
-        const allProductsCollected = (productContext.allProductsCollected || []);
+        let allProductsCollected = (productContext.allProductsCollected || []);
+        // Se a API não retornou nenhum candidato mas há um product_type definido,
+        // tentar busca ampliada com apenas o tipo (ex: "roupa" ou "camiseta")
+        // para ter candidatos para o semântico avaliar semanticamente.
+        if (allProductsCollected.length === 0 && customerIntent.product_type && isUsableProviderApiKey(provider, apiKeyForClassify)) {
+          const broadQuery = normalizeSearchText(String(customerIntent.product_type)).split(' ').slice(0, 2).join(' ');
+          if (broadQuery && broadQuery !== cleanQuery) {
+            console.log('[SEMANTIC DECISION] allProductsCollected=0 tentando busca ampliada com product_type="' + broadQuery + '"');
+            const broadContext = await buildProductContextForConfig(broadQuery, effectiveConfig, conversationHistory);
+            if (broadContext.allProductsCollected && broadContext.allProductsCollected.length > 0) {
+              allProductsCollected = broadContext.allProductsCollected;
+              console.log('[SEMANTIC DECISION] busca ampliada retornou ' + allProductsCollected.length + ' candidatos');
+            } else if (broadContext.productCards && broadContext.productCards.length > 0) {
+              // Usar os products dos cards como candidatos
+              allProductsCollected = broadContext.allProductsCollected || [];
+              console.log('[SEMANTIC DECISION] busca ampliada retornou cards diretos: ' + (broadContext.productCards || []).length);
+            }
+          }
+        }
         const semanticQuery =
           (customerIntent.semantic_query && String(customerIntent.semantic_query).trim()) ||
           (customerIntent.search_query && String(customerIntent.search_query).trim()) ||
@@ -4120,9 +4139,31 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           }
         }
         // ── FIM FALLBACK SEMÂNTICO ────────────────────────────────────────────
+
+        // Se chegou aqui: busca literal falhou E semântico falhou/não pôde rodar.
+        // Resposta humana sem termos técnicos, sem passar pelo LLM.
+        if (productContext.lookupAttempted) {
+          const _humanFallbackQuery = cleanQuery || semanticQuery || '';
+          console.log('[PRODUCT FALLBACK HUMAN] reason=semantic_failed query="' + _humanFallbackQuery + '"');
+          return {
+            skipped: false,
+            response: buildProductLookupEmptyResponse(_humanFallbackQuery),
+            provider: 'catalog',
+            model: 'product_lookup_empty',
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            processing_time_ms: 0,
+            product_images: [],
+            product_cards: [],
+            product_lookup_attempted: true,
+            product_search_text: _humanFallbackQuery,
+            products_found: false
+          };
+        }
       }
     }
-    // Se cleanQuery estiver vazio ou busca não retornou nada, cai para LLM normal
+    // Se cleanQuery estiver vazio: cai para LLM normal
   }
 
   // ─── 5. Base de conhecimento ─────────────────────────────────────────────
@@ -4235,14 +4276,12 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         })
       : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media, conversationHistory, contact, conversation });
 
-    if (result.product_lookup_attempted && !result.products_found && (!Array.isArray(result.product_cards) || result.product_cards.length === 0)) {
-      result.response = buildProductLookupEmptyResponse(result.product_search_text || message);
-    } else {
-      result.response = normalizeProductMediaResponse(
-        suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation),
-        result.product_cards
-      );
-    }
+    // Nunca sobrescrever a resposta do LLM com texto técnico.
+    // Se o LLM respondeu e não há product_cards, aceitar a resposta normalizada.
+    result.response = normalizeProductMediaResponse(
+      suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation),
+      result.product_cards
+    );
 
     await logAIResult(supabase, {
       client_id: clientId,

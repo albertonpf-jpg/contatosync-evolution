@@ -469,7 +469,8 @@ function normalizeProductSources(values = []) {
       name: source.name || source.integration_name || 'Fonte configurada',
       endpointKey: source.endpointKey,
       operational: source.operational === true,
-      headers: source.headers || {}
+      headers: source.headers || {},
+      publicCatalogUrl: source.publicCatalogUrl || ''
     });
   };
 

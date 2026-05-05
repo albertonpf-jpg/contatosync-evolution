@@ -545,6 +545,7 @@ class BaileysService {
         { image: imageBuffer },
         { upload: session.socket.waUploadToServer }
       );
+      console.log('[BAILEYS CARD URL]', JSON.stringify({ title: card.title, url: card.url, safe: this._isSafeProductUrl(card.url) }));
       let buttons = [];
       if (Array.isArray(card.buttons) && card.buttons.length > 0) {
         buttons = card.buttons.slice(0, 3);

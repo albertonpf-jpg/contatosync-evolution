@@ -651,7 +651,7 @@ function hasStrongProductIntent(message) {
   const nonCatalogInfo = /\b(como comprar|forma de comprar|formas de comprar|passo a passo|pedido minimo|valor minimo|compra minima|aviso|avisos|regras|endereco|localizacao|onde fica|horario|funcionamento|telefone|contato|pagamento|pagar|pix|cartao|boleto|entrega|frete|retirada|troca|devolucao|status|rastreio|pedido)\b/i.test(text);
   const wantsMedia = /\b(foto|fotos|imagem|imagens|mostra|mostrar|mande|manda|envie|envia|ver)\b/i.test(text);
   const wantsProduct = /\b(quero|queria|procuro|procurando|busco|preciso|gostaria|tem|vende|vendem|trabalha|trabalham|possui|temos|custa|preco|valor|opcao|opcoes|modelos|mais|outra|outras|outro|outros)\b/i.test(text);
-  const productNoun = /\b(produto|produtos|catalogo|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|tshirt|cropped|moletom|moletons|moleton|moletons)\b/i.test(text);
+  const productNoun = /\b(produto|produtos|catalogo|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|camisa|camisas|tshirt|cropped|moletom|moletons|moleton|moletons|pijama|pijamas|regata|regatas|jaqueta|jaquetas|casaco|casacos)\b/i.test(text);
   const productAttribute = /\b(preco|valor|estoque|tamanho|tamanhos|cor|cores|variacao|variacoes|tem|vende|opcao|opcoes|modelos)\b/i.test(text);
   const specificTokens = getSpecificProductTokens(getSearchTokens(text));
   const hasSearchableCatalogTerm = productNoun || specificTokens.length > 0;
@@ -2279,7 +2279,7 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
     productCards: productCards.slice(0, 10),
     productsFound: relevantProducts.length > 0,
     lookupAttempted: true,
-    allProductsCollected: []
+    allProductsCollected: products  // todos os coletados, para fallback semântico de tema
   };
 }
 
@@ -2724,7 +2724,7 @@ Retorne APENAS um JSON válido, sem markdown, sem comentários, sem texto adicio
 - Se a mensagem NÃO contém nome de produto (moletom, blusa, vestido, etc) e pergunta sobre tamanho/estoque, é product_stock_followup, NÃO product_search.
 - "quantas" NUNCA é nome de produto.
 - Se há produtos no contexto recente e o cliente pergunta sobre tamanho/estoque sem especificar qual produto, needs_clarification=true.
-- search_query deve conter apenas substantivos de produto, SEM verbos, SEM palavras de pergunta, SEM tamanhos.
+- search_query deve conter o substantivo de produto E os modificadores importantes: tema, personagem, marca, estampa. NUNCA remova tema/personagem/marca do search_query. Exemplos corretos: "camiseta princesas", "camisa princesa Disney", "camisa personagens", "moletom frozen". Exemplos ERRADOS (perdem o modificador): "camiseta", "camisa", "moletom".
 - semantic_query: descrição semântica do que o cliente quer (tipo de produto + tema/característica). Preencher APENAS para product_search. Ex: "peca de roupa superior infantil com tema de princesa/personagem". Deixar "" para outras intencoes.
 - product_type: tipo/categoria do produto mencionado. Preencher APENAS para product_search. Ex: "camiseta", "vestido", "roupa infantil". Deixar "" se nao aplicavel.
 - theme: tema, estampa ou personagem mencionado. Preencher APENAS para product_search. Ex: "princesa", "frozen", "personagem". Deixar "" se nao aplicavel.
@@ -3055,21 +3055,32 @@ O cliente pediu: "${semanticQuery}"
 Tipo de produto: "${customerIntent && customerIntent.product_type ? customerIntent.product_type : ''}"
 Tema/personagem: "${customerIntent && customerIntent.theme ? customerIntent.theme : ''}"
 
-Identifique quais produtos abaixo sao semanticamente compativeis com o pedido.
+INSTRUCAO PRINCIPAL:
+Avalie o SIGNIFICADO do pedido, nao a literalidade.
+Exemplos de equivalencia semantica:
+- "camisa de princesa da Disney" = qualquer peca de roupa (blusa, camiseta, conjunto, body, moletom, pijama, cropped, vestido) com tema de princesa ou personagem Disney.
+- "camisa de personagens" = qualquer roupa infantil com estampa de personagem, independente do tipo de peca.
+- "blusa de frio" = moletom, casaco, jaqueta, blusao.
+Se o pedido menciona tema/personagem, priorize produtos com esse tema, mesmo que o tipo de peca seja diferente.
+Se nao houver correspondencia exata de peca mas houver correspondencia de tema, inclua como relacionado com score menor.
+Se absolutamente nenhum produto tiver relacao semantica com o pedido, retorne matches vazio.
 
-Regras:
-- Use apenas o campo "id" exato dos produtos abaixo
+Regras de selecao:
+- Use apenas o campo "id" exato dos produtos listados abaixo
 - Nao invente produtos nem altere dados
-- Prefira produtos com stock maior que zero
-- Se nenhum for compativel, retorne matches vazio
+- Prefira produtos com stock maior que zero (campo stock)
+- Se nenhum for compativel semanticamente, retorne matches: []
 - Maximo de ${SEMANTIC_MAX_RESULTS} produtos
 - Ordene por score decrescente (mais compativel primeiro)
+- score 1.0 = correspondencia perfeita de tipo + tema
+- score 0.7-0.9 = mesmo tema, tipo de peca diferente
+- score 0.4-0.6 = relacionado indiretamente
 
 Produtos disponíveis:
 ${JSON.stringify(candidateSample)}
 
 Retorne APENAS JSON valido, sem markdown, sem comentarios:
-{"matches":[{"id":"id_exato","score":0.85,"reason":"motivo em portugues"}],"customer_note":"Mensagem curta em portugues explicando que sao produtos relacionados"}`;
+{"matches":[{"id":"id_exato","score":0.85,"reason":"motivo em portugues"}],"customer_note":"Mensagem curta em portugues: explique que nao encontrou exatamente o pedido mas encontrou opcoes relacionadas ao tema/personagem"}`;
 
   try {
     const controller = new AbortController();
@@ -3175,7 +3186,7 @@ Retorne APENAS JSON valido, sem markdown, sem comentarios:
     const customerNote = (rankResult.customer_note && String(rankResult.customer_note).trim())
       || 'Nao encontrei exatamente o que voce pediu, mas encontrei opcoes relacionadas:';
 
-    console.log('[SEMANTIC] Ranking concluido | candidatos: ' + candidateSample.length + ' | matches validos: ' + validMatches.length + ' | cards: ' + productCards.length);
+    console.log('[SEMANTIC RANK] ranking interno concluido | candidatos: ' + candidateSample.length + ' | matches validos: ' + validMatches.length + ' | cards montados: ' + productCards.length);
     return { productCards: productCards.slice(0, 10), customerNote };
 
   } catch (err) {
@@ -3764,6 +3775,15 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     config: effectiveConfig
   });
 
+  // Log seguro da intenção completa (sem token)
+  console.log('[INTENT FULL] intent=' + customerIntent.intent
+    + ' source=' + (customerIntent.source || '')
+    + ' query="' + (customerIntent.search_query || '') + '"'
+    + ' semantic="' + (customerIntent.semantic_query || '') + '"'
+    + ' theme="' + (customerIntent.theme || '') + '"'
+    + ' product_type="' + (customerIntent.product_type || '') + '"'
+    + ' allow_related=' + (customerIntent.allow_related_products === true ? 'true' : 'false'));
+
   // ─── 1. Pedido/Rastreio ────────────────────────────────────────────────────
   if (customerIntent.intent === 'order_lookup' || customerIntent.intent === 'tracking_lookup') {
     const operationalContext = await buildOperationalContextForConfig(message, effectiveConfig, contact, conversation);
@@ -3850,6 +3870,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   // ─── 4. Busca de produto novo ────────────────────────────────────────────
   if (customerIntent.intent === 'product_search') {
     const cleanQuery = customerIntent.search_query || getProductSearchPhrase(message);
+    console.log('[PRODUCT CLEAN QUERY] "' + cleanQuery + '"');
     if (cleanQuery) {
       const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory);
       if (productContext.lookupAttempted) {
@@ -3874,28 +3895,46 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         }
 
         // ── FALLBACK SEMÂNTICO ────────────────────────────────────────────────
-        // Ativa somente se:
-        //   1. Busca literal não encontrou nenhum card (productCards.length === 0)
-        //   2. Catálogo coletou produtos (allProductsCollected.length > 0)
-        //   3. intent === 'product_search' (já garantido pelo if externo)
-        //   4. Há query semântica resolvida (sem usar message bruta)
-        //   5. allow_related_products !== false
-        //   6. Há API key utilizável
+        // Ativa se:
+        //   1. intent === 'product_search' (garantido pelo if externo)
+        //   2. allProductsCollected.length > 0 (catálogo coletou produtos)
+        //   3. semanticQuery não vazio (sem usar message bruta/normalizada)
+        //   4. allow_related_products !== false
+        //   5. API key válida
+        //   E uma das condições:
+        //   A) productCards.length === 0 (busca normal não achou nada), OU
+        //   B) customerIntent.theme existe e nenhum card encontrado tem relação com o tema
         const allProductsCollected = (productContext.allProductsCollected || []);
         const semanticQuery =
           (customerIntent.semantic_query && String(customerIntent.semantic_query).trim()) ||
           (customerIntent.search_query && String(customerIntent.search_query).trim()) ||
           getProductSearchPhrase(cleanQuery) ||
           '';
+        // Verificar se os cards encontrados atendem o tema pedido
+        const themeToken = customerIntent.theme ? normalizeSearchText(String(customerIntent.theme)) : '';
+        const cardsAtendeTema = themeToken
+          ? productCards.some(card => {
+              const haystack = normalizeSearchText([card.title, card.description].join(' '));
+              return haystack.includes(themeToken) || themeToken.split(' ').some(t => t.length >= 4 && haystack.includes(t));
+            })
+          : true; // sem tema definido: considera atendido
+        const semDecisionReason = productCards.length === 0
+          ? 'cards_zero'
+          : (!cardsAtendeTema && themeToken ? 'cards_sem_tema' : 'nao_necessario');
         const canTrySemanticRank = (
-          productCards.length === 0 &&
+          semDecisionReason !== 'nao_necessario' &&
           allProductsCollected.length > 0 &&
           semanticQuery.length > 0 &&
           customerIntent.allow_related_products !== false &&
           isUsableProviderApiKey(provider, apiKeyForClassify)
         );
+        console.log('[SEMANTIC DECISION] reason=' + semDecisionReason
+          + ' | theme="' + themeToken + '"'
+          + ' | cards=' + productCards.length
+          + ' | candidatos=' + allProductsCollected.length
+          + ' | canRun=' + canTrySemanticRank);
         if (canTrySemanticRank) {
-          console.log('[SEMANTIC] Iniciando ranking semantico | candidatos: ' + allProductsCollected.length + ' | query: "' + semanticQuery + '"');
+          console.log('[SEMANTIC RANK] candidatos: ' + allProductsCollected.length + ' | query: "' + semanticQuery + '"');
           const semanticResult = await semanticRankProducts(
             allProductsCollected,
             customerIntent,
@@ -3903,17 +3942,21 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
             apiKeyForClassify,
             provider
           );
+          console.log('[SEMANTIC RANK] matches: ' + ((semanticResult.productCards || []).length));
           if (semanticResult.productCards && semanticResult.productCards.length > 0) {
             // Separar cards com e sem imageUrl para não prometer foto quando não há imagem
             const cardsComImagem = semanticResult.productCards.filter(c => c.imageUrl);
             const cardsSemImagem = semanticResult.productCards.filter(c => !c.imageUrl);
             const noteText = semanticResult.customerNote;
+            console.log('[SEMANTIC CARDS] cards com imagem: ' + cardsComImagem.length + ' | sem imagem: ' + cardsSemImagem.length);
             if (cardsComImagem.length > 0) {
+              // Retorna product_cards + response com buildProductCardsResponse
+              // para que o sistema envie o carrossel direto, sem passar pelo LLM
               return {
                 skipped: false,
-                response: noteText,
+                response: noteText + '\n\n' + buildProductCardsResponse(cardsComImagem),
                 provider: 'catalog',
-                model: 'semantic_rank',
+                model: 'semantic_catalog_lookup',
                 prompt_tokens: 0,
                 completion_tokens: 0,
                 total_tokens: 0,
@@ -3922,16 +3965,17 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
                 product_cards: cardsComImagem,
                 product_lookup_attempted: true,
                 product_search_text: semanticQuery,
+                products_found: true,
                 semantic_rank_used: true
               };
             }
-            // Só cards sem imagem: resposta textual, sem prometer foto
-            const listaTexto = cardsSemImagem.map(c => `• ${c.title}${c.description ? ' — ' + c.description : ''}`).join('\n');
+            // Só cards sem imagem: resumo textual, sem prometer foto
+            const listaTexto = cardsSemImagem.map(c => '• ' + c.title + (c.description ? ' — ' + c.description : '')).join('\n');
             return {
               skipped: false,
               response: noteText + '\n\n' + listaTexto,
               provider: 'catalog',
-              model: 'semantic_rank_text',
+              model: 'semantic_catalog_lookup_text',
               prompt_tokens: 0,
               completion_tokens: 0,
               total_tokens: 0,
@@ -3940,6 +3984,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
               product_cards: [],
               product_lookup_attempted: true,
               product_search_text: semanticQuery,
+              products_found: true,
               semantic_rank_used: true
             };
           }

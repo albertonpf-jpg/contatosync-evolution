@@ -463,6 +463,9 @@ function normalizeProductSources(values = []) {
     const key = `${String(source.type || source.integration_type || 'link').toLowerCase()}:${url.toLowerCase()}`;
     if (seen.has(key)) return;
     seen.add(key);
+    // LOG TEMPORARIO DIAG SOURCE NORMALIZE — remover apos diagnostico
+    if (source.publicCatalogUrl) console.log('[DIAG SOURCE NORMALIZE] url=' + url.slice(0, 80) + ' type=' + (source.type || source.integration_type || 'link') + ' publicCatalogUrl_input=' + source.publicCatalogUrl);
+    // FIM LOG TEMPORARIO
     sources.push({
       url,
       type: source.type || source.integration_type || 'link',
@@ -1782,6 +1785,11 @@ function extractGenericJsonProducts(data, sourceUrl, source = {}) {
       const url = isFacilZapSource
         ? getFacilZapPublicProductUrl(value, source.publicCatalogUrl || sourceUrl, resolvePageUrl(source.publicCatalogUrl || sourceUrl, rawUrl))
         : resolvePageUrl(sourceUrl, rawUrl);
+      // LOG TEMPORARIO DIAG EXTRACT URL — remover apos diagnostico
+      if (String(value.id || '') === '3993874' || /ursinha\s*fashion/i.test(String(value.nome || value.name || title || ''))) {
+        console.log('[DIAG EXTRACT URL] id=' + value.id + ' sourceUrl=' + sourceUrl.slice(0, 80) + ' source.publicCatalogUrl=' + (source.publicCatalogUrl || '(vazio)') + ' isFacilZap=' + isFacilZapSource + ' url_calculada=' + url);
+      }
+      // FIM LOG TEMPORARIO
       const variations = [
         value.variacoes,
         value.variations,
@@ -3134,6 +3142,17 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       })),
     model: config.model || client?.ai_model || (provider === 'claude' ? 'claude-3-haiku' : 'gpt-4o-mini')
   };
+  // LOG TEMPORARIO DIAG CATALOG CONFIG — remover apos diagnostico
+  try {
+    const _pIntegrations = (effectiveConfig.product_integrations || []);
+    console.log('[DIAG CATALOG CONFIG] product_catalog_url=' + (config.product_catalog_url || '(vazio)') + ' product_source_urls=' + JSON.stringify(config.product_source_urls || []) + ' integrations_count=' + _pIntegrations.length);
+    _pIntegrations.filter(i => i.integration_type === 'facilzap').forEach(function(i, idx) {
+      const c = i.config || {};
+      console.log('[DIAG CATALOG CONFIG] facilzap[' + idx + '] public_catalog_url=' + c.public_catalog_url + ' product_catalog_url=' + c.product_catalog_url + ' catalog_url=' + c.catalog_url + ' store_url=' + c.store_url + ' site_url=' + c.site_url);
+    });
+  } catch(_e) { console.log('[DIAG CATALOG CONFIG] erro: ' + _e.message); }
+  // FIM LOG TEMPORARIO
+
   const systemPrompt = buildSystemPrompt(effectiveConfig, contact, conversation);
   const conversationHistory = await getConversationMessagesFromStart(supabase, clientId, conversation?.id);
 

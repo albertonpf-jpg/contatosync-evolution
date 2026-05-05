@@ -19,7 +19,8 @@ const DEFAULT_INTEGRATION_CONFIG = {
     stock_path: '/produtos',
     query_param: 'q',
     phone_param: 'telefone',
-    order_param: 'codigo'
+    order_param: 'codigo',
+    public_catalog_url: ''
   },
   ecommerce: {
     auth_type: 'bearer',
@@ -441,6 +442,7 @@ function normalizeProductSources(values = []) {
       type: source.type || source.integration_type || 'link',
       name: source.name || source.integration_name || 'Fonte configurada',
       endpointKey: source.endpointKey,
+      publicCatalogUrl: source.publicCatalogUrl || '',
       operational: source.operational === true,
       headers: source.headers || {}
     });
@@ -1277,6 +1279,25 @@ function getFacilZapImageUrl(image) {
 }
 
 function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') {
+  const productId = firstValue(product?.id, product?.produto_id, product?.codigo, '');
+
+  // Padrão preferencial: publicCatalogUrl#produto{id}
+  // sourceUrl deve ser o publicCatalogUrl limpo (sem /{PATH}), passado por
+  // normalizeFacilZapProduct e extractGenericJsonProducts
+  const publicBase = String(sourceUrl || '').trim();
+  if (productId && publicBase && !/api\.facilzap/i.test(publicBase)) {
+    // Verifica se é uma URL pública real (não endpoint de API)
+    try {
+      const parsed = new URL(publicBase);
+      if (!/api\./i.test(parsed.hostname)) {
+        return `${publicBase.replace(/\/$/, '')}#produto${productId}`;
+      }
+    } catch (error) {
+      // continua para fallback abaixo
+    }
+  }
+
+  // Campo explícito no produto, não-API — usar diretamente
   const explicitUrl = firstValue(
     product?.url,
     product?.link,
@@ -1292,42 +1313,54 @@ function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') 
     return resolvePageUrl(sourceUrl || fallbackUrl, explicitUrl);
   }
 
-  const productId = firstValue(product?.id, product?.produto_id, product?.codigo, '');
-  if (!productId) return fallbackUrl;
-
-  const catalogUrl = firstValue(
-    product?.catalogo?.url,
-    product?.catalogo_url,
-    product?.catalog_url,
-    product?.loja?.url,
-    product?.store_url,
-    fallbackUrl
-  );
-  try {
-    const parsed = new URL(String(catalogUrl || sourceUrl || fallbackUrl || 'https://facilzap.app.br'));
-    const pathMatch = parsed.pathname.match(/\/c\/([^/]+)(?:\/(?:produto|produtos)\/?|\b)?/i)
-      || parsed.pathname.match(/\/c\/([^/]+)/i);
-    const catalogSlug = firstValue(
-      product?.catalogo?.slug,
-      product?.catalogo_slug,
-      product?.slug_catalogo,
-      product?.loja?.slug,
-      pathMatch?.[1],
-      'varejo'
-    );
-    const origin = /api\.facilzap/i.test(parsed.hostname) ? 'https://facilzap.app.br' : parsed.origin;
-    return `${origin}/c/${catalogSlug}/produto/${productId}`;
-  } catch (error) {
-    return `https://facilzap.app.br/c/varejo/produto/${productId}`;
-  }
+  // Sem publicCatalogUrl configurado e sem URL explícita no produto:
+  // retorna vazio para que baileysService não exiba botão "Ver produto"
+  return '';
 }
 
 function getFacilZapPrice(product) {
-  return product?.precos_produto?.promocional
-    || product?.precos_produto?.preco_a_partir?.preco
-    || product?.precos_produto?.padrao
-    || product?.preco
-    || null;
+  function validPrice(v) {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(String(v).replace(',', '.').replace(/[^\d.-]/g, ''));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  // Campos diretos
+  const direct = validPrice(product?.precos_produto?.promocional)
+    ?? validPrice(product?.precos_produto?.preco_a_partir?.preco)
+    ?? validPrice(product?.precos_produto?.preco_minimo)
+    ?? validPrice(product?.precos_produto?.padrao)
+    ?? validPrice(product?.preco_promocional)
+    ?? validPrice(product?.preco_venda)
+    ?? validPrice(product?.valor_venda)
+    ?? validPrice(product?.sale_price)
+    ?? validPrice(product?.price)
+    ?? validPrice(product?.preco)
+    ?? validPrice(product?.valor);
+  if (direct !== null) return direct;
+  // FácilZap: preço dentro de catalogos[].precos
+  const cats = product?.catalogos;
+  if (cats && typeof cats === 'object') {
+    const catArr = Array.isArray(cats) ? cats : Object.values(cats);
+    for (const cat of catArr) {
+      if (!cat || typeof cat !== 'object') continue;
+      const n = validPrice(cat.precos?.preco)
+        ?? validPrice(cat.precos?.promocional)
+        ?? validPrice(cat.precos?.preco_promocional)
+        ?? validPrice(cat.precos?.preco_venda);
+      if (n !== null) return n;
+    }
+  }
+  // Fallback: variacoes
+  const variacoes = product?.variacoes;
+  if (variacoes && typeof variacoes === 'object') {
+    const entries = Array.isArray(variacoes) ? variacoes : Object.values(variacoes);
+    for (const v of entries) {
+      if (!v || typeof v !== 'object') continue;
+      const n = validPrice(v.preco) ?? validPrice(v.valor) ?? validPrice(v.price);
+      if (n !== null) return n;
+    }
+  }
+  return null;
 }
 
 function getFacilZapVariations(product) {
@@ -1429,9 +1462,11 @@ function normalizeFacilZapProduct(product, catalogBase) {
   const price = getFacilZapPrice(product);
   const variations = getFacilZapVariations(product);
   const variationStocks = getVariationStockEntries(product.variacoes);
+  // publicCatalogUrl: URL base pública sem {PATH}, usada para montar o link #produto{id}
+  const publicCatalogUrl = String(catalogBase || '').replace(/\/\{PATH\}.*$/, '').replace(/\/$/, '');
   return {
     id: product.id,
-    url: getFacilZapPublicProductUrl(product, catalogBase, String(catalogBase).replace('{PATH}', 'produto/' + product.id)),
+    url: getFacilZapPublicProductUrl(product, publicCatalogUrl, String(catalogBase).replace('{PATH}', 'produto/' + product.id)),
     title: product.nome || 'Produto',
     description: stripHtml(product.descricao || ''),
     price: price ? formatCurrencyBRL(price) : '',
@@ -2526,115 +2561,11 @@ function buildProductSearchText(message, conversationHistory = []) {
   const parts = currentIsFollowUp && lastProductRequest ? [lastProductRequest, current] : [current];
   return [...new Set(parts)].join('\n');
 }
-// ─── DIAGNÓSTICO TEMPORÁRIO ────────────────────────────────────────────────
-// Objetivo: confirmar campos retornados pelo endpoint /catalogos da FácilZap.
-// Remover após análise do log [DIAG FACILZAP CATALOGOS].
-const _diagCatalogosAlreadyRan = new Set();
-
-async function diagFacilZapCatalogos(config) {
-  const integrations = Array.isArray(config.product_integrations) ? config.product_integrations : [];
-  for (const integration of integrations) {
-    const integrationType = integration.integration_type || integration.type;
-    if (integrationType !== 'facilzap') continue;
-
-    const integrationId = String(integration.id || integration.integration_name || integration.name || integrationType);
-    if (_diagCatalogosAlreadyRan.has(integrationId)) continue;
-    _diagCatalogosAlreadyRan.add(integrationId);
-
-    const cfg = {
-      ...(DEFAULT_INTEGRATION_CONFIG.facilzap || {}),
-      ...(integration.config || {})
-    };
-    const baseUrl = getIntegrationApiBaseUrl(integration);
-    const catalogPath = cfg.catalog_path || '/catalogos';
-    const url = joinIntegrationUrl(baseUrl, catalogPath);
-    if (!url) {
-      console.log('[DIAG FACILZAP CATALOGOS] URL nao montada | baseUrl vazio ou catalog_path ausente');
-      continue;
-    }
-
-    const headers = buildIntegrationHeaders(integration);
-    // Nunca logar token/headers — usar sanitizeUrlForLog na URL
-    const safeUrl = sanitizeUrlForLog(url);
-
-    let raw;
-    try {
-      const response = await fetch(url, {
-        headers,
-        signal: AbortSignal.timeout(8000)
-      });
-      if (!response.ok) {
-        console.log('[DIAG FACILZAP CATALOGOS] HTTP ' + response.status + ' | url: ' + safeUrl);
-        continue;
-      }
-      const contentType = String(response.headers.get('content-type') || '').toLowerCase();
-      const bodyText = await response.text();
-      console.log('[DIAG FACILZAP CATALOGOS] content-type: ' + contentType + ' | url: ' + safeUrl);
-
-      if (!contentType.includes('json')) {
-        console.log('[DIAG FACILZAP CATALOGOS] Resposta nao e JSON | primeiros 200 chars: ' + bodyText.slice(0, 200));
-        continue;
-      }
-
-      raw = JSON.parse(bodyText);
-    } catch (err) {
-      console.log('[DIAG FACILZAP CATALOGOS] Erro ao buscar /catalogos | ' + String(err.message || err));
-      continue;
-    }
-
-    // ── Análise estrutural ──
-    const isArray = Array.isArray(raw);
-    const items = isArray ? raw : (Array.isArray(raw?.data) ? raw.data : (Array.isArray(raw?.catalogos) ? raw.catalogos : [raw]));
-    const count = isArray ? raw.length : (typeof raw === 'object' && raw !== null ? Object.keys(raw).length : 0);
-
-    console.log('[DIAG FACILZAP CATALOGOS] tipo: ' + (isArray ? 'array' : 'object') + ' | itens encontrados: ' + items.length + ' | keys raiz: ' + Object.keys(raw || {}).join(', '));
-
-    const first = items[0];
-    if (!first) {
-      console.log('[DIAG FACILZAP CATALOGOS] Nenhum item para analisar');
-      continue;
-    }
-
-    const firstKeys = typeof first === 'object' && first !== null ? Object.keys(first) : [];
-    console.log('[DIAG FACILZAP CATALOGOS] keys do primeiro item: ' + firstKeys.join(', '));
-
-    // ── Campos de interesse para montar URL pública ──
-    const FIELDS_OF_INTEREST = [
-      'id', 'nome', 'slug', 'url', 'link',
-      'dominio', 'dominio_proprio',
-      'loja_id', 'loja', 'conta',
-      'catalogo_url', 'public_url'
-    ];
-    const found = {};
-    for (const field of FIELDS_OF_INTEREST) {
-      const value = first[field];
-      if (value !== undefined && value !== null && value !== '') {
-        found[field] = typeof value === 'object' ? JSON.stringify(value).slice(0, 120) : String(value).slice(0, 120);
-      }
-    }
-    console.log('[DIAG FACILZAP CATALOGOS] campos de interesse encontrados: ' + JSON.stringify(found));
-
-    // ── Primeiro item completo (limitado a 800 chars) ──
-    let firstItemStr;
-    try {
-      firstItemStr = JSON.stringify(first).slice(0, 800);
-    } catch (_) {
-      firstItemStr = String(first).slice(0, 800);
-    }
-    console.log('[DIAG FACILZAP CATALOGOS] primeiro item (truncado a 800 chars): ' + firstItemStr);
-  }
-}
-// ─── FIM DIAGNÓSTICO TEMPORÁRIO ────────────────────────────────────────────
-
 async function buildProductContextForConfig(message, config, conversationHistory = []) {
   const searchText = buildProductSearchText(message, conversationHistory);
   const configuredSources = buildConfiguredProductSources(config);
   if (config?.product_search_enabled === false && configuredSources.length === 0) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
   const shouldSearch = shouldUseConfiguredProductSources(searchText);
-  // DIAGNOSTICO TEMPORARIO — remover apos analise do log
-  if (shouldSearch) {
-    diagFacilZapCatalogos(config).catch(function(err) { console.log('[DIAG FACILZAP CATALOGOS] Erro inesperado: ' + String(err.message || err)); });
-  }
   const excludeTitles = isCatalogFollowUpRequest(message)
     ? extractPreviouslyMentionedProductTitles(conversationHistory)
     : [];

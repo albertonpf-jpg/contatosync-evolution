@@ -1733,6 +1733,7 @@ function extractGenericJsonProducts(data, sourceUrl, source = {}) {
           const n = Number(String(x).replace(',', '.').replace(/[^\d.-]/g, ''));
           return Number.isFinite(n) && n > 0 ? n : null;
         }
+        // Campos diretos (outras APIs além de FácilZap)
         const directCandidates = [
           v.precos_produto?.promocional,
           v.precos_produto?.preco_a_partir?.preco,
@@ -1750,6 +1751,20 @@ function extractGenericJsonProducts(data, sourceUrl, source = {}) {
           const n = vp(c);
           if (n !== null) return n;
         }
+        // FácilZap: preço dentro de catalogos[].precos
+        const cats = v.catalogos;
+        if (cats && typeof cats === 'object') {
+          const catArr = Array.isArray(cats) ? cats : Object.values(cats);
+          for (const cat of catArr) {
+            if (!cat || typeof cat !== 'object') continue;
+            const n = vp(cat.precos?.preco)
+              ?? vp(cat.precos?.promocional)
+              ?? vp(cat.precos?.preco_promocional)
+              ?? vp(cat.precos?.preco_venda);
+            if (n !== null) return n;
+          }
+        }
+        // Fallback: variacoes
         const variacoes = v.variacoes || v.variations;
         if (variacoes && typeof variacoes === 'object') {
           const entries = Array.isArray(variacoes) ? variacoes : Object.values(variacoes);
@@ -1786,62 +1801,6 @@ function extractGenericJsonProducts(data, sourceUrl, source = {}) {
         value.sizes
       ].flatMap(getVariationStockEntries);
 
-      // LOG TEMPORARIO DIAGNOSTICO RAW — remover apos confirmar preco e url
-      try {
-        const _isTarget = String(value.id || '') === '3993874' || /ursinha\s*fashion/i.test(String(value.nome || value.name || value.title || title || ''));
-        if (_isTarget) {
-          const _varSample = (function() {
-            const vv = value.variacoes || value.variations;
-            if (!vv) return null;
-            const arr = Array.isArray(vv) ? vv : Object.values(vv);
-            return arr.slice(0, 3);
-          })();
-          const _imgSample = (function() {
-            const imgs = value.imagens || value.images || value.fotos;
-            if (!imgs) return null;
-            const arr = Array.isArray(imgs) ? imgs : Object.values(imgs);
-            return arr.slice(0, 2);
-          })();
-          console.log('[DIAG RAW FACILZAP PRODUCT] keys=' + JSON.stringify(Object.keys(value)));
-          console.log('[DIAG RAW FACILZAP PRODUCT] id=' + value.id + ' nome=' + (value.nome || value.name || value.title) + ' titulo=' + value.titulo);
-          console.log('[DIAG RAW FACILZAP PRODUCT] preco=' + value.preco + ' price=' + value.price + ' valor=' + value.valor);
-          console.log('[DIAG RAW FACILZAP PRODUCT] preco_venda=' + value.preco_venda + ' valor_venda=' + value.valor_venda + ' preco_promocional=' + value.preco_promocional + ' sale_price=' + value.sale_price);
-          console.log('[DIAG RAW FACILZAP PRODUCT] precos_produto=' + JSON.stringify(value.precos_produto ?? null));
-          console.log('[DIAG RAW FACILZAP PRODUCT] variacoes_amostra=' + JSON.stringify(_varSample));
-          console.log('[DIAG RAW FACILZAP PRODUCT] imagens_amostra=' + JSON.stringify(_imgSample));
-          console.log('[DIAG RAW FACILZAP PRODUCT] url=' + value.url + ' link=' + value.link + ' permalink=' + value.permalink);
-          console.log('[DIAG RAW FACILZAP PRODUCT] product_url=' + value.product_url + ' link_produto=' + value.link_produto + ' url_produto=' + value.url_produto);
-          console.log('[DIAG RAW FACILZAP PRODUCT] catalog_url=' + value.catalog_url + ' catalogo_url=' + value.catalogo_url);
-          console.log('[DIAG RAW FACILZAP PRODUCT] catalogo=' + JSON.stringify(value.catalogo ?? null) + ' loja=' + JSON.stringify(value.loja ?? null));
-          console.log('[DIAG RAW FACILZAP PRODUCT] source.publicCatalogUrl=' + (source && source.publicCatalogUrl) + ' sourceUrl=' + sourceUrl);
-          console.log('[DIAG RAW FACILZAP PRODUCT] price_calculado=' + price + ' url_calculada=' + url);
-          console.log('[DIAG RAW FACILZAP PRODUCT] descricao_preview=' + String(value.descricao || value.description || '').slice(0, 100));
-
-          // LOG CATALOGOS — campo catalogos completo
-          try {
-            const _cats = value.catalogos;
-            if (_cats === undefined || _cats === null) {
-              console.log('[DIAG CATALOGOS] catalogos=AUSENTE (campo nao existe no objeto)');
-            } else {
-              const _catsArr = Array.isArray(_cats) ? _cats : (typeof _cats === 'object' ? Object.values(_cats) : [_cats]);
-              console.log('[DIAG CATALOGOS] catalogos tipo=' + typeof _cats + ' isArray=' + Array.isArray(_cats) + ' length=' + _catsArr.length);
-              _catsArr.slice(0, 5).forEach(function(_cat, _ci) {
-                if (!_cat || typeof _cat !== 'object') {
-                  console.log('[DIAG CATALOGOS] item[' + _ci + ']=' + JSON.stringify(_cat));
-                  return;
-                }
-                console.log('[DIAG CATALOGOS] item[' + _ci + '] keys=' + JSON.stringify(Object.keys(_cat)));
-                console.log('[DIAG CATALOGOS] item[' + _ci + '] preco=' + _cat.preco + ' price=' + _cat.price + ' valor=' + _cat.valor + ' preco_venda=' + _cat.preco_venda + ' tabela_preco=' + _cat.tabela_preco);
-                console.log('[DIAG CATALOGOS] item[' + _ci + '] catalogo_id=' + _cat.catalogo_id + ' loja_id=' + _cat.loja_id + ' slug=' + _cat.slug + ' nome=' + _cat.nome);
-                console.log('[DIAG CATALOGOS] item[' + _ci + '] dominio=' + _cat.dominio + ' dominio_proprio=' + _cat.dominio_proprio);
-                console.log('[DIAG CATALOGOS] item[' + _ci + '] full=' + JSON.stringify(_cat));
-              });
-            }
-          } catch(_catErr) { console.log('[DIAG CATALOGOS] erro: ' + _catErr.message); }
-          // FIM LOG CATALOGOS
-        }
-      } catch(_logErr) { console.log('[DIAG RAW FACILZAP PRODUCT] erro no log: ' + _logErr.message); }
-      // FIM LOG TEMPORARIO
 
       products.push({
         id: firstValue(value.id, value.sku, value.codigo, url, title),
@@ -2304,17 +2263,6 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
   const relevantProducts = getRelevantProducts(products, message, options);
   console.log('[AI PRODUCT] Resultado catalogo | produtos_coletados: ' + products.length + ' | produtos_relevantes: ' + relevantProducts.length);
 
-  // LOG TEMPORARIO DIAGNOSTICO — remover apos confirmar preco
-  try {
-    relevantProducts.slice(0, 6).forEach(function(p, i) {
-      const priceFields = {};
-      Object.keys(p).forEach(function(k) {
-        if (/prec|price|valor|venda|sale|promo/i.test(k)) priceFields[k] = p[k];
-      });
-      console.log('[DIAG RELEVANT PRODUCTS] #' + i + ' id=' + p.id + ' title=' + String(p.title || '').slice(0, 60) + ' price=' + JSON.stringify(p.price) + ' stock=' + p.stock + ' keys=' + JSON.stringify(Object.keys(p)) + ' priceFields=' + JSON.stringify(priceFields) + ' descPreview=' + String(p.description || '').slice(0, 80));
-    });
-  } catch(e) { console.log('[DIAG RELEVANT PRODUCTS] erro no log: ' + e.message); }
-  // FIM LOG TEMPORARIO
 
   if (relevantProducts.length === 0) return { contextText: '', imageUrls: [], productCards: [], productsFound: false };
 
@@ -2346,13 +2294,6 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
     }
   }
 
-  // LOG TEMPORARIO DIAGNOSTICO — remover apos confirmar preco
-  try {
-    productCards.slice(0, 10).forEach(function(c, i) {
-      console.log('[DIAG PRODUCT CARDS] #' + i + ' title=' + String(c.title || '').slice(0, 60) + ' hasImage=' + (c.imageUrl ? 'sim' : 'nao') + ' url=' + String(c.url || '(vazio)').slice(0, 80) + ' descPreview=' + String(c.description || '').slice(0, 120));
-    });
-  } catch(e) { console.log('[DIAG PRODUCT CARDS] erro no log: ' + e.message); }
-  // FIM LOG TEMPORARIO
 
   return {
     contextText: `Informacoes coletadas da loja virtual:\n${contextText}`,
@@ -3179,7 +3120,14 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         api_secret: integration.api_secret,
         config: {
           ...(DEFAULT_INTEGRATION_CONFIG[integration.integration_type] || {}),
-          ...(integration.config || {})
+          ...(integration.config || {}),
+          // propagar product_catalog_url do ai_config como public_catalog_url
+          // para que getFacilZapPublicProductUrl consiga montar a URL publica correta
+          public_catalog_url: firstValue(
+            integration.config?.public_catalog_url,
+            config.product_catalog_url,
+            ''
+          )
         },
         headers: buildIntegrationHeaders(integration)
       })),

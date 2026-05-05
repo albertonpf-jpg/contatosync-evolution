@@ -66,6 +66,7 @@ interface IntegrationConfig {
   phone_param?: string;
   order_param?: string;
   token_param?: string;
+  public_catalog_url?: string;
 }
 
 const defaultIntegrationForm = {
@@ -85,7 +86,8 @@ const defaultIntegrationForm = {
     stock_path: '/produtos',
     query_param: 'q',
     phone_param: 'telefone',
-    order_param: 'codigo'
+    order_param: 'codigo',
+    public_catalog_url: ''
   } as IntegrationConfig,
   enabled: true
 };
@@ -229,7 +231,10 @@ export default function AIConfigPage() {
         api_endpoint: integrationForm.api_endpoint.trim(),
         api_key: integrationForm.api_key.trim(),
         api_secret: integrationForm.api_secret.trim(),
-        config: integrationForm.config,
+        config: {
+          ...integrationForm.config,
+          public_catalog_url: (integrationForm.config?.public_catalog_url || '').trim()
+        },
         enabled: integrationForm.enabled
       });
       setIntegrationForm(defaultIntegrationForm);
@@ -571,6 +576,21 @@ export default function AIConfigPage() {
                         <input placeholder="q" value={integrationForm.config?.query_param || ''} onChange={event => updateIntegrationConfig('query_param', event.target.value)} className="rounded-lg border border-gray-300 px-3 py-2" />
                       </div>
                       <FieldHelp>Use caminhos relativos à URL base. Em endpoints de pedido/rastreio, use {'{pedido}'} onde o numero do pedido deve entrar. Para APIs externas, deixe vazio o que a plataforma nao oferecer.</FieldHelp>
+                      {integrationForm.integration_type === 'facilzap' && (
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">
+                            URL pública do catálogo
+                            <input
+                              type="url"
+                              placeholder="https://sualoja.com.br/c/atacado/NUMERO"
+                              value={integrationForm.config?.public_catalog_url || ''}
+                              onChange={event => updateIntegrationConfig('public_catalog_url', event.target.value)}
+                              className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"
+                            />
+                          </label>
+                          <FieldHelp>Usado no botão &ldquo;Ver produto&rdquo; dos cards do WhatsApp. Exemplo: https://cabiderosakids.com.br/c/atacado/11991280903. Deixe vazio para não exibir botão.</FieldHelp>
+                        </div>
+                      )}
                     </div>
                   )}
                   <button type="button" onClick={() => void createIntegration()} disabled={saving} className="inline-flex items-center rounded-lg bg-orange-600 px-4 py-2 text-sm text-white hover:bg-orange-700 disabled:opacity-50">

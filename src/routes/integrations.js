@@ -21,7 +21,8 @@ const DEFAULT_INTEGRATION_CONFIG = {
     stock_path: '/produtos',
     query_param: 'q',
     phone_param: 'telefone',
-    order_param: 'codigo'
+    order_param: 'codigo',
+    public_catalog_url: ''
   },
   ecommerce: {
     auth_type: 'bearer',
@@ -207,7 +208,7 @@ router.get('/types',
         name: 'FacilZap',
         description: 'IntegraÃ§Ã£o com API do FacilZap para envio de mensagens',
         fields: ['api_endpoint', 'api_key', 'api_secret'],
-        config_fields: ['auth_type', 'products_path', 'catalog_path', 'orders_path', 'order_status_path', 'tracking_path', 'customers_path', 'stock_path', 'query_param', 'phone_param', 'order_param'],
+        config_fields: ['auth_type', 'products_path', 'catalog_path', 'orders_path', 'order_status_path', 'tracking_path', 'customers_path', 'stock_path', 'query_param', 'phone_param', 'order_param', 'public_catalog_url'],
         default_config: DEFAULT_INTEGRATION_CONFIG.facilzap
       },
       {

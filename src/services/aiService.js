@@ -19,7 +19,8 @@ const DEFAULT_INTEGRATION_CONFIG = {
     stock_path: '/produtos',
     query_param: 'q',
     phone_param: 'telefone',
-    order_param: 'codigo'
+    order_param: 'codigo',
+    public_catalog_url: ''
   },
   ecommerce: {
     auth_type: 'bearer',
@@ -221,12 +222,39 @@ function buildProductLookupEmptyResponse(searchText) {
 }
 
 function buildProductCardsResponse(productCards = []) {
-  const first = productCards[0];
+  if (!Array.isArray(productCards) || productCards.length === 0) {
+    return 'As fotos foram enviadas acima. Se quiser, posso verificar tamanho, cor ou mais modelos.';
+  }
+
+  function cleanTitle(raw) {
+    return String(raw || '')
+      .replace(/^🛍️?\s*/u, '')
+      .replace(/\s*-\s*foto\s*\d+$/i, '')
+      .trim();
+  }
+
+  function extractPriceFromDescription(desc) {
+    const match = String(desc || '').match(/💰\s*Pre[c\u00E7]o:\s*(R\$\s*[\d.,]+)/iu);
+    return match ? match[1].trim() : '';
+  }
+
+  const seen = new Set();
+  const lines = [];
+  for (const card of productCards) {
+    const title = cleanTitle(card?.title);
+    if (!title || seen.has(title)) continue;
+    seen.add(title);
+    const price = extractPriceFromDescription(card?.description);
+    lines.push(price ? title + ' — ' + price : title);
+    if (lines.length >= 5) break;
+  }
+
   return [
-    `Encontrei ${first?.title || 'opcoes'} na loja.`,
-    first?.description || '',
-    'Enviei as fotos correspondentes acima.'
-  ].filter(Boolean).join('\n');
+    lines.length === 1
+      ? 'Encontrei ' + lines[0] + ' na loja.'
+      : 'Encontrei ' + String(lines.length) + ' opcoes na loja:\n' + lines.map(function(l) { return '\u2022 ' + l; }).join('\n'),
+    'As fotos foram enviadas acima. Se quiser, posso verificar tamanho, cor ou mais modelos.'
+  ].join('\n');
 }
 
 function buildProductContextSummaryResponse(productContext, searchText) {
@@ -441,6 +469,7 @@ function normalizeProductSources(values = []) {
       type: source.type || source.integration_type || 'link',
       name: source.name || source.integration_name || 'Fonte configurada',
       endpointKey: source.endpointKey,
+      publicCatalogUrl: source.publicCatalogUrl || '',
       operational: source.operational === true,
       headers: source.headers || {}
     });
@@ -1277,6 +1306,25 @@ function getFacilZapImageUrl(image) {
 }
 
 function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') {
+  const productId = firstValue(product?.id, product?.produto_id, product?.codigo, '');
+
+  // Padrão preferencial: publicCatalogUrl#produto{id}
+  // sourceUrl deve ser o publicCatalogUrl limpo (sem /{PATH}), passado por
+  // normalizeFacilZapProduct e extractGenericJsonProducts
+  const publicBase = String(sourceUrl || '').trim();
+  if (productId && publicBase && !/api\.facilzap/i.test(publicBase)) {
+    // Verifica se é uma URL pública real (não endpoint de API)
+    try {
+      const parsed = new URL(publicBase);
+      if (!/api\./i.test(parsed.hostname)) {
+        return `${publicBase.replace(/\/$/, '')}#produto${productId}`;
+      }
+    } catch (error) {
+      // continua para fallback abaixo
+    }
+  }
+
+  // Campo explícito no produto, não-API — usar diretamente
   const explicitUrl = firstValue(
     product?.url,
     product?.link,
@@ -1292,42 +1340,54 @@ function getFacilZapPublicProductUrl(product, sourceUrl = '', fallbackUrl = '') 
     return resolvePageUrl(sourceUrl || fallbackUrl, explicitUrl);
   }
 
-  const productId = firstValue(product?.id, product?.produto_id, product?.codigo, '');
-  if (!productId) return fallbackUrl;
-
-  const catalogUrl = firstValue(
-    product?.catalogo?.url,
-    product?.catalogo_url,
-    product?.catalog_url,
-    product?.loja?.url,
-    product?.store_url,
-    fallbackUrl
-  );
-  try {
-    const parsed = new URL(String(catalogUrl || sourceUrl || fallbackUrl || 'https://facilzap.app.br'));
-    const pathMatch = parsed.pathname.match(/\/c\/([^/]+)(?:\/(?:produto|produtos)\/?|\b)?/i)
-      || parsed.pathname.match(/\/c\/([^/]+)/i);
-    const catalogSlug = firstValue(
-      product?.catalogo?.slug,
-      product?.catalogo_slug,
-      product?.slug_catalogo,
-      product?.loja?.slug,
-      pathMatch?.[1],
-      'varejo'
-    );
-    const origin = /api\.facilzap/i.test(parsed.hostname) ? 'https://facilzap.app.br' : parsed.origin;
-    return `${origin}/c/${catalogSlug}/produto/${productId}`;
-  } catch (error) {
-    return `https://facilzap.app.br/c/varejo/produto/${productId}`;
-  }
+  // Sem publicCatalogUrl configurado e sem URL explícita no produto:
+  // retorna vazio para que baileysService não exiba botão "Ver produto"
+  return '';
 }
 
 function getFacilZapPrice(product) {
-  return product?.precos_produto?.promocional
-    || product?.precos_produto?.preco_a_partir?.preco
-    || product?.precos_produto?.padrao
-    || product?.preco
-    || null;
+  function validPrice(v) {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(String(v).replace(',', '.').replace(/[^\d.-]/g, ''));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  // Campos diretos
+  const direct = validPrice(product?.precos_produto?.promocional)
+    ?? validPrice(product?.precos_produto?.preco_a_partir?.preco)
+    ?? validPrice(product?.precos_produto?.preco_minimo)
+    ?? validPrice(product?.precos_produto?.padrao)
+    ?? validPrice(product?.preco_promocional)
+    ?? validPrice(product?.preco_venda)
+    ?? validPrice(product?.valor_venda)
+    ?? validPrice(product?.sale_price)
+    ?? validPrice(product?.price)
+    ?? validPrice(product?.preco)
+    ?? validPrice(product?.valor);
+  if (direct !== null) return direct;
+  // FácilZap: preço dentro de catalogos[].precos
+  const cats = product?.catalogos;
+  if (cats && typeof cats === 'object') {
+    const catArr = Array.isArray(cats) ? cats : Object.values(cats);
+    for (const cat of catArr) {
+      if (!cat || typeof cat !== 'object') continue;
+      const n = validPrice(cat.precos?.preco)
+        ?? validPrice(cat.precos?.promocional)
+        ?? validPrice(cat.precos?.preco_promocional)
+        ?? validPrice(cat.precos?.preco_venda);
+      if (n !== null) return n;
+    }
+  }
+  // Fallback: variacoes
+  const variacoes = product?.variacoes;
+  if (variacoes && typeof variacoes === 'object') {
+    const entries = Array.isArray(variacoes) ? variacoes : Object.values(variacoes);
+    for (const v of entries) {
+      if (!v || typeof v !== 'object') continue;
+      const n = validPrice(v.preco) ?? validPrice(v.valor) ?? validPrice(v.price);
+      if (n !== null) return n;
+    }
+  }
+  return null;
 }
 
 function getFacilZapVariations(product) {
@@ -1429,9 +1489,11 @@ function normalizeFacilZapProduct(product, catalogBase) {
   const price = getFacilZapPrice(product);
   const variations = getFacilZapVariations(product);
   const variationStocks = getVariationStockEntries(product.variacoes);
+  // publicCatalogUrl: URL base pública sem {PATH}, usada para montar o link #produto{id}
+  const publicCatalogUrl = String(catalogBase || '').replace(/\/\{PATH\}.*$/, '').replace(/\/$/, '');
   return {
     id: product.id,
-    url: getFacilZapPublicProductUrl(product, catalogBase, String(catalogBase).replace('{PATH}', 'produto/' + product.id)),
+    url: getFacilZapPublicProductUrl(product, publicCatalogUrl, String(catalogBase).replace('{PATH}', 'produto/' + product.id)),
     title: product.nome || 'Produto',
     description: stripHtml(product.descricao || ''),
     price: price ? formatCurrencyBRL(price) : '',
@@ -1639,20 +1701,58 @@ function extractGenericJsonProducts(data, sourceUrl, source = {}) {
     );
 
     if (hasProductSignal) {
-      const price = firstValue(
-        value.preco,
-        value.price,
-        value.valor,
-        value.preco_promocional,
-        value.sale_price,
-        value.precos_produto?.promocional,
-        value.precos_produto?.padrao,
-        value.precos_produto?.preco_a_partir?.preco
-      );
+      const price = (function extractPrice(v) {
+        function vp(x) {
+          if (x === null || x === undefined || x === '') return null;
+          const n = Number(String(x).replace(',', '.').replace(/[^\d.-]/g, ''));
+          return Number.isFinite(n) && n > 0 ? n : null;
+        }
+        const directCandidates = [
+          v.precos_produto?.promocional,
+          v.precos_produto?.preco_a_partir?.preco,
+          v.precos_produto?.preco_minimo,
+          v.precos_produto?.padrao,
+          v.preco_promocional,
+          v.preco_venda,
+          v.valor_venda,
+          v.sale_price,
+          v.price,
+          v.preco,
+          v.valor
+        ];
+        for (const c of directCandidates) {
+          const n = vp(c);
+          if (n !== null) return n;
+        }
+        // FácilZap: preço dentro de catalogos[].precos
+        const cats = v.catalogos;
+        if (cats && typeof cats === 'object') {
+          const catArr = Array.isArray(cats) ? cats : Object.values(cats);
+          for (const cat of catArr) {
+            if (!cat || typeof cat !== 'object') continue;
+            const n = vp(cat.precos?.preco)
+              ?? vp(cat.precos?.promocional)
+              ?? vp(cat.precos?.preco_promocional)
+              ?? vp(cat.precos?.preco_venda);
+            if (n !== null) return n;
+          }
+        }
+        // Fallback: variacoes
+        const variacoes = v.variacoes || v.variations;
+        if (variacoes && typeof variacoes === 'object') {
+          const entries = Array.isArray(variacoes) ? variacoes : Object.values(variacoes);
+          for (const entry of entries) {
+            if (!entry || typeof entry !== 'object') continue;
+            const n = vp(entry.preco) ?? vp(entry.valor) ?? vp(entry.price);
+            if (n !== null) return n;
+          }
+        }
+        return null;
+      })(value);
       const isFacilZapSource = /facilzap/i.test(String(sourceUrl || ''));
       const rawUrl = firstValue(value.url, value.link, value.permalink, value.product_url, value.link_produto, value.url_produto, sourceUrl);
       const url = isFacilZapSource
-        ? getFacilZapPublicProductUrl(value, source.publicCatalogUrl || sourceUrl, resolvePageUrl(source.publicCatalogUrl || sourceUrl, rawUrl))
+        ? getFacilZapPublicProductUrl(value, source.publicCatalogUrl || '', resolvePageUrl(source.publicCatalogUrl || '', rawUrl))
         : resolvePageUrl(sourceUrl, rawUrl);
       const variations = [
         value.variacoes,
@@ -2597,9 +2697,8 @@ function buildSiteContextSummaryResponse(siteContext) {
     : 'Nao encontrei essa informacao nas fontes configuradas.';
 }
 
-async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory, contact, conversation, searchQuery }) {
-  const productQueryText = searchQuery || message;
-  const productContext = await buildProductContextForConfig(productQueryText, config, conversationHistory);
+async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory, contact, conversation }) {
+  const productContext = await buildProductContextForConfig(message, config, conversationHistory);
   const siteContext = await buildSiteContextForConfig(message, config);
   const operationalContext = await buildOperationalContextForConfig(message, config, contact, conversation);
   const knowledgeContext = buildKnowledgeContextForConfig(config);
@@ -2706,11 +2805,11 @@ async function buildOpenAIInputContent({ apiKey, message, media, config, convers
   return buildProductInputResult({ content }, productContext);
 }
 
-async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversationHistory, contact, conversation, searchQuery }) {
+async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversationHistory, contact, conversation }) {
   const startedAt = Date.now();
   const builtInput = Array.isArray(input)
     ? { content: input, productImages: [] }
-    : await buildOpenAIInputContent({ apiKey, message: input, media, config, conversationHistory, contact, conversation, searchQuery });
+    : await buildOpenAIInputContent({ apiKey, message: input, media, config, conversationHistory, contact, conversation });
   const body = {
     model: normalizeConfiguredModel(config.model, 'openai'),
     instructions: systemPrompt,
@@ -2785,9 +2884,8 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
   };
 }
 
-async function buildClaudeInputContent({ input, media, config, conversationHistory, contact, conversation, searchQuery }) {
-  const productQueryText = searchQuery || input;
-  const productContext = await buildProductContextForConfig(productQueryText, config, conversationHistory);
+async function buildClaudeInputContent({ input, media, config, conversationHistory, contact, conversation }) {
+  const productContext = await buildProductContextForConfig(input, config, conversationHistory);
   const siteContext = await buildSiteContextForConfig(input, config);
   const operationalContext = await buildOperationalContextForConfig(input, config, contact, conversation);
   const knowledgeContext = buildKnowledgeContextForConfig(config);
@@ -2811,9 +2909,9 @@ async function buildClaudeInputContent({ input, media, config, conversationHisto
   };
 }
 
-async function callClaude({ apiKey, config, input, systemPrompt, media, conversationHistory, contact, conversation, searchQuery }) {
+async function callClaude({ apiKey, config, input, systemPrompt, media, conversationHistory, contact, conversation }) {
   const startedAt = Date.now();
-  const builtInput = await buildClaudeInputContent({ input, media, config, conversationHistory, contact, conversation, searchQuery });
+  const builtInput = await buildClaudeInputContent({ input, media, config, conversationHistory, contact, conversation });
   const body = {
     model: normalizeConfiguredModel(config.model, 'claude'),
     max_tokens: config.max_tokens || 500,
@@ -3096,27 +3194,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     };
   }
 
-// ─── ROTEAMENTO INTELIGENTE — substituição do bloco operacional+deterministico ───
-  // Recupera cards recentemente enviados para detectar follow-ups
-  const recentProductCardsForClassify = Array.isArray(conversationHistory)
-    ? conversationHistory
-        .filter(item => item && (item.direction === 'out' || item.is_from_ai) && Array.isArray(item.product_cards) && item.product_cards.length > 0)
-        .flatMap(item => item.product_cards || [])
-        .slice(-8)
-    : [];
-
-  const apiKeyForClassify = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
-  const customerIntent = await classifyCustomerIntent({
-    apiKey: apiKeyForClassify,
-    provider,
-    message,
-    conversationHistory,
-    recentProductCards: recentProductCardsForClassify,
-    config: effectiveConfig
-  });
-
-  // ── PEDIDO / RASTREIO ──────────────────────────────────────────────────────
-  if (customerIntent.intent === 'order_lookup' || customerIntent.intent === 'tracking_lookup') {
+  if (shouldUseOperationalIntegrationSources(message)) {
     const operationalContext = await buildOperationalContextForConfig(message, effectiveConfig, contact, conversation);
     const operationalResponse = buildOperationalSummaryResponse(operationalContext, message);
     if (operationalResponse) {
@@ -3135,118 +3213,31 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         product_search_text: ''
       };
     }
-    // Integração respondeu vazio: deixar cair para LLM com contexto operacional
   }
 
-  // ── PRODUTO: busca com query limpa ────────────────────────────────────────
-  if (customerIntent.intent === 'product_search') {
-    // search_query vem limpa do classificador: ex "moletom infantil" (sem "tem", "azul", "6")
-    const cleanQuery = customerIntent.search_query || getProductSearchPhrase(message) || message;
-    const deterministicProductContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory);
-    if (deterministicProductContext.lookupAttempted) {
-      const productCards = deterministicProductContext.productCards || [];
-      if (productCards.length > 0 || deterministicProductContext.productsFound) {
-        return {
-          skipped: false,
-          response: productCards.length > 0
-            ? buildProductCardsResponse(productCards)
-            : buildProductContextSummaryResponse(deterministicProductContext, deterministicProductContext.searchText || cleanQuery),
-          provider: 'catalog',
-          model: 'catalog_lookup',
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-          processing_time_ms: 0,
-          product_images: deterministicProductContext.imageUrls || [],
-          product_cards: productCards,
-          product_lookup_attempted: true,
-          product_search_text: deterministicProductContext.searchText || cleanQuery,
-          products_found: deterministicProductContext.productsFound === true
-        };
-      }
-    }
-    // Catálogo buscado mas vazio: cai para LLM com contexto
-  }
-
-  // ── FOLLOW-UP: depende de produtos já enviados ─────────────────────────────
-  if (customerIntent.intent === 'product_followup' || customerIntent.intent === 'product_stock_followup') {
-    // Se há múltiplos produtos recentes e o cliente não especificou qual,
-    // e a mensagem não indica índice claro → pedir clarificação
-    const recentTitles = recentProductCardsForClassify.map(c => c.title || '').filter(Boolean);
-    const hasMultipleProducts = recentTitles.length > 1;
-    const hasSpecificRef = customerIntent.reference === 'specific_product' || customerIntent.selected_product_index !== null;
-
-    if (hasMultipleProducts && !hasSpecificRef && !customerIntent.search_query) {
-      // Perguntar ao cliente qual produto — NÃO buscar no catálogo
-      const listNames = recentTitles.slice(0, 4).map((t, i) => (i + 1) + '. ' + t).join('\n');
+  const deterministicProductContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+  if (deterministicProductContext.lookupAttempted) {
+    const productCards = deterministicProductContext.productCards || [];
+    if (productCards.length > 0 || deterministicProductContext.productsFound) {
       return {
         skipped: false,
-        response: 'Qual dessas opcoes voce quer saber?\n' + listNames,
-        provider: 'system',
-        model: 'followup_clarification',
+        response: productCards.length > 0
+          ? buildProductCardsResponse(productCards)
+          : buildProductContextSummaryResponse(deterministicProductContext, deterministicProductContext.searchText || message),
+        provider: 'catalog',
+        model: 'catalog_lookup',
         prompt_tokens: 0,
         completion_tokens: 0,
         total_tokens: 0,
         processing_time_ms: 0,
-        product_images: [],
-        product_cards: []
+        product_images: deterministicProductContext.imageUrls || [],
+        product_cards: productCards,
+        product_lookup_attempted: true,
+        product_search_text: deterministicProductContext.searchText || message,
+        products_found: deterministicProductContext.productsFound === true
       };
     }
-
-    // Tem produto claro (por índice ou único produto recente): responder com contexto
-    // Usa a última query de produto do histórico como base da busca
-    const lastQuery = customerIntent.search_query || getRecentCustomerProductRequest(conversationHistory);
-    if (lastQuery) {
-      const followUpContext = await buildProductContextForConfig(lastQuery, effectiveConfig, conversationHistory);
-      if (followUpContext.lookupAttempted) {
-        const productCards = followUpContext.productCards || [];
-        if (productCards.length > 0 || followUpContext.productsFound) {
-          return {
-            skipped: false,
-            response: productCards.length > 0
-              ? buildProductCardsResponse(productCards)
-              : buildProductContextSummaryResponse(followUpContext, followUpContext.searchText || lastQuery),
-            provider: 'catalog',
-            model: 'catalog_followup_lookup',
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-            processing_time_ms: 0,
-            product_images: followUpContext.imageUrls || [],
-            product_cards: productCards,
-            product_lookup_attempted: true,
-            product_search_text: followUpContext.searchText || lastQuery,
-            products_found: followUpContext.productsFound === true
-          };
-        }
-      }
-    }
-    // Sem query clara: cai para LLM com histórico completo como contexto
   }
-
-  // ── BASE DE CONHECIMENTO ───────────────────────────────────────────────────
-  if (customerIntent.intent === 'knowledge_question' && customerIntent.source === 'knowledge_base') {
-    const apiKeyLocal = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
-    if (!isUsableProviderApiKey(provider, apiKeyLocal)) {
-      const siteContext = await buildSiteContextForConfig(message, effectiveConfig);
-      if (siteContext.contextText) {
-        return {
-          skipped: false,
-          response: buildSiteContextSummaryResponse(siteContext),
-          provider: 'site',
-          model: 'site_lookup',
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-          processing_time_ms: 0,
-          product_images: [],
-          product_cards: []
-        };
-      }
-    }
-    // Tem API key: deixa cair para LLM — o contexto de site será injetado em callOpenAI/callClaude
-  }
-  // ─── FIM DO ROTEAMENTO INTELIGENTE ────────────────────────────────────────
 
   const apiKey = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
   if (!isUsableProviderApiKey(provider, apiKey)) {
@@ -3312,10 +3303,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           media,
           conversationHistory,
           contact,
-          conversation,
-          searchQuery: customerIntent?.search_query || undefined
+          conversation
         })
-      : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media, conversationHistory, contact, conversation, searchQuery: customerIntent?.search_query || undefined });
+      : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media, conversationHistory, contact, conversation });
 
     if (result.product_lookup_attempted && !result.products_found && (!Array.isArray(result.product_cards) || result.product_cards.length === 0)) {
       result.response = buildProductLookupEmptyResponse(result.product_search_text || message);
@@ -3437,287 +3427,6 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     };
   }
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// classifyCustomerIntent — camada de roteamento inteligente
-// Inserida antes de qualquer busca em generateAIResponse
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Classificação determinística (fallback quando LLM não está disponível ou falha).
- * Usa as funções já existentes no arquivo — NÃO reinventa lógica.
- */
-function classifyCustomerIntentFallback(message, conversationHistory, recentProductCards) {
-  const orderId = extractOrderReference(message);
-
-  // 1. Pedido/rastreio: número de pedido na mensagem
-  if (orderId) {
-    const isTracking = /rastreio|rastrear|codigo de rastreio|enviado|despacho/i.test(normalizeSearchText(message));
-    return {
-      intent: isTracking ? 'tracking_lookup' : 'order_lookup',
-      source: isTracking ? 'tracking_api' : 'order_api',
-      search_query: '',
-      filters: { size: '', color: '', category: '' },
-      order_id: orderId,
-      tracking_id: '',
-      reference: 'none',
-      selected_product_index: null,
-      needs_clarification: false,
-      clarification_question: ''
-    };
-  }
-
-  // 2. Pergunta operacional explícita sobre pedido (sem número)
-  const isOrderQuery = /\b(meu pedido|minha compra|comprei|nao chegou|nao recebi|onde esta meu|status do pedido|pagamento confirmado)\b/i.test(normalizeSearchText(message));
-  if (isOrderQuery) {
-    return {
-      intent: 'order_lookup',
-      source: 'order_api',
-      search_query: '',
-      filters: { size: '', color: '', category: '' },
-      order_id: '',
-      tracking_id: '',
-      reference: 'none',
-      selected_product_index: null,
-      needs_clarification: false,
-      clarification_question: ''
-    };
-  }
-
-  // 3. Follow-up de produto: mensagem curta que depende de contexto recente
-  const hasRecentProducts = Array.isArray(recentProductCards) && recentProductCards.length > 0;
-  const isFollowUp = isCatalogFollowUpRequest(message) && (hasRecentProducts || getRecentCustomerProductRequest(conversationHistory));
-  if (isFollowUp) {
-    const lastQuery = getRecentCustomerProductRequest(conversationHistory);
-    // Verificar se pede produto específico pelo índice
-    const indexMatch = normalizeSearchText(message).match(/\b(primeiro|segundo|terceiro|1|2|3)\b/);
-    const selectedIndex = indexMatch
-      ? ['primeiro','1'].includes(indexMatch[1]) ? 0 : ['segundo','2'].includes(indexMatch[1]) ? 1 : 2
-      : null;
-    return {
-      intent: 'product_followup',
-      source: hasRecentProducts ? 'recent_context' : 'product_api',
-      search_query: lastQuery || '',
-      filters: {
-        // Tenta extrair tamanho da mensagem atual; se não houver, procura no histórico recente
-        size: (function() {
-          const sizesFromMessage = extractRequestedSizes(message);
-          if (sizesFromMessage.length > 0) return sizesFromMessage.join(',');
-          // Procura no histórico recente do cliente
-          const recentMsgs = Array.isArray(conversationHistory)
-            ? conversationHistory.filter(i => i && i.direction !== 'out' && !i.is_from_ai).slice(-5)
-            : [];
-          for (const item of [...recentMsgs].reverse()) {
-            const s = extractRequestedSizes(String(item.content || ''));
-            if (s.length > 0) return s.join(',');
-          }
-          return '';
-        })(),
-        color: getColorTokens(getSearchTokens(message)).join(','),
-        category: ''
-      },
-      order_id: '',
-      tracking_id: '',
-      reference: selectedIndex !== null ? 'specific_product' : 'recent_products',
-      selected_product_index: selectedIndex,
-      needs_clarification: false,
-      clarification_question: ''
-    };
-  }
-
-  // 4. Busca de produto
-  if (hasStrongProductIntent(message)) {
-    const tokens = getSearchTokens(message);
-    const specificTokens = getSpecificProductTokens(tokens);
-    const colorTokens = getColorTokens(tokens);
-    const sizes = extractRequestedSizes(message);
-    // search_query = apenas tokens de produto, sem verbos/ruído
-    const cleanQuery = specificTokens.length > 0
-      ? specificTokens.slice(0, 4).join(' ')
-      : getProductSearchPhrase(message);
-    return {
-      intent: 'product_search',
-      source: 'product_api',
-      search_query: cleanQuery,
-      filters: {
-        size: sizes.join(','),
-        color: colorTokens.join(','),
-        category: ''
-      },
-      order_id: '',
-      tracking_id: '',
-      reference: 'none',
-      selected_product_index: null,
-      needs_clarification: false,
-      clarification_question: ''
-    };
-  }
-
-  // 5. Base de conhecimento: perguntas sobre a loja
-  if (shouldUseConfiguredSiteSources(message)) {
-    return {
-      intent: 'knowledge_question',
-      source: 'knowledge_base',
-      search_query: message,
-      filters: { size: '', color: '', category: '' },
-      order_id: '',
-      tracking_id: '',
-      reference: 'none',
-      selected_product_index: null,
-      needs_clarification: false,
-      clarification_question: ''
-    };
-  }
-
-  // 6. Mensagem geral — LLM responde com prompt do sistema
-  return {
-    intent: 'general_message',
-    source: 'llm_only',
-    search_query: '',
-    filters: { size: '', color: '', category: '' },
-    order_id: '',
-    tracking_id: '',
-    reference: 'none',
-    selected_product_index: null,
-    needs_clarification: false,
-    clarification_question: ''
-  };
-}
-
-/**
- * Classificação via LLM — usada quando há API key disponível.
- * Retorna o mesmo schema que classifyCustomerIntentFallback.
- * Se falhar (timeout, JSON inválido), retorna null → chamador usa fallback.
- */
-async function classifyCustomerIntentWithLLM({ apiKey, provider, message, conversationHistory, recentProductCards, config }) {
-  const recentHistory = Array.isArray(conversationHistory)
-    ? conversationHistory.slice(-8).map(item => {
-        const author = item.direction === 'out' || item.is_from_ai ? 'Atendente/IA' : 'Cliente';
-        return `${author}: ${String(item.content || '').slice(0, 300)}`;
-      }).join('\n')
-    : '';
-
-  const recentCardsText = Array.isArray(recentProductCards) && recentProductCards.length > 0
-    ? recentProductCards.slice(0, 4).map(card => String(card.title || '')).join(', ')
-    : 'nenhum';
-
-  const classifyPrompt = `Você é um roteador de mensagens de WhatsApp de uma loja virtual.
-Classifique a intenção do cliente e retorne APENAS JSON válido, sem texto adicional, sem markdown.
-
-REGRAS:
-1. Produto (disponibilidade, preço, foto, cor, tamanho, modelo):
-   intent=product_search, source=product_api
-   search_query = somente nome/categoria do produto, SEM verbos ou ruído
-   Extraia size (ex: "6", "P", "GG"), color (ex: "azul"), category (ex: "infantil") se presentes.
-
-2. Follow-up de produto (depende de cards/produtos já enviados):
-   Exemplos: "tem no 6?", "manda mais desse", "e esse?", "o primeiro", "quantas tem?", "tem outra cor?", "manda fotos", "mais opções"
-   intent=product_followup, source=recent_context
-   search_query = vazio (usar contexto do histórico)
-   reference = recent_products ou specific_product
-
-3. Número de pedido, "meu pedido", "não chegou", "comprei":
-   intent=order_lookup, source=order_api
-   order_id = somente dígitos
-
-4. Rastreio, código de rastreamento, "enviado?", "despachou?":
-   intent=tracking_lookup, source=tracking_api
-
-5. Prazo de entrega, troca, devolução, pagamento, horário, endereço, frete, política, como comprar:
-   intent=knowledge_question, source=knowledge_base
-
-6. Nenhuma das acima:
-   intent=general_message, source=llm_only
-
-7. GENUINAMENTE ambíguo (não apenas incompleto):
-   intent=clarification, needs_clarification=true
-   clarification_question = pergunta objetiva
-
-ATENÇÃO:
-- "tem quantas no tamanho 6?" após cards de produto = product_followup, NÃO product_search
-- "manda fotos" após produtos = product_followup
-- "mais opções" = product_followup (search_query = nome do último produto buscado)
-- "em estoque" em pergunta de produto NÃO aciona order_api
-
-Histórico recente:
-${recentHistory || '(sem histórico)'}
-
-Cards/produtos enviados recentemente: ${recentCardsText}
-
-Mensagem atual: ${message}
-
-Responda SOMENTE com JSON:
-{"intent":"...","source":"...","search_query":"...","filters":{"size":"","color":"","category":""},"order_id":"","tracking_id":"","reference":"none","selected_product_index":null,"needs_clarification":false,"clarification_question":""}`;
-
-  try {
-    let responseText = '';
-    if (provider === 'claude') {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01'
-        },
-        body: JSON.stringify({
-          model: 'claude-3-haiku-20240307',
-          max_tokens: 300,
-          temperature: 0,
-          messages: [{ role: 'user', content: classifyPrompt }]
-        }),
-        signal: AbortSignal.timeout(4000)
-      });
-      if (!res.ok) return null;
-      const data = await res.json().catch(() => null);
-      responseText = data?.content?.[0]?.text || '';
-    } else {
-      const res = await fetch('https://api.openai.com/v1/responses', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          temperature: 0,
-          max_output_tokens: 300,
-          input: [{ role: 'user', content: [{ type: 'input_text', text: classifyPrompt }] }]
-        }),
-        signal: AbortSignal.timeout(4000)
-      });
-      if (!res.ok) return null;
-      const data = await res.json().catch(() => null);
-      responseText = getOpenAIText(data) || '';
-    }
-
-    // Remove eventuais blocos ```json
-    const clean = responseText.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
-    // Validação mínima
-    const validIntents = ['product_search','product_followup','product_stock_followup','order_lookup','tracking_lookup','knowledge_question','general_message','clarification'];
-    if (!validIntents.includes(parsed.intent)) return null;
-    return parsed;
-  } catch (err) {
-    console.warn('[CLASSIFY] Falha na classificação LLM, usando fallback determinístico | erro: ' + String(err.message || err));
-    return null;
-  }
-}
-
-/**
- * Ponto de entrada: tenta LLM, cai no determinístico se falhar.
- */
-async function classifyCustomerIntent({ apiKey, provider, message, conversationHistory, recentProductCards, config }) {
-  // Só tenta LLM se há API key válida
-  if (isUsableProviderApiKey(provider, apiKey)) {
-    const llmResult = await classifyCustomerIntentWithLLM({ apiKey, provider, message, conversationHistory, recentProductCards, config });
-    if (llmResult) {
-      console.log('[CLASSIFY] intent=' + llmResult.intent + ' source=' + llmResult.source + ' query="' + (llmResult.search_query || '') + '"');
-      return llmResult;
-    }
-  }
-  const fallback = classifyCustomerIntentFallback(message, conversationHistory, recentProductCards);
-  console.log('[CLASSIFY-FALLBACK] intent=' + fallback.intent + ' source=' + fallback.source + ' query="' + (fallback.search_query || '') + '"');
-  return fallback;
-}
-
-
 
 module.exports = {
   generateAIResponse

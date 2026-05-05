@@ -2626,6 +2626,376 @@ function buildProductSearchText(message, conversationHistory = []) {
   const parts = currentIsFollowUp && lastProductRequest ? [lastProductRequest, current] : [current];
   return [...new Set(parts)].join('\n');
 }
+
+// ─── NOVAS FUNÇÕES DE CLASSIFICAÇÃO DE INTENÇÃO ──────────────────────────────
+
+/**
+ * Classifica a intenção do cliente usando IA.
+ * Retorna objeto com intent, source, search_query, filters, etc.
+ * Se a IA falhar, usa fallback determinístico leve.
+ */
+async function classifyCustomerIntent({ apiKey, provider, message, conversationHistory, config }) {
+  // Tenta classificação por IA se houver API key válida
+  if (isUsableProviderApiKey(provider, apiKey)) {
+    try {
+      const llmResult = await classifyCustomerIntentWithLLM({ apiKey, provider, message, conversationHistory });
+      if (llmResult) {
+        console.log('[CLASSIFY] intent=' + llmResult.intent + ' source=' + llmResult.source + ' query="' + (llmResult.search_query || '') + '"');
+        return llmResult;
+      }
+    } catch (error) {
+      console.warn('[CLASSIFY] Falha na classificação LLM, usando fallback determinístico | erro: ' + String(error.message || error));
+    }
+  }
+
+  // Fallback determinístico leve
+  const fallback = classifyCustomerIntentFallback(message, conversationHistory);
+  console.log('[CLASSIFY-FALLBACK] intent=' + fallback.intent + ' source=' + fallback.source + ' query="' + (fallback.search_query || '') + '"');
+  return fallback;
+}
+
+/**
+ * Classificação via LLM.
+ * Retorna o schema de intenção ou null se falhar.
+ */
+async function classifyCustomerIntentWithLLM({ apiKey, provider, message, conversationHistory }) {
+  const recentHistory = (conversationHistory || [])
+    .slice(-8)
+    .map(item => {
+      const author = (item.direction === 'out' || item.is_from_ai) ? 'Atendente/IA' : 'Cliente';
+      return `${author}: ${String(item.content || '').slice(0, 300)}`;
+    })
+    .join('\n');
+
+  const recentProductTitles = getRecentlySentProductTitles(conversationHistory);
+  const recentProductsText = recentProductTitles.length > 0
+    ? recentProductTitles.join(', ')
+    : 'nenhum produto enviado recentemente';
+
+  const classifyPrompt = `Você é um classificador de intenções para um chatbot de loja virtual no WhatsApp.
+Analise a mensagem do cliente e o histórico recente da conversa.
+Retorne APENAS um JSON válido, sem markdown, sem comentários, sem texto adicional.
+
+### INTENÇÕES POSSÍVEIS:
+
+1. "product_search" - Cliente quer buscar um produto NOVO no catálogo.
+   Ex: "tem moletom?", "quero ver vestidos", "mostra blusas", "moletom tamanho 6", "tem azul?"
+   → source: "product_api", search_query preenchido com nome/categoria do produto (sem palavras como "tem", "quero", "mostra")
+   → filters: size, color, category se mencionados
+
+2. "product_stock_followup" - Cliente pergunta sobre tamanho/estoque de produtos JÁ ENVIADOS.
+   Ex: "tem no tamanho 6?", "quantas tem?", "tem PP?", "ainda tem?", "tem em estoque?"
+   → source: "recent_context", search_query vazio
+   → filters: size preenchido se mencionado
+   → IMPORTANTE: se há vários produtos no histórico e o cliente não especificou qual, needs_clarification=true
+
+3. "product_followup" - Cliente pede mais opções/fotos de produtos já enviados.
+   Ex: "manda mais", "tem outras cores?", "mostra mais fotos", "e esse?", "o primeiro", "o segundo"
+   → source: "recent_context"
+
+4. "order_lookup" - Cliente pergunta sobre pedido/compra.
+   Ex: "pedido 1234", "onde está meu pedido?", "não chegou", "qual status da compra?"
+   → source: "order_api", order_id preenchido se houver número
+
+5. "tracking_lookup" - Cliente pergunta sobre rastreio/envio.
+   Ex: "código de rastreio?", "já enviou?", "quando chega?"
+   → source: "tracking_api"
+
+6. "knowledge_question" - Cliente pergunta sobre loja, políticas, funcionamento.
+   Ex: "qual prazo de entrega?", "como comprar?", "endereço?", "formas de pagamento?", "troca?"
+   → source: "knowledge_base", search_query preenchido
+
+7. "general_message" - Mensagem geral que não se encaixa nas anteriores.
+   → source: "llm_only"
+
+8. "clarification" - Ambiguidade real que precisa de pergunta ao cliente.
+   → needs_clarification=true, clarification_question preenchido
+
+### REGRAS CRÍTICAS:
+- Se a mensagem NÃO contém nome de produto (moletom, blusa, vestido, etc) e pergunta sobre tamanho/estoque, é product_stock_followup, NÃO product_search.
+- "quantas" NUNCA é nome de produto.
+- Se há produtos no contexto recente e o cliente pergunta sobre tamanho/estoque sem especificar qual produto, needs_clarification=true.
+- search_query deve conter apenas substantivos de produto, SEM verbos, SEM palavras de pergunta, SEM tamanhos.
+
+### CONTEXTO:
+Histórico recente:
+${recentHistory || '(sem histórico)'}
+
+Produtos enviados recentemente: ${recentProductsText}
+
+Mensagem atual: "${message}"
+
+Responda SOMENTE com JSON:
+{"intent":"...","source":"...","search_query":"...","filters":{"size":"","color":"","category":""},"order_id":"","tracking_id":"","reference":"none","selected_product_index":null,"needs_clarification":false,"clarification_question":""}`;
+
+  try {
+    let responseText = '';
+    if (provider === 'claude') {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-3-haiku-20240307',
+          max_tokens: 300,
+          temperature: 0,
+          messages: [{ role: 'user', content: classifyPrompt }]
+        }),
+        signal: AbortSignal.timeout(4000)
+      });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => null);
+      responseText = data?.content?.[0]?.text || '';
+    } else {
+      const res = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          temperature: 0,
+          max_output_tokens: 300,
+          input: [{ role: 'user', content: [{ type: 'input_text', text: classifyPrompt }] }]
+        }),
+        signal: AbortSignal.timeout(4000)
+      });
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => null);
+      responseText = getOpenAIText(data) || '';
+    }
+
+    const clean = responseText.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+
+    // Validação mínima
+    const validIntents = ['product_search', 'product_stock_followup', 'product_followup', 'order_lookup', 'tracking_lookup', 'knowledge_question', 'general_message', 'clarification'];
+    if (!validIntents.includes(parsed.intent)) return null;
+
+    return parsed;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * Fallback determinístico leve quando a IA falha.
+ * NÃO usa lista de palavras-chave extensa.
+ * NÃO retorna search_query com a mensagem bruta.
+ */
+function classifyCustomerIntentFallback(message, conversationHistory) {
+  const normalized = normalizeSearchText(message);
+
+  // 1. Se tem número de pedido → order_lookup ou tracking_lookup
+  const orderId = extractOrderReference(message);
+  if (orderId) {
+    const isTracking = /rastreio|rastrear|codigo de rastreio|enviado|despacho/i.test(normalized);
+    if (isTracking) {
+      return {
+        intent: 'tracking_lookup',
+        source: 'tracking_api',
+        search_query: '',
+        filters: { size: '', color: '', category: '' },
+        order_id: orderId,
+        reference: 'none',
+        needs_clarification: false,
+        clarification_question: ''
+      };
+    }
+    return {
+      intent: 'order_lookup',
+      source: 'order_api',
+      search_query: '',
+      filters: { size: '', color: '', category: '' },
+      order_id: orderId,
+      reference: 'none',
+      needs_clarification: false,
+      clarification_question: ''
+    };
+  }
+
+  // 2. Pergunta sobre pedido sem número
+  const isOrderQuery = /\b(meu pedido|minha compra|comprei|nao chegou|nao recebi|onde esta meu|status do pedido|pagamento confirmado)\b/i.test(normalized);
+  if (isOrderQuery) {
+    return {
+      intent: 'order_lookup',
+      source: 'order_api',
+      search_query: '',
+      filters: { size: '', color: '', category: '' },
+      order_id: '',
+      reference: 'none',
+      needs_clarification: false,
+      clarification_question: ''
+    };
+  }
+
+  // 3. Se a mensagem tem tamanho + NÃO tem nome de produto + tem produtos recentes → stock_followup
+  const hasSize = extractRequestedSizes(message).length > 0;
+  const productSearchPhrase = getProductSearchPhrase(message);
+  const hasProductName = productSearchPhrase.length > 0;
+  const recentProducts = getRecentlySentProductTitles(conversationHistory);
+
+  if (hasSize && !hasProductName && recentProducts.length > 0) {
+    const requestedSizes = extractRequestedSizes(message);
+    return {
+      intent: 'product_stock_followup',
+      source: 'recent_context',
+      search_query: '',
+      filters: {
+        size: requestedSizes.join(','),
+        color: getColorTokens(getSearchTokens(message)).join(','),
+        category: ''
+      },
+      order_id: '',
+      reference: 'recent_products',
+      needs_clarification: recentProducts.length > 1,
+      clarification_question: recentProducts.length > 1 ? 'Você quer saber o tamanho de qual opção?' : ''
+    };
+  }
+
+  // 4. Se tem nome de produto → product_search com query limpa
+  if (hasProductName) {
+    const colorTokens = getColorTokens(getSearchTokens(message));
+    const requestedSizes = extractRequestedSizes(message);
+    return {
+      intent: 'product_search',
+      source: 'product_api',
+      search_query: productSearchPhrase,
+      filters: {
+        size: requestedSizes.join(','),
+        color: colorTokens.join(','),
+        category: ''
+      },
+      order_id: '',
+      reference: 'none',
+      needs_clarification: false,
+      clarification_question: ''
+    };
+  }
+
+  // 5. Se hasStrongProductIntent mas sem nome de produto → tentar extrair do histórico
+  if (hasStrongProductIntent(message) && recentProducts.length > 0) {
+    const lastProductRequest = getRecentCustomerProductRequest(conversationHistory);
+    if (lastProductRequest) {
+      const cleanQuery = getProductSearchPhrase(lastProductRequest);
+      if (cleanQuery) {
+        return {
+          intent: 'product_search',
+          source: 'product_api',
+          search_query: cleanQuery,
+          filters: { size: '', color: '', category: '' },
+          order_id: '',
+          reference: 'none',
+          needs_clarification: false,
+          clarification_question: ''
+        };
+      }
+    }
+  }
+
+  // 6. Se é pergunta sobre loja/políticas → knowledge_question
+  if (shouldUseConfiguredSiteSources(message)) {
+    return {
+      intent: 'knowledge_question',
+      source: 'knowledge_base',
+      search_query: message,
+      filters: { size: '', color: '', category: '' },
+      order_id: '',
+      reference: 'none',
+      needs_clarification: false,
+      clarification_question: ''
+    };
+  }
+
+  // 7. Fallback final seguro: general_message (NÃO busca catálogo com mensagem bruta)
+  return {
+    intent: 'general_message',
+    source: 'llm_only',
+    search_query: '',
+    filters: { size: '', color: '', category: '' },
+    order_id: '',
+    reference: 'none',
+    needs_clarification: false,
+    clarification_question: ''
+  };
+}
+
+/**
+ * Extrai títulos de produtos enviados recentemente pela IA no histórico.
+ * Limpa emoji 🛍️, marcador •, sufixo "- foto N", preço depois de "— R$",
+ * e linhas genéricas como "As fotos foram enviadas acima".
+ * Retorna array com no máximo 5 títulos únicos.
+ */
+function getRecentlySentProductTitles(conversationHistory = []) {
+  if (!Array.isArray(conversationHistory)) return [];
+
+  const recentAiMessages = conversationHistory
+    .filter(item => item && (item.direction === 'out' || item.is_from_ai))
+    .slice(-6);
+
+  const seen = new Set();
+  const titles = [];
+
+  for (const msg of recentAiMessages) {
+    const content = String(msg.content || '');
+    const lines = content.split(/\r?\n/);
+
+    for (const line of lines) {
+      // Pula linhas genéricas
+      if (/as fotos foram enviadas|se quiser|posso verificar/i.test(line)) continue;
+      if (/^encontrei\s/i.test(line) && /\d+\s*opcoes/i.test(line)) continue;
+
+      let cleaned = line
+        .replace(/^🛍️?\s*/u, '')           // Remove emoji 🛍️
+        .replace(/^\u2022\s*/, '')          // Remove marcador •
+        .replace(/^\d+\.\s*/, '')           // Remove numeração "1. "
+        .replace(/\s*-\s*foto\s*\d+$/i, '') // Remove sufixo "- foto 1"
+        .replace(/\s*—\s*R\$\s*[\d.,]+$/i, '') // Remove preço "— R$ XX"
+        .trim();
+
+      if (!cleaned || cleaned.length < 4 || cleaned.length > 90) continue;
+
+      const hasProductWord = /\b(saia|short|vestido|conjunto|blusa|body|calca|macacao|jardineira|camiseta|cropped|tshirt|moletom|moleton|camisa|bermuda|jaqueta|casaco|manga|bone)\b/i.test(normalizeSearchText(cleaned));
+      const looksLikeTitle = /[A-ZÀ-Ú][a-zà-ú]/.test(cleaned) && cleaned.split(' ').length >= 2;
+
+      if ((hasProductWord || looksLikeTitle) && cleaned.length >= 4) {
+        const key = normalizeSearchText(cleaned);
+        if (!seen.has(key)) {
+          seen.add(key);
+          titles.push(cleaned);
+        }
+      }
+    }
+  }
+
+  return titles.slice(0, 5);
+}
+
+/**
+ * Monta resposta de seleção de produto.
+ * 1 produto → pergunta de confirmação
+ * 2+ produtos → lista numerada
+ */
+function buildProductSelectionList(titles) {
+  if (!Array.isArray(titles) || titles.length === 0) {
+    return 'Claro! De qual produto voce quer consultar esse tamanho?';
+  }
+
+  if (titles.length === 1) {
+    return `Voce quer consultar o tamanho desse produto: ${titles[0]}?`;
+  }
+
+  const numbered = titles
+    .slice(0, 5)
+    .map((title, i) => `${i + 1}. ${title}`)
+    .join('\n');
+
+  return `Voce quer saber de qual opcao?\n\n${numbered}`;
+}
+
+// ─── FIM DAS NOVAS FUNÇÕES ───────────────────────────────────────────────────
+
 async function buildProductContextForConfig(message, config, conversationHistory = []) {
   const searchText = buildProductSearchText(message, conversationHistory);
   const configuredSources = buildConfiguredProductSources(config);
@@ -3194,7 +3564,18 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     };
   }
 
-  if (shouldUseOperationalIntegrationSources(message)) {
+  // ─── NOVO: Classificação de intenção ────────────────────────────────────────
+  const apiKeyForClassify = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
+  const customerIntent = await classifyCustomerIntent({
+    apiKey: apiKeyForClassify,
+    provider,
+    message,
+    conversationHistory,
+    config: effectiveConfig
+  });
+
+  // ─── 1. Pedido/Rastreio ────────────────────────────────────────────────────
+  if (customerIntent.intent === 'order_lookup' || customerIntent.intent === 'tracking_lookup') {
     const operationalContext = await buildOperationalContextForConfig(message, effectiveConfig, contact, conversation);
     const operationalResponse = buildOperationalSummaryResponse(operationalContext, message);
     if (operationalResponse) {
@@ -3213,32 +3594,141 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         product_search_text: ''
       };
     }
+    // Se integração não retornou dados, cai para LLM com contexto operacional
   }
 
-  const deterministicProductContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
-  if (deterministicProductContext.lookupAttempted) {
-    const productCards = deterministicProductContext.productCards || [];
-    if (productCards.length > 0 || deterministicProductContext.productsFound) {
+  // ─── 2. Follow-up de estoque/tamanho contextual ──────────────────────────
+  if (customerIntent.intent === 'product_stock_followup') {
+    if (customerIntent.needs_clarification) {
+      const recentProductTitles = getRecentlySentProductTitles(conversationHistory);
+      const responseText = buildProductSelectionList(recentProductTitles);
       return {
         skipped: false,
-        response: productCards.length > 0
-          ? buildProductCardsResponse(productCards)
-          : buildProductContextSummaryResponse(deterministicProductContext, deterministicProductContext.searchText || message),
-        provider: 'catalog',
-        model: 'catalog_lookup',
+        response: responseText,
+        provider: 'system',
+        model: 'contextual_size_stock_question',
         prompt_tokens: 0,
         completion_tokens: 0,
         total_tokens: 0,
         processing_time_ms: 0,
-        product_images: deterministicProductContext.imageUrls || [],
-        product_cards: productCards,
-        product_lookup_attempted: true,
-        product_search_text: deterministicProductContext.searchText || message,
-        products_found: deterministicProductContext.productsFound === true
+        product_images: [],
+        product_cards: [],
+        product_lookup_attempted: false,
+        product_search_text: ''
       };
+    }
+    // Se tem produto específico e não precisa de clarificação, busca normal
+    if (customerIntent.reference === 'specific_product' && customerIntent.selected_product_index !== null) {
+      // Fase 2: responder com estoque exato. Por enquanto, cai para general_message.
+    }
+    // Sem produto específico: cai para LLM com contexto do histórico
+  }
+
+  // ─── 3. Follow-up de produto (mais opções, fotos) ───────────────────────
+  if (customerIntent.intent === 'product_followup') {
+    const lastProductRequest = getRecentCustomerProductRequest(conversationHistory);
+    if (lastProductRequest) {
+      const cleanQuery = getProductSearchPhrase(lastProductRequest);
+      if (cleanQuery) {
+        const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory);
+        if (productContext.lookupAttempted) {
+          const productCards = productContext.productCards || [];
+          if (productCards.length > 0 || productContext.productsFound) {
+            return {
+              skipped: false,
+              response: productCards.length > 0
+                ? buildProductCardsResponse(productCards)
+                : buildProductContextSummaryResponse(productContext, productContext.searchText || cleanQuery),
+              provider: 'catalog',
+              model: 'catalog_lookup',
+              prompt_tokens: 0,
+              completion_tokens: 0,
+              total_tokens: 0,
+              processing_time_ms: 0,
+              product_images: productContext.imageUrls || [],
+              product_cards: productCards,
+              product_lookup_attempted: true,
+              product_search_text: productContext.searchText || cleanQuery
+            };
+          }
+        }
+      }
+    }
+    // Sem query clara: cai para LLM com histórico
+  }
+
+  // ─── 4. Busca de produto novo ────────────────────────────────────────────
+  if (customerIntent.intent === 'product_search') {
+    const cleanQuery = customerIntent.search_query || getProductSearchPhrase(message);
+    if (cleanQuery) {
+      const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory);
+      if (productContext.lookupAttempted) {
+        const productCards = productContext.productCards || [];
+        if (productCards.length > 0 || productContext.productsFound) {
+          return {
+            skipped: false,
+            response: productCards.length > 0
+              ? buildProductCardsResponse(productCards)
+              : buildProductContextSummaryResponse(productContext, productContext.searchText || cleanQuery),
+            provider: 'catalog',
+            model: 'catalog_lookup',
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            processing_time_ms: 0,
+            product_images: productContext.imageUrls || [],
+            product_cards: productCards,
+            product_lookup_attempted: true,
+            product_search_text: productContext.searchText || cleanQuery
+          };
+        }
+      }
+    }
+    // Se cleanQuery estiver vazio ou busca não retornou nada, cai para LLM normal
+  }
+
+  // ─── 5. Base de conhecimento ─────────────────────────────────────────────
+  if (customerIntent.intent === 'knowledge_question') {
+    const searchQuery = customerIntent.search_query || message;
+    const siteContext = await buildSiteContextForConfig(searchQuery, effectiveConfig);
+    if (siteContext.contextText) {
+      // Se tem API key válida, deixa o LLM responder com contexto do site
+      // Se não, responde deterministicamente com o resumo
+      if (!isUsableProviderApiKey(provider, apiKeyForClassify)) {
+        return {
+          skipped: false,
+          response: buildSiteContextSummaryResponse(siteContext),
+          provider: 'site',
+          model: 'site_lookup',
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          processing_time_ms: 0,
+          product_images: [],
+          product_cards: []
+        };
+      }
+      // Com API key, o contexto será injetado no callOpenAI/callClaude
     }
   }
 
+  // ─── 6. Mensagem geral ou clarificação ──────────────────────────────────
+  if (customerIntent.intent === 'clarification') {
+    return {
+      skipped: false,
+      response: customerIntent.clarification_question || 'Pode me dar mais detalhes?',
+      provider: 'system',
+      model: 'clarification',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: []
+    };
+  }
+
+  // ─── Fallback: fluxo existente de LLM ────────────────────────────────────
   const apiKey = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
   if (!isUsableProviderApiKey(provider, apiKey)) {
     const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);

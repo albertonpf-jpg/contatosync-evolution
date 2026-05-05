@@ -222,12 +222,39 @@ function buildProductLookupEmptyResponse(searchText) {
 }
 
 function buildProductCardsResponse(productCards = []) {
-  const first = productCards[0];
+  if (!Array.isArray(productCards) || productCards.length === 0) {
+    return 'As fotos foram enviadas acima. Se quiser, posso verificar tamanho, cor ou mais modelos.';
+  }
+
+  function cleanTitle(raw) {
+    return String(raw || '')
+      .replace(/^🛍️?\s*/u, '')
+      .replace(/\s*-\s*foto\s*\d+$/i, '')
+      .trim();
+  }
+
+  function extractPriceFromDescription(desc) {
+    const match = String(desc || '').match(/💰\s*Pre[c\u00E7]o:\s*(R\$\s*[\d.,]+)/iu);
+    return match ? match[1].trim() : '';
+  }
+
+  const seen = new Set();
+  const lines = [];
+  for (const card of productCards) {
+    const title = cleanTitle(card?.title);
+    if (!title || seen.has(title)) continue;
+    seen.add(title);
+    const price = extractPriceFromDescription(card?.description);
+    lines.push(price ? title + ' — ' + price : title);
+    if (lines.length >= 5) break;
+  }
+
   return [
-    `Encontrei ${first?.title || 'opcoes'} na loja.`,
-    first?.description || '',
-    'Enviei as fotos correspondentes acima.'
-  ].filter(Boolean).join('\n');
+    lines.length === 1
+      ? 'Encontrei ' + lines[0] + ' na loja.'
+      : 'Encontrei ' + String(lines.length) + ' opcoes na loja:\n' + lines.map(function(l) { return '\u2022 ' + l; }).join('\n'),
+    'As fotos foram enviadas acima. Se quiser, posso verificar tamanho, cor ou mais modelos.'
+  ].join('\n');
 }
 
 function buildProductContextSummaryResponse(productContext, searchText) {
@@ -1674,20 +1701,58 @@ function extractGenericJsonProducts(data, sourceUrl, source = {}) {
     );
 
     if (hasProductSignal) {
-      const price = firstValue(
-        value.preco,
-        value.price,
-        value.valor,
-        value.preco_promocional,
-        value.sale_price,
-        value.precos_produto?.promocional,
-        value.precos_produto?.padrao,
-        value.precos_produto?.preco_a_partir?.preco
-      );
+      const price = (function extractPrice(v) {
+        function vp(x) {
+          if (x === null || x === undefined || x === '') return null;
+          const n = Number(String(x).replace(',', '.').replace(/[^\d.-]/g, ''));
+          return Number.isFinite(n) && n > 0 ? n : null;
+        }
+        const directCandidates = [
+          v.precos_produto?.promocional,
+          v.precos_produto?.preco_a_partir?.preco,
+          v.precos_produto?.preco_minimo,
+          v.precos_produto?.padrao,
+          v.preco_promocional,
+          v.preco_venda,
+          v.valor_venda,
+          v.sale_price,
+          v.price,
+          v.preco,
+          v.valor
+        ];
+        for (const c of directCandidates) {
+          const n = vp(c);
+          if (n !== null) return n;
+        }
+        // FácilZap: preço dentro de catalogos[].precos
+        const cats = v.catalogos;
+        if (cats && typeof cats === 'object') {
+          const catArr = Array.isArray(cats) ? cats : Object.values(cats);
+          for (const cat of catArr) {
+            if (!cat || typeof cat !== 'object') continue;
+            const n = vp(cat.precos?.preco)
+              ?? vp(cat.precos?.promocional)
+              ?? vp(cat.precos?.preco_promocional)
+              ?? vp(cat.precos?.preco_venda);
+            if (n !== null) return n;
+          }
+        }
+        // Fallback: variacoes
+        const variacoes = v.variacoes || v.variations;
+        if (variacoes && typeof variacoes === 'object') {
+          const entries = Array.isArray(variacoes) ? variacoes : Object.values(variacoes);
+          for (const entry of entries) {
+            if (!entry || typeof entry !== 'object') continue;
+            const n = vp(entry.preco) ?? vp(entry.valor) ?? vp(entry.price);
+            if (n !== null) return n;
+          }
+        }
+        return null;
+      })(value);
       const isFacilZapSource = /facilzap/i.test(String(sourceUrl || ''));
       const rawUrl = firstValue(value.url, value.link, value.permalink, value.product_url, value.link_produto, value.url_produto, sourceUrl);
       const url = isFacilZapSource
-        ? getFacilZapPublicProductUrl(value, source.publicCatalogUrl || sourceUrl, resolvePageUrl(source.publicCatalogUrl || sourceUrl, rawUrl))
+        ? getFacilZapPublicProductUrl(value, source.publicCatalogUrl || '', resolvePageUrl(source.publicCatalogUrl || '', rawUrl))
         : resolvePageUrl(sourceUrl, rawUrl);
       const variations = [
         value.variacoes,

@@ -310,7 +310,6 @@ class BaileysService {
       const session = this.sessions.get(sessionName);
       if (session) { session.socket = sock; session.saveCreds = saveCreds; }
 
-      // ── CAPTURA DE CONTATOS — alimenta lidToPhone e contactsStore ──
       sock.ev.on('contacts.upsert', async (contacts) => {
         const result = await this._ingestContactsForLidMapping(sessionName, contacts, 'contacts.upsert', false);
         const s = this.sessions.get(sessionName);
@@ -514,6 +513,15 @@ class BaileysService {
     return { success: true, messageId: result.key.id, to: jid, messageType: type, timestamp: new Date() };
   }
 
+  _isSafeProductUrl(url) {
+    if (!url || typeof url !== 'string') return false;
+    if (!/^https?:\/\//i.test(url)) return false;
+    if (/api\.facilzap/i.test(url)) return false;
+    if (/\/c\/varejo\/produto\//i.test(url)) return false;
+    if (/\.(png|jpe?g|webp|gif|mp4)(\?.*)?$/i.test(url)) return false;
+    return true;
+  }
+
   async sendCarouselMessage(sessionName, jidOrPhone, options = {}) {
     const session = this.sessions.get(sessionName);
     if (!session) throw new Error('Sessao nao encontrada: ' + sessionName);
@@ -540,7 +548,7 @@ class BaileysService {
       let buttons = [];
       if (Array.isArray(card.buttons) && card.buttons.length > 0) {
         buttons = card.buttons.slice(0, 3);
-      } else if (card.url) {
+      } else if (this._isSafeProductUrl(card.url)) {
         buttons = [{
           name: 'cta_url',
           buttonParamsJson: JSON.stringify({
@@ -550,15 +558,7 @@ class BaileysService {
           })
         }];
       }
-      if (buttons.length === 0) {
-        buttons = [{
-          name: 'quick_reply',
-          buttonParamsJson: JSON.stringify({
-            display_text: 'Tenho interesse',
-            id: 'product_interest'
-          })
-        }];
-      }
+      // sem URL segura: sem botao (evita quick_reply com link invalido ou confuso)
       if (interactiveCards.length > 0) {
         const firstCardButtons = interactiveCards[0].nativeFlowMessage?.buttons || [];
         const firstButtonType = firstCardButtons[0]?.name;
@@ -793,7 +793,6 @@ class BaileysService {
         emitContactUpdate(sessionRow.client_id, { ...realPhoneContact, phone: realPhone, updated_at: now });
       }
 
-      // Atualizar contatos com LID como telefone
       let contactsQuery = supabaseAdmin
         .from('evolution_contacts')
         .update({ phone: realPhone, updated_at: now })
@@ -806,13 +805,11 @@ class BaileysService {
         if (sessionRow?.client_id) emitContactUpdate(sessionRow.client_id, contact);
       }
 
-      // Atualizar conversas com LID como telefone
       let conversationsQuery = supabaseAdmin.from('evolution_conversations').update({ phone: realPhone, updated_at: now }).eq('phone', lidNum).select('*');
       if (sessionRow?.client_id) conversationsQuery = conversationsQuery.eq('client_id', sessionRow.client_id);
       const { data: updatedConversations, error: convErr } = await conversationsQuery;
       if (convErr) throw convErr;
 
-      // Atualizar conversas pelo JID @lid
       if (lidJid && sessionRow?.client_id) {
         const { data: jidConversations } = await supabaseAdmin
           .from('evolution_conversations')
@@ -865,7 +862,6 @@ class BaileysService {
         isLid = true;
         const lidNum = remoteJid.replace('@lid', '').replace(/\D/g, '');
 
-        // T1: alternate PN fields from newer Baileys versions.
         const altPhoneJids = [
           message.key?.remoteJidAlt,
           message.key?.participantAlt,
@@ -881,7 +877,6 @@ class BaileysService {
           }
         }
 
-        // T2: mapa memória
         if (!phone && sessionObj?.lidToPhone) {
           phone = sessionObj.lidToPhone.get(remoteJid) || sessionObj.lidToPhone.get(lidNum) || '';
           if (phone && this._isRealPhone(phone)) {
@@ -889,7 +884,6 @@ class BaileysService {
           } else { phone = ''; }
         }
 
-        // T3: contactsStore (varredura de todos os contatos em memória)
         if (!phone && sessionObj?.contactsStore) {
           for (const [cid, contact] of sessionObj.contactsStore.entries()) {
             const cLid = contact.lid || (contact.id && contact.id.endsWith('@lid') ? contact.id : '');
@@ -907,7 +901,6 @@ class BaileysService {
           }
         }
 
-        // T4: participant
         if (!phone) {
           const participant = message.key?.participant || '';
           phone = this._jidToDigits(participant);
@@ -916,7 +909,6 @@ class BaileysService {
           } else { phone = ''; }
         }
 
-        // T5: banco de dados
         if (!phone && lidNum) {
           try {
             const { supabaseAdmin } = require('../config/supabase');
@@ -935,7 +927,6 @@ class BaileysService {
           } catch (dbErr) { /* nao critico */ }
         }
 
-        // T6: onWhatsApp
         if (!phone && sock && typeof sock.onWhatsApp === 'function') {
           try {
             const lookup = await sock.onWhatsApp(remoteJid);
@@ -954,7 +945,6 @@ class BaileysService {
           } catch (onWaErr) { console.log('[LID T6] falhou: ' + onWaErr.message); }
         }
 
-        // T7: sock.store?.contacts (legado)
         if (!phone && sock?.store?.contacts) {
           try {
             for (const [cid, contact] of Object.entries(sock.store.contacts)) {
@@ -972,7 +962,6 @@ class BaileysService {
           } catch (storeErr) {}
         }
 
-        // Fallback
         if (!phone) {
           phone = lidNum;
           console.log('[LID FALLBACK] ' + remoteJid + ' -> usando LID: ' + phone);

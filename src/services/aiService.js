@@ -596,10 +596,14 @@ function buildProductIntegrationSources(integration) {
   const integrationType = integration.integration_type || integration.type;
   if (integrationType !== 'facilzap') return sources;
 
+  // Paginação dinâmica: gera até FACILZAP_MAX_PAGES páginas.
+  // fetchProductContext para quando a página vem vazia ou sem novos produtos.
+  // Limite configurável — padrão 25 para cobrir catálogos grandes com segurança.
+  const FACILZAP_MAX_PAGES = 25;
   const productSources = [];
   for (const source of sources) {
     if (source.endpointKey !== 'products_path' && source.endpointKey !== 'stock_path') continue;
-    for (let page = 1; page <= 10; page += 1) {
+    for (let page = 1; page <= FACILZAP_MAX_PAGES; page += 1) {
       productSources.push({
         ...source,
         url: addQueryParam(source.url, 'page', page),
@@ -2722,10 +2726,12 @@ Retorne APENAS um JSON válido, sem markdown, sem comentários, sem texto adicio
    → needs_clarification=true, clarification_question preenchido
 
 ### REGRAS CRÍTICAS:
-- Se a mensagem NÃO contém nome de produto (moletom, blusa, vestido, etc) e pergunta sobre tamanho/estoque, é product_stock_followup, NÃO product_search.
+- REGRA ABSOLUTA: se a mensagem contém nome de produto (camisa, camiseta, blusa, vestido, saia, conjunto, moletom, body, roupa, pijama, jaqueta, casaco, bermuda, short, calca, cropped) OU tema/personagem/marca (princesa, disney, frozen, personagem, marvel, etc), é SEMPRE product_search, NUNCA product_stock_followup.
+- product_stock_followup SOMENTE para mensagens sem nome de produto E sem tema/personagem: "tem no tamanho 6?", "quantas tem?", "tem PP?", "ainda tem?".
 - "quantas" NUNCA é nome de produto.
 - Se há produtos no contexto recente e o cliente pergunta sobre tamanho/estoque sem especificar qual produto, needs_clarification=true.
 - search_query deve conter o substantivo de produto E os modificadores importantes: tema, personagem, marca, estampa. NUNCA remova tema/personagem/marca do search_query. Exemplos corretos: "camiseta princesas", "camisa princesa Disney", "camisa personagens", "moletom frozen". Exemplos ERRADOS (perdem o modificador): "camiseta", "camisa", "moletom".
+- Se a mensagem pede tema/personagem de forma ampla ("tem algo de princesa?", "nao tem nada com tema disney?"), é product_search com search_query apenas dos tokens do tema, SEM herdar produto anterior do contexto.
 - semantic_query: descrição semântica do que o cliente quer (tipo de produto + tema/característica). Preencher APENAS para product_search. Ex: "peca de roupa superior infantil com tema de princesa/personagem". Deixar "" para outras intencoes.
 - product_type: tipo/categoria do produto mencionado. Preencher APENAS para product_search. Ex: "camiseta", "vestido", "roupa infantil". Deixar "" se nao aplicavel.
 - theme: tema, estampa ou personagem mencionado. Preencher APENAS para product_search. Ex: "princesa", "frozen", "personagem". Deixar "" se nao aplicavel.
@@ -2844,13 +2850,15 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
     };
   }
 
-  // 3. Se a mensagem tem tamanho + NÃO tem nome de produto + tem produtos recentes → stock_followup
+  // 3. Se a mensagem tem tamanho + NÃO tem nome de produto + NÃO tem tema/personagem + tem produtos recentes → stock_followup
   const hasSize = extractRequestedSizes(message).length > 0;
   const productSearchPhrase = getProductSearchPhrase(message);
   const hasProductName = productSearchPhrase.length > 0;
   const recentProducts = getRecentlySentProductTitles(conversationHistory);
+  // Guard: mensagem com tema/personagem/marca nunca é stock_followup
+  const hasThemeOrBrand = /\b(princesa|princesas|personagem|personagens|disney|frozen|marvel|barbie|frozem|unicornio|unicornios|nike|adidas|tigor|kyly|brandili|fakini)\b/i.test(normalizeSearchText(message));
 
-  if (hasSize && !hasProductName && recentProducts.length > 0) {
+  if (hasSize && !hasProductName && !hasThemeOrBrand && recentProducts.length > 0) {
     const requestedSizes = extractRequestedSizes(message);
     return {
       intent: 'product_stock_followup',
@@ -2941,6 +2949,51 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
  * e linhas genéricas como "As fotos foram enviadas acima".
  * Retorna array com no máximo 5 títulos únicos.
  */
+/**
+ * Extrai contexto de estoque/tamanho dos cards enviados recentemente.
+ * Lê o content das mensagens da IA e identifica linhas como:
+ * "Tamanho: 6" / "Estoque: 2" / "Tamanhos com estoque: 4, 6, 8"
+ * Retorna array de { title, sizes, stock } para usar em follow-up de estoque.
+ */
+function getRecentProductStockContext(conversationHistory = []) {
+  if (!Array.isArray(conversationHistory)) return [];
+  const results = [];
+  const recentAi = conversationHistory
+    .filter(item => item && (item.direction === 'out' || item.is_from_ai))
+    .slice(-6);
+
+  for (const msg of recentAi) {
+    const content = String(msg.content || '');
+    // Detectar bloco de card: título + dados
+    const blocks = content.split(/\n\n+/);
+    for (const block of blocks) {
+      const lines = block.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      if (lines.length < 2) continue;
+      // Primeira linha com produto
+      const titleLine = lines[0]
+        .replace(/^🛍️?\s*/u, '').replace(/^•\s*/, '').replace(/^\d+\.\s*/, '').trim();
+      const hasProductWord = /\b(saia|short|vestido|conjunto|blusa|body|calca|macacao|camiseta|camisa|cropped|moletom|moleton|pijama|jaqueta|casaco)\b/i.test(normalizeSearchText(titleLine));
+      if (!hasProductWord && !/[A-ZÀ-Ú]/.test(titleLine)) continue;
+
+      let sizes = [];
+      let stock = null;
+      for (const line of lines.slice(1)) {
+        const norm = line.toLowerCase();
+        // Tamanhos com estoque: 4, 6, 8
+        const sizesMatch = norm.match(/tamanhos?\s*(?:com\s*estoque)?:\s*([\d, pgmGXx]+)/i);
+        if (sizesMatch) sizes = sizesMatch[1].split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+        // Estoque: 2
+        const stockMatch = norm.match(/estoque(?:\s*total)?:\s*(\d+)/i);
+        if (stockMatch) stock = Number(stockMatch[1]);
+      }
+      if (sizes.length > 0 || stock !== null) {
+        results.push({ title: titleLine, sizes, stock });
+      }
+    }
+  }
+  return results;
+}
+
 function getRecentlySentProductTitles(conversationHistory = []) {
   if (!Array.isArray(conversationHistory)) return [];
 
@@ -3813,6 +3866,48 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     // Guard: se a mensagem contém produto explícito, o LLM classificou errado.
     // Redirecionar para product_search com a query extraída.
     const _stockFollowupOverrideQuery = getProductSearchPhrase(message);
+    // Tentar responder com dados dos cards recentes antes de buscar
+    const _recentStockCtx = getRecentProductStockContext(conversationHistory);
+    if (!_stockFollowupOverrideQuery && _recentStockCtx.length > 0) {
+      const requestedSizes = customerIntent.filters && customerIntent.filters.size
+        ? String(customerIntent.filters.size).split(',').map(s => s.trim()).filter(Boolean)
+        : extractRequestedSizes(message);
+      // Verificar se algum produto recente tem o tamanho pedido
+      const matchingProduct = requestedSizes.length > 0
+        ? _recentStockCtx.find(p => requestedSizes.some(s => p.sizes.includes(s)))
+        : _recentStockCtx[0];
+      if (matchingProduct) {
+        const sizeInfo = requestedSizes.length > 0
+          ? requestedSizes.join(', ')
+          : (matchingProduct.sizes.length > 0 ? matchingProduct.sizes.join(', ') : 'informado');
+        const stockInfo = matchingProduct.stock !== null ? String(matchingProduct.stock) : 'disponível';
+        const hasSizeInCard = requestedSizes.length === 0 || matchingProduct.sizes.some(s => requestedSizes.includes(s));
+        let stockResponse;
+        if (hasSizeInCard && matchingProduct.sizes.length > 0) {
+          stockResponse = `Pelo catalogo, esse modelo aparece com tamanho ${sizeInfo} e estoque ${stockInfo}.`
+            + (matchingProduct.sizes.length > 1
+              ? ''
+              : ' Nao tenho a separacao exata por tamanho, mas o estoque total e ' + stockInfo + '.');
+        } else {
+          stockResponse = `Esse produto aparece com tamanho ${sizeInfo} e estoque total ${stockInfo}.`;
+        }
+        console.log('[FOLLOWUP DECISION] stock_from_recent_card=true product="' + matchingProduct.title + '" sizes=' + JSON.stringify(matchingProduct.sizes) + ' stock=' + matchingProduct.stock);
+        return {
+          skipped: false,
+          response: stockResponse,
+          provider: 'system',
+          model: 'recent_card_stock',
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          processing_time_ms: 0,
+          product_images: [],
+          product_cards: [],
+          product_lookup_attempted: false,
+          product_search_text: ''
+        };
+      }
+    }
     if (_stockFollowupOverrideQuery) {
       console.log('[FOLLOWUP DECISION] explicit_product=true reason=override_stock_followup query="' + _stockFollowupOverrideQuery + '"');
       const _overrideQuery = customerIntent.search_query || _stockFollowupOverrideQuery;
@@ -3880,17 +3975,27 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       //   → merged="camisa princesa princesas disney" → deduplicado → "camisa princesa disney"
       let cleanQuery = _followupBaseQuery;
       if (_followupHasOwnTokens && _followupBaseQuery) {
-        const baseTokens = _followupBaseQuery.split(' ').filter(Boolean);
-        const currentTokens = _followupCurrentTokens.split(' ').filter(Boolean);
-        // Merge sem duplicatas (por inclusão de substring)
-        const merged = [...baseTokens];
-        for (const t of currentTokens) {
-          if (!merged.some(b => b.includes(t) || t.includes(b))) {
-            merged.push(t);
+        // Verificar se a mensagem atual é busca ampla por tema (sem produto específico do contexto)
+        // Exemplos: "nao tem nada com tema princesas?" "tem algo de disney?"
+        // Nesses casos NÃO herdar o produto anterior — usar só o tema
+        const _broadThemeOnly = /\b(tema|personagem|personagens|disney|frozen|marvel|barbie|unicornio|princesa|princesas)\b/i.test(normalizeSearchText(message))
+          && !/\b(camisa|camiseta|blusa|vestido|saia|conjunto|moletom|body|roupa|pijama|jaqueta|casaco|bermuda|short|calca|cropped)\b/i.test(normalizeSearchText(message));
+        if (_broadThemeOnly) {
+          cleanQuery = _followupCurrentTokens;
+          console.log('[CONTEXT MERGE] broad_theme=true, ignorando produto anterior. query="' + cleanQuery + '"');
+        } else {
+          const baseTokens = _followupBaseQuery.split(' ').filter(Boolean);
+          const currentTokens = _followupCurrentTokens.split(' ').filter(Boolean);
+          // Merge sem duplicatas (por inclusão de substring)
+          const merged = [...baseTokens];
+          for (const t of currentTokens) {
+            if (!merged.some(b => b.includes(t) || t.includes(b))) {
+              merged.push(t);
+            }
           }
-        }
-        cleanQuery = merged.slice(0, 6).join(' ');
-        console.log('[CONTEXT MERGE] previous="' + _followupBaseQuery + '" current="' + _followupCurrentTokens + '" merged="' + cleanQuery + '"');
+          cleanQuery = merged.slice(0, 6).join(' ');
+          console.log('[CONTEXT MERGE] previous="' + _followupBaseQuery + '" current="' + _followupCurrentTokens + '" merged="' + cleanQuery + '"');
+        } // fim else merge
       } else if (_followupHasOwnTokens && !_followupBaseQuery) {
         // Sem histórico de produto, usar só os tokens atuais
         cleanQuery = _followupCurrentTokens;

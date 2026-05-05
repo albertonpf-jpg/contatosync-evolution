@@ -3809,7 +3809,38 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
 
   // ─── 2. Follow-up de estoque/tamanho contextual ──────────────────────────
   if (customerIntent.intent === 'product_stock_followup') {
-    if (customerIntent.needs_clarification) {
+    // Guard: se a mensagem contém produto explícito, o LLM classificou errado.
+    // Redirecionar para product_search com a query extraída.
+    const _stockFollowupOverrideQuery = getProductSearchPhrase(message);
+    if (_stockFollowupOverrideQuery) {
+      console.log('[FOLLOWUP DECISION] explicit_product=true reason=override_stock_followup query="' + _stockFollowupOverrideQuery + '"');
+      const _overrideQuery = customerIntent.search_query || _stockFollowupOverrideQuery;
+      console.log('[PRODUCT CLEAN QUERY] "' + _overrideQuery + '" (override from product_stock_followup)');
+      const _overrideContext = await buildProductContextForConfig(_overrideQuery, effectiveConfig, conversationHistory);
+      if (_overrideContext.lookupAttempted) {
+        const _overrideCards = _overrideContext.productCards || [];
+        if (_overrideCards.length > 0 || _overrideContext.productsFound) {
+          return {
+            skipped: false,
+            response: _overrideCards.length > 0
+              ? buildProductCardsResponse(_overrideCards)
+              : buildProductContextSummaryResponse(_overrideContext, _overrideContext.searchText || _overrideQuery),
+            provider: 'catalog',
+            model: 'catalog_lookup',
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            processing_time_ms: 0,
+            product_images: _overrideContext.imageUrls || [],
+            product_cards: _overrideCards,
+            product_lookup_attempted: true,
+            product_search_text: _overrideContext.searchText || _overrideQuery
+          };
+        }
+      }
+      // Busca não encontrou nada: sai do bloco e cai para product_search/semântico abaixo
+    }
+    if (customerIntent.needs_clarification && !_stockFollowupOverrideQuery) {
       const recentProductTitles = getRecentlySentProductTitles(conversationHistory);
       const responseText = buildProductSelectionList(recentProductTitles);
       return {
@@ -3837,9 +3868,35 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   // ─── 3. Follow-up de produto (mais opções, fotos) ───────────────────────
   if (customerIntent.intent === 'product_followup') {
     const lastProductRequest = getRecentCustomerProductRequest(conversationHistory);
+    // Tokens da mensagem atual — pode ser refinamento ("princesas da disney")
+    const _followupCurrentTokens = getProductSearchPhrase(message);
+    const _followupHasOwnTokens = _followupCurrentTokens.length > 0;
     if (lastProductRequest) {
-      const cleanQuery = getProductSearchPhrase(lastProductRequest);
+      const _followupBaseQuery = getProductSearchPhrase(lastProductRequest);
+      // Se a mensagem atual tem tokens próprios (refinamento/complemento),
+      // combinar com a busca anterior para formar query completa.
+      // Ex: lastProductRequest="tem Camisa de princesa" + message="princesas da disney"
+      //   → merged="camisa princesa princesas disney" → deduplicado → "camisa princesa disney"
+      let cleanQuery = _followupBaseQuery;
+      if (_followupHasOwnTokens && _followupBaseQuery) {
+        const baseTokens = _followupBaseQuery.split(' ').filter(Boolean);
+        const currentTokens = _followupCurrentTokens.split(' ').filter(Boolean);
+        // Merge sem duplicatas (por inclusão de substring)
+        const merged = [...baseTokens];
+        for (const t of currentTokens) {
+          if (!merged.some(b => b.includes(t) || t.includes(b))) {
+            merged.push(t);
+          }
+        }
+        cleanQuery = merged.slice(0, 6).join(' ');
+        console.log('[CONTEXT MERGE] previous="' + _followupBaseQuery + '" current="' + _followupCurrentTokens + '" merged="' + cleanQuery + '"');
+      } else if (_followupHasOwnTokens && !_followupBaseQuery) {
+        // Sem histórico de produto, usar só os tokens atuais
+        cleanQuery = _followupCurrentTokens;
+      }
+      console.log('[FOLLOWUP DECISION] explicit_product=' + _followupHasOwnTokens + ' reason=product_followup query="' + cleanQuery + '"');
       if (cleanQuery) {
+        console.log('[PRODUCT CLEAN QUERY] "' + cleanQuery + '" (product_followup)');
         const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory);
         if (productContext.lookupAttempted) {
           const productCards = productContext.productCards || [];
@@ -3860,6 +3917,79 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
               product_lookup_attempted: true,
               product_search_text: productContext.searchText || cleanQuery
             };
+          }
+          // Não encontrou nada na busca literal — tentar semântico se há tema
+          // (cai para product_search abaixo com a mesma query combinada)
+          if (_followupHasOwnTokens) {
+            console.log('[FOLLOWUP DECISION] explicit_product=true reason=followup_no_cards_try_semantic');
+            // Reprocessar como product_search para acionar semântico
+            const _semCards = productContext.productCards || [];
+            const _semAllCollected = productContext.allProductsCollected || [];
+            const _semQuery =
+              (customerIntent.semantic_query && String(customerIntent.semantic_query).trim()) ||
+              cleanQuery;
+            const _semThemeToken = customerIntent.theme ? normalizeSearchText(String(customerIntent.theme)) : '';
+            const _semCardsAtendeTema = _semThemeToken
+              ? _semCards.some(card => {
+                  const h = normalizeSearchText([card.title, card.description].join(' '));
+                  return h.includes(_semThemeToken) || _semThemeToken.split(' ').some(t => t.length >= 4 && h.includes(t));
+                })
+              : true;
+            const _semDecisionReason = _semCards.length === 0
+              ? 'cards_zero'
+              : (!_semCardsAtendeTema && _semThemeToken ? 'cards_sem_tema' : 'nao_necessario');
+            const _canSem = (
+              _semDecisionReason !== 'nao_necessario' &&
+              _semAllCollected.length > 0 &&
+              _semQuery.length > 0 &&
+              isUsableProviderApiKey(provider, apiKeyForClassify)
+            );
+            console.log('[SEMANTIC DECISION] reason=' + _semDecisionReason + ' | canRun=' + _canSem + ' | candidatos=' + _semAllCollected.length);
+            if (_canSem) {
+              console.log('[SEMANTIC RANK] candidatos: ' + _semAllCollected.length + ' | query: "' + _semQuery + '"');
+              const _semResult = await semanticRankProducts(_semAllCollected, customerIntent, _semQuery, apiKeyForClassify, provider);
+              console.log('[SEMANTIC RANK] matches: ' + ((_semResult.productCards || []).length));
+              if (_semResult.productCards && _semResult.productCards.length > 0) {
+                const _semCardsImg = _semResult.productCards.filter(c => c.imageUrl);
+                const _semCardsTxt = _semResult.productCards.filter(c => !c.imageUrl);
+                console.log('[SEMANTIC CARDS] cards com imagem: ' + _semCardsImg.length + ' | sem imagem: ' + _semCardsTxt.length);
+                if (_semCardsImg.length > 0) {
+                  return {
+                    skipped: false,
+                    response: _semResult.customerNote + '\n\n' + buildProductCardsResponse(_semCardsImg),
+                    provider: 'catalog',
+                    model: 'semantic_catalog_lookup',
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    total_tokens: 0,
+                    processing_time_ms: 0,
+                    product_images: _semCardsImg.map(c => c.imageUrl).filter(Boolean),
+                    product_cards: _semCardsImg,
+                    product_lookup_attempted: true,
+                    product_search_text: _semQuery,
+                    products_found: true,
+                    semantic_rank_used: true
+                  };
+                }
+                const _semListaTxt = _semCardsTxt.map(c => '• ' + c.title + (c.description ? ' — ' + c.description : '')).join('\n');
+                return {
+                  skipped: false,
+                  response: _semResult.customerNote + '\n\n' + _semListaTxt,
+                  provider: 'catalog',
+                  model: 'semantic_catalog_lookup_text',
+                  prompt_tokens: 0,
+                  completion_tokens: 0,
+                  total_tokens: 0,
+                  processing_time_ms: 0,
+                  product_images: [],
+                  product_cards: [],
+                  product_lookup_attempted: true,
+                  product_search_text: _semQuery,
+                  products_found: true,
+                  semantic_rank_used: true
+                };
+              }
+            }
           }
         }
       }

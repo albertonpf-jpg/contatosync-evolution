@@ -1816,6 +1816,29 @@ function extractGenericJsonProducts(data, sourceUrl, source = {}) {
           console.log('[DIAG RAW FACILZAP PRODUCT] source.publicCatalogUrl=' + (source && source.publicCatalogUrl) + ' sourceUrl=' + sourceUrl);
           console.log('[DIAG RAW FACILZAP PRODUCT] price_calculado=' + price + ' url_calculada=' + url);
           console.log('[DIAG RAW FACILZAP PRODUCT] descricao_preview=' + String(value.descricao || value.description || '').slice(0, 100));
+
+          // LOG CATALOGOS — campo catalogos completo
+          try {
+            const _cats = value.catalogos;
+            if (_cats === undefined || _cats === null) {
+              console.log('[DIAG CATALOGOS] catalogos=AUSENTE (campo nao existe no objeto)');
+            } else {
+              const _catsArr = Array.isArray(_cats) ? _cats : (typeof _cats === 'object' ? Object.values(_cats) : [_cats]);
+              console.log('[DIAG CATALOGOS] catalogos tipo=' + typeof _cats + ' isArray=' + Array.isArray(_cats) + ' length=' + _catsArr.length);
+              _catsArr.slice(0, 5).forEach(function(_cat, _ci) {
+                if (!_cat || typeof _cat !== 'object') {
+                  console.log('[DIAG CATALOGOS] item[' + _ci + ']=' + JSON.stringify(_cat));
+                  return;
+                }
+                console.log('[DIAG CATALOGOS] item[' + _ci + '] keys=' + JSON.stringify(Object.keys(_cat)));
+                console.log('[DIAG CATALOGOS] item[' + _ci + '] preco=' + _cat.preco + ' price=' + _cat.price + ' valor=' + _cat.valor + ' preco_venda=' + _cat.preco_venda + ' tabela_preco=' + _cat.tabela_preco);
+                console.log('[DIAG CATALOGOS] item[' + _ci + '] catalogo_id=' + _cat.catalogo_id + ' loja_id=' + _cat.loja_id + ' slug=' + _cat.slug + ' nome=' + _cat.nome);
+                console.log('[DIAG CATALOGOS] item[' + _ci + '] dominio=' + _cat.dominio + ' dominio_proprio=' + _cat.dominio_proprio);
+                console.log('[DIAG CATALOGOS] item[' + _ci + '] full=' + JSON.stringify(_cat));
+              });
+            }
+          } catch(_catErr) { console.log('[DIAG CATALOGOS] erro: ' + _catErr.message); }
+          // FIM LOG CATALOGOS
         }
       } catch(_logErr) { console.log('[DIAG RAW FACILZAP PRODUCT] erro no log: ' + _logErr.message); }
       // FIM LOG TEMPORARIO

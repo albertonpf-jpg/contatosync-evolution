@@ -120,30 +120,17 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
   }
 
   var aiText = String(aiResult.response || '').trim();
-  if (hasProductCards && productMediaSent && !aiText) {
-    aiText = 'Enviei as fotos acima. Se quiser saber mais sobre tamanhos, cores ou preco, e so perguntar.';
+  if (!aiText && hasProductCards) {
+    aiText = productMediaSent
+      ? 'Enviei as fotos do produto acima. Seguem os detalhes que encontrei na loja.'
+      : 'Encontrei estas opcoes na loja, mas nao consegui enviar as fotos automaticamente agora.';
   }
-  if (hasProductCards && !productMediaSent && !aiText) {
+  if (hasProductCards && productMediaSent) {
+    aiText = 'Enviei acima as opcoes que encontrei para o que voce pediu. Se quiser, posso verificar tamanhos, cores ou disponibilidade.';
+  }
+  if (hasProductCards && !productMediaSent) {
     aiText = 'Encontrei o produto, mas nao consegui enviar as fotos automaticamente agora. Vou chamar um atendente para ajudar.';
   }
-
-  // contentForHistory: salva no banco aiText + títulos dos cards (um por linha)
-  // para que o histórico preserve os produtos mostrados ao cliente
-  var cardTitles = hasProductCards
-    ? [].concat(
-        aiResult.product_cards
-          .map(function(c) {
-            return String(c.title || '').replace(/^🛍️\s*/, '').replace(/\s*-\s*foto\s*\d+$/i, '').trim();
-          })
-          .filter(Boolean)
-      ).filter(function(t, i, arr) { return arr.indexOf(t) === i; }).slice(0, 5)
-    : [];
-  var contentForHistory = [
-    aiText,
-    cardTitles.length > 0 ? 'Produtos enviados:' : '',
-    ...cardTitles
-  ].filter(Boolean).join('\n');
-
   var sendResult = await baileysService.sendTextMessage(sessionName, jid, aiText);
 
   var { data: newMessage, error: messageError } = await supabaseAdmin
@@ -153,7 +140,7 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       conversation_id: conversation.id,
       client_id: clientId,
       contact_id: contact.id,
-      content: contentForHistory,
+      content: aiText,
       message_type: 'text',
       direction: 'out',
       status: 'sent',
@@ -610,6 +597,34 @@ app.post('/debug/create-session', async function(req, res) {
     });
   } catch (error) {
     res.json({ error: error.message });
+  }
+});
+
+// Endpoint para resetar contadores de backoff de uma sessão pausada por excesso de QR/reconexão.
+// Uso: POST /debug/reset-session-backoff { "sessionName": "evo_qwqw" }
+app.post('/debug/reset-session-backoff', async function(req, res) {
+  try {
+    var { sessionName, webhookUrl } = req.body;
+    if (!sessionName) return res.json({ success: false, error: 'sessionName obrigatorio' });
+    var baileysService = require('./src/services/baileysService');
+    var s = baileysService.sessions.get(sessionName);
+    if (s) {
+      // Resetar contadores e reconectar
+      s.qrAttempts = 0;
+      s.reconnectAttempts = 0;
+      s.status = 'connecting';
+      console.log('[BAILEYS RECOVERY] reset manual de backoff para: ' + sessionName);
+      baileysService._connectSession(sessionName, webhookUrl || null).catch(function(e) {
+        console.error('[BAILEYS RECOVERY] erro no reset de ' + sessionName + ': ' + e.message);
+      });
+      return res.json({ success: true, message: 'Backoff resetado, reconectando ' + sessionName });
+    } else {
+      // Sessão não está em memória — criar do zero
+      var result = await baileysService.createSession(sessionName, webhookUrl || null);
+      return res.json({ success: true, message: 'Sessao criada do zero: ' + sessionName, result });
+    }
+  } catch (error) {
+    res.json({ success: false, error: error.message });
   }
 });
 
@@ -1298,31 +1313,59 @@ app.use('*', function(req, res) {
 
 async function recoverActiveSessions() {
   try {
-    console.log('🔄 Verificando sessoes no banco para recuperacao...');
+    console.log('[BAILEYS RECOVERY] Verificando sessoes no banco...');
     const { supabaseAdmin } = require('./src/config/supabase');
     const baileysService = require('./src/services/baileysService');
     const { data: sessions, error } = await supabaseAdmin
       .from('evolution_sessions')
-      .select('session_name, webhook_url, status');
+      .select('session_name, webhook_url, status, updated_at');
     if (error || !sessions || sessions.length === 0) {
-      console.log('Nenhuma sessao para recuperar');
+      console.log('[BAILEYS RECOVERY] Nenhuma sessao encontrada no banco');
       return;
     }
-    console.log('🔄 Recuperando ' + sessions.length + ' sessao(oes) do banco...');
-    for (const session of sessions) {
+
+    // Só recuperar sessões que estavam ativas (connected/connecting).
+    // Sessões qr_pending ou disconnected sem conexão prévia NÃO são recuperadas
+    // automaticamente — evita loop infinito de QR Code não escaneado.
+    const RECOVERY_MAX_AGE_MS = 30 * 60 * 1000; // 30 min: só reconecta se estava ativa recentemente
+    const recoverableStatuses = new Set(['connected', 'connecting']);
+    const now = Date.now();
+
+    const toRecover = sessions.filter(s => {
+      if (!recoverableStatuses.has(s.status)) {
+        console.log('[BAILEYS RECOVERY] skipping status=' + s.status + ' session=' + s.session_name);
+        return false;
+      }
+      // Se updated_at existe, verificar se era recente o suficiente
+      if (s.updated_at) {
+        const age = now - new Date(s.updated_at).getTime();
+        if (age > RECOVERY_MAX_AGE_MS) {
+          console.log('[BAILEYS RECOVERY] skipping stale session=' + s.session_name + ' age=' + Math.round(age/60000) + 'min');
+          return false;
+        }
+      }
+      return true;
+    });
+
+    console.log('[BAILEYS RECOVERY] ' + toRecover.length + '/' + sessions.length + ' sessao(oes) elegíveis para recuperação');
+
+    for (const session of toRecover) {
       try {
         const inMemory = baileysService.sessions.has(session.session_name);
         if (!inMemory) {
+          console.log('[BAILEYS RECOVERY] recuperando session=' + session.session_name + ' status=' + session.status);
           await baileysService.createSession(session.session_name, session.webhook_url);
-          console.log('✅ Sessao recuperada: ' + session.session_name);
+          console.log('[BAILEYS RECOVERY] session criada: ' + session.session_name);
           await new Promise(r => setTimeout(r, 2000));
+        } else {
+          console.log('[BAILEYS RECOVERY] session já em memória: ' + session.session_name);
         }
       } catch (err) {
-        console.error('❌ Erro recuperando ' + session.session_name + ': ' + err.message);
+        console.error('[BAILEYS RECOVERY] erro em ' + session.session_name + ': ' + err.message);
       }
     }
   } catch (err) {
-    console.error('❌ Erro na recuperacao de sessoes: ' + err.message);
+    console.error('[BAILEYS RECOVERY] erro geral: ' + err.message);
   }
 }
 

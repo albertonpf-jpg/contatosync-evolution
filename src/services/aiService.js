@@ -2737,6 +2737,15 @@ Retorne APENAS um JSON válido, sem markdown, sem comentários, sem texto adicio
 - theme: tema, estampa ou personagem mencionado. Preencher APENAS para product_search. Ex: "princesa", "frozen", "personagem". Deixar "" se nao aplicavel.
 - allow_related_products: true se o cliente parece aberto a sugestoes relacionadas (pedido com tema/personagem/conceito amplo), false se o pedido e muito especifico (cor + tamanho + modelo exato).
 
+### CAMPOS NOVOS (adicionais — não alteram intent nem search_query):
+- question_type: subcategoria da pergunta. Valores: "product_search", "stock_by_size_color", "price_check", "availability_check", "order_status", "tracking_code", "delivery_policy", "payment_policy", "exchange_policy", "store_info", "semantic_product_search", "other".
+  Exemplos: "tem moletom tamanho 6?" → "product_search". "tem quantas azul tamanho 6?" → "stock_by_size_color". "qual prazo de entrega?" → "delivery_policy". "pedido 1234" → "order_status".
+- sources_needed: array com as fontes que precisam ser consultadas para responder. Valores possíveis: "product_api", "recent_products", "order_api", "tracking_api", "knowledge_base", "site_urls", "files", "conversation_history".
+  Exemplos: product_search → ["product_api"]. stock_by_size_color com produto recente → ["recent_products", "product_api"]. prazo entrega → ["knowledge_base", "site_urls"]. pedido → ["order_api"].
+- entities: objeto com entidades extraídas da mensagem. Preencher apenas o que for mencionado, deixar "" o restante.
+  Campos: product (nome do produto mencionado), product_id (id se mencionado), size (tamanho), color (cor), theme (tema/personagem/marca), category (categoria), order_id (número do pedido), date (data mencionada), location (localização mencionada).
+- operation: tipo de operação. Valores: "search" (buscar produto), "lookup" (consultar dado específico), "calculate" (calcular estoque/disponibilidade), "compare" (comparar opções), "summarize" (resumir informações), "clarify" (pedir esclarecimento).
+
 ### CONTEXTO:
 Histórico recente:
 ${recentHistory || '(sem histórico)'}
@@ -2745,8 +2754,8 @@ Produtos enviados recentemente: ${recentProductsText}
 
 Mensagem atual: "${message}"
 
-Responda SOMENTE com JSON:
-{"intent":"...","source":"...","search_query":"...","semantic_query":"","product_type":"","theme":"","allow_related_products":false,"filters":{"size":"","color":"","category":""},"order_id":"","tracking_id":"","reference":"none","selected_product_index":null,"needs_clarification":false,"clarification_question":""}`;
+Responda SOMENTE com JSON (todos os campos obrigatórios):
+{"intent":"...","source":"...","search_query":"...","semantic_query":"","product_type":"","theme":"","allow_related_products":false,"filters":{"size":"","color":"","category":""},"order_id":"","tracking_id":"","reference":"none","selected_product_index":null,"needs_clarification":false,"clarification_question":"","question_type":"other","sources_needed":[],"entities":{"product":"","product_id":"","size":"","color":"","theme":"","category":"","order_id":"","date":"","location":""},"operation":"search"}`;
 
   try {
     let responseText = '';
@@ -2760,7 +2769,7 @@ Responda SOMENTE com JSON:
         },
         body: JSON.stringify({
           model: 'claude-3-haiku-20240307',
-          max_tokens: 300,
+          max_tokens: 500,
           temperature: 0,
           messages: [{ role: 'user', content: classifyPrompt }]
         }),
@@ -2776,7 +2785,7 @@ Responda SOMENTE com JSON:
         body: JSON.stringify({
           model: 'gpt-4o-mini',
           temperature: 0,
-          max_output_tokens: 300,
+          max_output_tokens: 500,
           input: [{ role: 'user', content: [{ type: 'input_text', text: classifyPrompt }] }]
         }),
         signal: AbortSignal.timeout(4000)
@@ -2789,9 +2798,46 @@ Responda SOMENTE com JSON:
     const clean = responseText.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
 
-    // Validação mínima
+    // Validação mínima — campos antigos
     const validIntents = ['product_search', 'product_stock_followup', 'product_followup', 'order_lookup', 'tracking_lookup', 'knowledge_question', 'general_message', 'clarification'];
     if (!validIntents.includes(parsed.intent)) return null;
+
+    // Normalizar campos novos (Fase 1) — defaults seguros se LLM omitiu
+    const validQuestionTypes = ['product_search','stock_by_size_color','price_check','availability_check','order_status','tracking_code','delivery_policy','payment_policy','exchange_policy','store_info','semantic_product_search','other'];
+    const validOperations = ['search','lookup','calculate','compare','summarize','clarify'];
+    const validSources = ['product_api','recent_products','order_api','tracking_api','knowledge_base','site_urls','files','conversation_history'];
+
+    parsed.question_type = validQuestionTypes.includes(parsed.question_type) ? parsed.question_type : 'other';
+    parsed.operation = validOperations.includes(parsed.operation) ? parsed.operation : 'search';
+    parsed.sources_needed = Array.isArray(parsed.sources_needed)
+      ? parsed.sources_needed.filter(s => validSources.includes(s))
+      : [];
+    parsed.entities = {
+      product:    String(parsed.entities?.product    || ''),
+      product_id: String(parsed.entities?.product_id || ''),
+      size:       String(parsed.entities?.size       || parsed.filters?.size || ''),
+      color:      String(parsed.entities?.color      || parsed.filters?.color || ''),
+      theme:      String(parsed.entities?.theme      || parsed.theme || ''),
+      category:   String(parsed.entities?.category   || parsed.filters?.category || ''),
+      order_id:   String(parsed.entities?.order_id   || parsed.order_id || ''),
+      date:       String(parsed.entities?.date       || ''),
+      location:   String(parsed.entities?.location   || '')
+    };
+
+    // Se LLM não preencheu sources_needed, inferir a partir do intent (compatibilidade)
+    if (parsed.sources_needed.length === 0) {
+      const intentToSources = {
+        product_search:       ['product_api'],
+        product_stock_followup: ['recent_products', 'product_api'],
+        product_followup:     ['recent_products', 'product_api'],
+        order_lookup:         ['order_api'],
+        tracking_lookup:      ['tracking_api'],
+        knowledge_question:   ['knowledge_base', 'site_urls'],
+        general_message:      [],
+        clarification:        ['conversation_history']
+      };
+      parsed.sources_needed = intentToSources[parsed.intent] || [];
+    }
 
     return parsed;
   } catch (error) {
@@ -2807,6 +2853,56 @@ Responda SOMENTE com JSON:
 function classifyCustomerIntentFallback(message, conversationHistory) {
   const normalized = normalizeSearchText(message);
 
+  // Helper: monta campos novos da Fase 1 a partir de dados já extraídos
+  function _buildPhase1Fields(intent, overrides = {}) {
+    const intentToSources = {
+      product_search:         ['product_api'],
+      product_stock_followup: ['recent_products', 'product_api'],
+      product_followup:       ['recent_products', 'product_api'],
+      order_lookup:           ['order_api'],
+      tracking_lookup:        ['tracking_api'],
+      knowledge_question:     ['knowledge_base', 'site_urls'],
+      general_message:        [],
+      clarification:          ['conversation_history']
+    };
+    const intentToQType = {
+      product_search:         'product_search',
+      product_stock_followup: 'stock_by_size_color',
+      product_followup:       'product_search',
+      order_lookup:           'order_status',
+      tracking_lookup:        'tracking_code',
+      knowledge_question:     'other',
+      general_message:        'other',
+      clarification:          'other'
+    };
+    const intentToOp = {
+      product_search:         'search',
+      product_stock_followup: 'calculate',
+      product_followup:       'search',
+      order_lookup:           'lookup',
+      tracking_lookup:        'lookup',
+      knowledge_question:     'lookup',
+      general_message:        'summarize',
+      clarification:          'clarify'
+    };
+    return {
+      question_type:  overrides.question_type  || intentToQType[intent]  || 'other',
+      sources_needed: overrides.sources_needed || intentToSources[intent] || [],
+      entities: {
+        product:    overrides.product    || '',
+        product_id: overrides.product_id || '',
+        size:       overrides.size       || '',
+        color:      overrides.color      || '',
+        theme:      overrides.theme      || '',
+        category:   overrides.category   || '',
+        order_id:   overrides.order_id   || '',
+        date:       '',
+        location:   ''
+      },
+      operation: overrides.operation || intentToOp[intent] || 'search'
+    };
+  }
+
   // 1. Se tem número de pedido → order_lookup ou tracking_lookup
   const orderId = extractOrderReference(message);
   if (orderId) {
@@ -2820,7 +2916,8 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
         order_id: orderId,
         reference: 'none',
         needs_clarification: false,
-        clarification_question: ''
+        clarification_question: '',
+        ..._buildPhase1Fields('tracking_lookup', { order_id: orderId })
       };
     }
     return {
@@ -2831,7 +2928,8 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
       order_id: orderId,
       reference: 'none',
       needs_clarification: false,
-      clarification_question: ''
+      clarification_question: '',
+      ..._buildPhase1Fields('order_lookup', { order_id: orderId })
     };
   }
 
@@ -2846,7 +2944,8 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
       order_id: '',
       reference: 'none',
       needs_clarification: false,
-      clarification_question: ''
+      clarification_question: '',
+      ..._buildPhase1Fields('order_lookup')
     };
   }
 
@@ -2872,7 +2971,11 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
       order_id: '',
       reference: 'recent_products',
       needs_clarification: recentProducts.length > 1,
-      clarification_question: recentProducts.length > 1 ? 'Você quer saber o tamanho de qual opção?' : ''
+      clarification_question: recentProducts.length > 1 ? 'Você quer saber o tamanho de qual opção?' : '',
+      ..._buildPhase1Fields('product_stock_followup', {
+        size: requestedSizes.join(','),
+        color: getColorTokens(getSearchTokens(message)).join(',')
+      })
     };
   }
 
@@ -2892,7 +2995,12 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
       order_id: '',
       reference: 'none',
       needs_clarification: false,
-      clarification_question: ''
+      clarification_question: '',
+      ..._buildPhase1Fields('product_search', {
+        product: productSearchPhrase,
+        size: requestedSizes.join(','),
+        color: colorTokens.join(',')
+      })
     };
   }
 
@@ -2910,7 +3018,8 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
           order_id: '',
           reference: 'none',
           needs_clarification: false,
-          clarification_question: ''
+          clarification_question: '',
+          ..._buildPhase1Fields('product_search', { product: cleanQuery })
         };
       }
     }
@@ -2926,7 +3035,8 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
       order_id: '',
       reference: 'none',
       needs_clarification: false,
-      clarification_question: ''
+      clarification_question: '',
+      ..._buildPhase1Fields('knowledge_question')
     };
   }
 
@@ -2939,7 +3049,8 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
     order_id: '',
     reference: 'none',
     needs_clarification: false,
-    clarification_question: ''
+    clarification_question: '',
+    ..._buildPhase1Fields('general_message')
   };
 }
 
@@ -3831,12 +3942,15 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
 
   // Log seguro da intenção completa (sem token)
   console.log('[INTENT FULL] intent=' + customerIntent.intent
-    + ' source=' + (customerIntent.source || '')
+    + ' qtype=' + (customerIntent.question_type || 'n/a')
+    + ' op=' + (customerIntent.operation || 'n/a')
+    + ' sources=' + JSON.stringify(customerIntent.sources_needed || [])
     + ' query="' + (customerIntent.search_query || '') + '"'
     + ' semantic="' + (customerIntent.semantic_query || '') + '"'
     + ' theme="' + (customerIntent.theme || '') + '"'
     + ' product_type="' + (customerIntent.product_type || '') + '"'
-    + ' allow_related=' + (customerIntent.allow_related_products === true ? 'true' : 'false'));
+    + ' allow_related=' + (customerIntent.allow_related_products === true ? 'true' : 'false')
+    + ' entities=' + JSON.stringify(customerIntent.entities || {}));
 
   // ─── 1. Pedido/Rastreio ────────────────────────────────────────────────────
   if (customerIntent.intent === 'order_lookup' || customerIntent.intent === 'tracking_lookup') {

@@ -177,13 +177,16 @@ class BaileysService {
   }
 
   async createSession(sessionName, webhookUrl = null) {
-    console.log('Criando sessao Baileys: ' + sessionName);
+    console.log('[BAILEYS] Criando sessao: ' + sessionName);
     this.sessions.set(sessionName, {
       socket: null, saveCreds: null, status: 'connecting',
       qrCode: null, createdAt: new Date(),
       lidToPhone: new Map(),
       contactsStore: new Map(),
-      sentMessages: new Map()
+      sentMessages: new Map(),
+      // Controle de backoff — evita loop infinito em qr_pending/code=408
+      qrAttempts: 0,        // quantas vezes gerou QR sem escanear
+      reconnectAttempts: 0  // quantas vezes reconectou após disconnect
     });
     this._connectSession(sessionName, webhookUrl).catch(err => {
       console.error('Erro background ' + sessionName + ':', err.message);
@@ -265,6 +268,10 @@ class BaileysService {
 
   async _connectSession(sessionName, webhookUrl = null) {
     try {
+      const s0 = this.sessions.get(sessionName);
+      console.log('[BAILEYS] _connectSession start session=' + sessionName
+        + ' qrAttempts=' + (s0 ? s0.qrAttempts : 'n/a')
+        + ' reconnectAttempts=' + (s0 ? s0.reconnectAttempts : 'n/a'));
       const sessionDir = path.join(this.authDir, sessionName);
       if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
       const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
@@ -357,34 +364,83 @@ class BaileysService {
         const { connection, lastDisconnect, qr } = update;
         const s = this.sessions.get(sessionName);
 
+        // Limites de proteção contra loop infinito
+        const QR_MAX_ATTEMPTS    = 3;  // máximo de QRs gerados sem escaneamento
+        const RECONNECT_MAX      = 5;  // máximo de reconexões por sessão
+        const BACKOFF_BASE_MS    = 5000; // base do backoff (5s)
+        const BACKOFF_MAX_MS     = 120000; // teto de 2 minutos
+
         if (qr) {
+          if (s) s.qrAttempts = (s.qrAttempts || 0) + 1;
+          const attempts = s ? s.qrAttempts : 1;
+
+          if (attempts > QR_MAX_ATTEMPTS) {
+            // Muitos QRs não escaneados — pausar sessão sem destruí-la
+            console.log('[BAILEYS QR] limite de QRs atingido (' + attempts + ') para ' + sessionName + ' — pausando sem loop');
+            if (s) { s.status = 'qr_pending'; s.qrCode = null; }
+            this.qrCodes.delete(sessionName);
+            this._updateDatabaseStatus(sessionName, 'qr_pending', 'qr_limit_reached');
+            // Fechar socket sem reconectar (retornar sem setar qrCode)
+            try { sock.end(undefined); } catch (_) {}
+            return;
+          }
+
           const qrBase64 = await QRCode.toDataURL(qr);
           this.qrCodes.set(sessionName, qrBase64);
           if (s) { s.qrCode = qrBase64; s.status = 'qr_ready'; }
           this._updateDatabaseStatus(sessionName, 'qr_pending', 'qr_generated');
-          console.log('QR Code gerado para: ' + sessionName);
+          console.log('[BAILEYS QR] generated session=' + sessionName + ' attempt=' + attempts + '/' + QR_MAX_ATTEMPTS);
         }
 
         if (connection === 'close') {
           const code = lastDisconnect?.error?.output?.statusCode;
-          const shouldReconnect = code !== DisconnectReason.loggedOut;
-          console.log('Conexao fechada ' + sessionName + ' code=' + code);
+          const isLoggedOut = code === DisconnectReason.loggedOut;
+          console.log('[BAILEYS] Conexao fechada session=' + sessionName + ' code=' + code);
+
           if (s) { s.status = 'disconnected'; s.qrCode = null; }
           this.qrCodes.delete(sessionName);
           this._updateDatabaseStatus(sessionName, 'disconnected', 'connection_closed_' + (code || 'unknown'));
-          if (shouldReconnect) {
-            setTimeout(() => this._connectSession(sessionName, webhookUrl), 3000);
-          } else {
+
+          if (isLoggedOut) {
+            // Logout explícito: limpar auth e reconectar para novo QR
+            console.log('[BAILEYS] logout detectado, limpando auth: ' + sessionName);
             const sessionDir2 = path.join(this.authDir, sessionName);
             try { if (fs.existsSync(sessionDir2)) fs.rmSync(sessionDir2, { recursive: true, force: true }); } catch (e) {}
-            if (s) s.status = 'connecting';
+            if (s) { s.status = 'connecting'; s.qrAttempts = 0; s.reconnectAttempts = 0; }
             setTimeout(() => this._connectSession(sessionName, webhookUrl), 3000);
+            return;
           }
+
+          // code=408 (timeout) ou outro disconnect não-logout
+          if (s) s.reconnectAttempts = (s.reconnectAttempts || 0) + 1;
+          const attempts = s ? s.reconnectAttempts : 1;
+
+          if (attempts > RECONNECT_MAX) {
+            // Excedeu limite de reconexões — pausar sessão
+            console.log('[BAILEYS RECONNECT] limite atingido (' + attempts + ') para ' + sessionName + ' — pausando. Reative manualmente.');
+            this._updateDatabaseStatus(sessionName, 'disconnected', 'reconnect_limit_reached');
+            return; // NÃO agendar nova reconexão
+          }
+
+          // Backoff exponencial: 5s, 10s, 20s, 40s, 80s, teto 120s
+          const backoffMs = Math.min(BACKOFF_BASE_MS * Math.pow(2, attempts - 1), BACKOFF_MAX_MS);
+          console.log('[BAILEYS RECONNECT] backoff=' + Math.round(backoffMs/1000) + 's session=' + sessionName + ' attempt=' + attempts + '/' + RECONNECT_MAX);
+          setTimeout(() => this._connectSession(sessionName, webhookUrl), backoffMs);
+
         } else if (connection === 'open') {
-          console.log('SESSAO CONECTADA! ' + sessionName);
-          if (s) { s.status = 'connected'; s.qrCode = null; s.lastActivity = new Date().toISOString(); s.connectedAt = new Date().toISOString(); }
+          console.log('[BAILEYS] SESSAO CONECTADA! ' + sessionName);
+          // Conexão estabelecida — resetar contadores de tentativa
+          if (s) {
+            s.status = 'connected';
+            s.qrCode = null;
+            s.lastActivity = new Date().toISOString();
+            s.connectedAt = new Date().toISOString();
+            s.qrAttempts = 0;
+            s.reconnectAttempts = 0;
+          }
           this.qrCodes.delete(sessionName);
           this._updateDatabaseStatus(sessionName, 'connected', 'whatsapp_connected');
+
         } else if (connection === 'connecting') {
           if (s) s.status = 'connecting';
           this._updateDatabaseStatus(sessionName, 'connecting', 'connection_update');

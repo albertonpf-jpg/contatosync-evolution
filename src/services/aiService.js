@@ -7,6 +7,10 @@ const { promisify } = require('util');
 const { execFile } = require('child_process');
 
 const execFileAsync = promisify(execFile);
+const RECENT_PRODUCTS_MEMORY_TTL_MS = 30 * 60 * 1000;
+const recentProductsByConversation = new Map();
+const pendingStockFiltersByConversation = new Map();
+
 const DEFAULT_INTEGRATION_CONFIG = {
   facilzap: {
     auth_type: 'bearer',
@@ -3192,8 +3196,8 @@ function isStockAvailabilityFollowUp(message = '') {
   return asksQuantity || shortSizeFollowup || (hasSize && asksAvailability) || (hasColor && asksAvailability) || (referencesRecent && asksAvailability);
 }
 
-function buildStockFollowupIntentFromMessage(message = '', conversationHistory = [], reason = 'stock_followup') {
-  const recentProducts = getReliableRecentProductStockContext(conversationHistory);
+function buildStockFollowupIntentFromMessage(message = '', conversationHistory = [], reason = 'stock_followup', conversation = {}) {
+  const recentProducts = getReliableRecentProductStockContext(conversationHistory, conversation);
   if (recentProducts.length === 0) return null;
   const requestedSizes = extractRequestedSizes(message);
   const colorTokens = getColorTokens(getSearchTokens(message));
@@ -3235,9 +3239,9 @@ function buildStockFollowupIntentFromMessage(message = '', conversationHistory =
   };
 }
 
-function coerceStockFollowupIntent(customerIntent = {}, message = '', conversationHistory = []) {
+function coerceStockFollowupIntent(customerIntent = {}, message = '', conversationHistory = [], conversation = {}) {
   if (!isStockAvailabilityFollowUp(message)) return customerIntent;
-  const recentProducts = getReliableRecentProductStockContext(conversationHistory);
+  const recentProducts = getReliableRecentProductStockContext(conversationHistory, conversation);
   if (recentProducts.length === 0) return customerIntent;
   if (customerIntent.intent === 'product_stock_followup' || customerIntent.question_type === 'stock_by_size_color') {
     return {
@@ -3258,7 +3262,7 @@ function coerceStockFollowupIntent(customerIntent = {}, message = '', conversati
       }
     };
   }
-  return buildStockFollowupIntentFromMessage(message, conversationHistory, 'coerced_from_' + (customerIntent.intent || 'unknown')) || customerIntent;
+  return buildStockFollowupIntentFromMessage(message, conversationHistory, 'coerced_from_' + (customerIntent.intent || 'unknown'), conversation) || customerIntent;
 }
 
 function labelMatchesStockFilters(label, filters = {}) {
@@ -3339,6 +3343,7 @@ function getStockForFilters(product = {}, filters = {}) {
 }
 
 function extractProductIndexReference(message = '') {
+  if (/^\s*\d{1,2}\s*$/.test(String(message || ''))) return Number(String(message || '').trim());
   const text = normalizeSearchText(message);
   const directNumber = text.match(/\b(?:opcao|produto|modelo|item)\s*(\d{1,2})\b/)?.[1];
   if (directNumber) return Number(directNumber);
@@ -3364,18 +3369,23 @@ function buildStockAnswerText(product, stockResult, filters = {}) {
     return `Esse produto aparece com estoque total ${stockResult.quantity}. Nao encontrei a quantidade separada por tamanho/cor.`;
   }
   return filters.size || filters.color
-    ? 'Nao encontrei a quantidade exata desse tamanho/cor no catalogo.'
-    : 'Nao encontrei a quantidade exata desse produto no catalogo.';
+    ? 'Nao encontrei a quantidade exata desse tamanho/cor para esse produto.'
+    : 'Nao encontrei a quantidade exata desse produto.';
 }
 
-function buildRecentProductStockAnswer(customerIntent = {}, message = '', conversationHistory = []) {
-  const recentProducts = getReliableRecentProductStockContext(conversationHistory);
+function buildRecentProductStockAnswer(customerIntent = {}, message = '', conversationHistory = [], conversation = {}) {
+  const recentProducts = getReliableRecentProductStockContext(conversationHistory, conversation);
   console.log('[RECENT PRODUCTS DATA] count=' + recentProducts.length);
   if (recentProducts.length === 0) return null;
 
   const selectedIndex = customerIntent.selected_product_index !== null && customerIntent.selected_product_index !== undefined
     ? Number(customerIntent.selected_product_index)
     : extractProductIndexReference(message);
+  let filters = filtersFromCustomerIntent(customerIntent, message);
+  const pendingFilters = getPendingStockFilters(conversation);
+  if (!filters.size && pendingFilters.size) filters = { ...filters, size: pendingFilters.size };
+  if (!filters.color && pendingFilters.color) filters = { ...filters, color: pendingFilters.color };
+  if (!filters.variation && pendingFilters.variation) filters = { ...filters, variation: pendingFilters.variation };
   const product = selectedIndex
     ? recentProducts.find(item => Number(item.displayIndex) === selectedIndex)
     : recentProducts.length === 1
@@ -3383,13 +3393,13 @@ function buildRecentProductStockAnswer(customerIntent = {}, message = '', conver
       : null;
 
   if (!product) {
+    savePendingStockFilters(conversation, filters);
     return {
       response: buildProductSelectionList(recentProducts.map(item => item.title).filter(Boolean)),
       model: 'recent_product_selection'
     };
   }
 
-  const filters = filtersFromCustomerIntent(customerIntent, message);
   const stockResult = getStockForFilters(product, filters);
   console.log('[STOCK FILTER RESULT] confidence=' + stockResult.confidence + ' quantity=' + (stockResult.quantity === null || stockResult.quantity === undefined ? '' : stockResult.quantity));
   return {
@@ -3403,7 +3413,8 @@ function buildRecentProductStockAnswer(customerIntent = {}, message = '', conver
 function isOrderLikeRecentProductLine(value = '') {
   const text = normalizeSearchText(value);
   if (!text) return true;
-  return /\b(pedido|codigo interno|codigo|cliente|total|entrega|status|pagamento|rastreio|integracao|transportadora|sedex|pac|forma entrega|forma_entrega|despachado|separacao|separado|entregue)\b/i.test(text);
+  return /\b(pedido|codigo interno|codigo|cliente|total|entrega|status|pagamento|rastreio|integracao|transportadora|sedex|pac|forma entrega|forma_entrega|despachado|separacao|separado|entregue)\b/i.test(text)
+    || /\b(nao encontrei|no momento|quer que eu|posso procurar|posso buscar|de qual produto|qual opcao|atendente)\b/i.test(text);
 }
 
 function hasProductLineSignal(value = '') {
@@ -3434,6 +3445,76 @@ function logRecentProductOptions(products = []) {
   products.slice(0, 8).forEach(product => {
     console.log('[RECENT PRODUCT OPTION] index=' + product.displayIndex + ' title="' + String(product.title || '').replace(/"/g, '\\"') + '"');
   });
+}
+
+function getConversationMemoryKey(conversation = {}) {
+  return conversation?.id ? String(conversation.id) : '';
+}
+
+function savePendingStockFilters(conversation = {}, filters = {}) {
+  const key = getConversationMemoryKey(conversation);
+  if (!key) return;
+  pendingStockFiltersByConversation.set(key, {
+    filters: {
+      size: String(filters.size || '').trim(),
+      color: String(filters.color || '').trim(),
+      variation: String(filters.variation || '').trim()
+    },
+    createdAt: Date.now()
+  });
+}
+
+function getPendingStockFilters(conversation = {}) {
+  const key = getConversationMemoryKey(conversation);
+  if (!key) return {};
+  const entry = pendingStockFiltersByConversation.get(key);
+  if (!entry) return {};
+  if (Date.now() - Number(entry.createdAt || 0) > RECENT_PRODUCTS_MEMORY_TTL_MS) {
+    pendingStockFiltersByConversation.delete(key);
+    return {};
+  }
+  return entry.filters || {};
+}
+
+function saveRecentProductsMemory(conversation = {}, products = []) {
+  const key = getConversationMemoryKey(conversation);
+  if (!key) return;
+  const safeProducts = dedupeRecentProductContext(normalizeRecentProductDataList(products));
+  if (safeProducts.length === 0) return;
+  recentProductsByConversation.set(key, {
+    products: safeProducts,
+    createdAt: Date.now(),
+    ttlMs: RECENT_PRODUCTS_MEMORY_TTL_MS
+  });
+  console.log('[RECENT PRODUCTS MEMORY SAVE] conv=' + key + ' count=' + safeProducts.length);
+}
+
+function getRecentProductsMemory(conversation = {}) {
+  const key = getConversationMemoryKey(conversation);
+  if (!key) {
+    console.log('[RECENT PRODUCTS MEMORY MISS] reason=no_conversation_id');
+    return [];
+  }
+  const entry = recentProductsByConversation.get(key);
+  if (!entry) {
+    console.log('[RECENT PRODUCTS MEMORY MISS] reason=empty conv=' + key);
+    return [];
+  }
+  if (Date.now() - Number(entry.createdAt || 0) > Number(entry.ttlMs || RECENT_PRODUCTS_MEMORY_TTL_MS)) {
+    recentProductsByConversation.delete(key);
+    console.log('[RECENT PRODUCTS MEMORY MISS] reason=expired conv=' + key);
+    return [];
+  }
+  const products = dedupeRecentProductContext(entry.products || []);
+  console.log('[RECENT PRODUCTS SOURCE] source=memory_cache count=' + products.length);
+  logRecentProductOptions(products);
+  return products;
+}
+
+function withRecentProductsMemory(result = {}, conversation = {}) {
+  const products = result.product_context_products || result.recent_products_data || [];
+  if (Array.isArray(products) && products.length > 0) saveRecentProductsMemory(conversation, products);
+  return result;
 }
 
 function getRecentProductStockContext(conversationHistory = []) {
@@ -3537,7 +3618,10 @@ function dedupeRecentProductContext(products = []) {
     .map((product, index) => ({ ...product, displayIndex: index + 1 }));
 }
 
-function getReliableRecentProductStockContext(conversationHistory = []) {
+function getReliableRecentProductStockContext(conversationHistory = [], conversation = {}) {
+  const memoryProducts = getRecentProductsMemory(conversation);
+  if (memoryProducts.length > 0) return memoryProducts;
+
   if (!Array.isArray(conversationHistory)) return [];
   const recentAi = conversationHistory
     .filter(item => item && (item.direction === 'out' || item.is_from_ai))
@@ -3564,7 +3648,7 @@ function getReliableRecentProductStockContext(conversationHistory = []) {
 
   const structuredProducts = dedupeRecentProductContext(structured);
   if (structuredProducts.length > 0) {
-    console.log('[RECENT PRODUCTS SOURCE] source=structured count=' + structuredProducts.length);
+    console.log('[RECENT PRODUCTS SOURCE] source=message_metadata count=' + structuredProducts.length);
     console.log('[RECENT PRODUCTS FILTERED] rejected_order_like=' + rejectedOrderLike + ' accepted_products=' + structuredProducts.length);
     logRecentProductOptions(structuredProducts);
     return structuredProducts;
@@ -3963,6 +4047,7 @@ function buildSiteContextSummaryResponse(siteContext) {
 
 async function buildOpenAIInputContent({ apiKey, message, media, config, conversationHistory, contact, conversation }) {
   const productContext = await buildProductContextForConfig(message, config, conversationHistory);
+  saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
   const siteContext = await buildSiteContextForConfig(message, config);
   const operationalContext = await buildOperationalContextForConfig(message, config, contact, conversation);
   const knowledgeContext = buildKnowledgeContextForConfig(config);
@@ -4154,6 +4239,7 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
 
 async function buildClaudeInputContent({ input, media, config, conversationHistory, contact, conversation }) {
   const productContext = await buildProductContextForConfig(input, config, conversationHistory);
+  saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
   const siteContext = await buildSiteContextForConfig(input, config);
   const operationalContext = await buildOperationalContextForConfig(input, config, contact, conversation);
   const knowledgeContext = buildKnowledgeContextForConfig(config);
@@ -4386,11 +4472,11 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     };
   }
 
-  const earlyStockFollowupIntent = isStockAvailabilityFollowUp(message)
-    ? buildStockFollowupIntentFromMessage(message, conversationHistory, 'early_before_product_lookup')
+  const earlyStockFollowupIntent = (isStockAvailabilityFollowUp(message) || (extractProductIndexReference(message) && getRecentProductsMemory(conversation).length > 0))
+    ? buildStockFollowupIntentFromMessage(message, conversationHistory, 'early_before_product_lookup', conversation)
     : null;
   if (earlyStockFollowupIntent) {
-    const earlyStockAnswer = buildRecentProductStockAnswer(earlyStockFollowupIntent, message, conversationHistory);
+    const earlyStockAnswer = buildRecentProductStockAnswer(earlyStockFollowupIntent, message, conversationHistory, conversation);
     if (earlyStockAnswer) {
       console.log('[FOLLOWUP DECISION] structured_recent_stock=true model=' + earlyStockAnswer.model);
       return {
@@ -4412,6 +4498,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
 
   if (!isWithinWorkingHours(config, config.timezone || 'America/Sao_Paulo')) {
     const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+    saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
     if (productContext.lookupAttempted) {
       const productCards = productContext.productCards || [];
       return {
@@ -4453,6 +4540,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   const dailyLimit = config.daily_limit === null || config.daily_limit === undefined ? 50 : Number(config.daily_limit);
   if (dailyLimit > 0 && todayUsage >= dailyLimit) {
     const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+    saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
     if (productContext.lookupAttempted) {
       const productCards = productContext.productCards || [];
       console.log('[AI] Limite diario atingido, usando busca deterministica do catalogo | cards: ' + productCards.length);
@@ -4498,7 +4586,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     conversationHistory,
     config: effectiveConfig
   });
-  customerIntent = coerceStockFollowupIntent(customerIntent, message, conversationHistory);
+  customerIntent = coerceStockFollowupIntent(customerIntent, message, conversationHistory, conversation);
 
   // Log seguro da intenção completa (sem token)
   console.log('[INTENT FULL] intent=' + customerIntent.intent
@@ -4537,7 +4625,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
 
   // ─── 2. Follow-up de estoque/tamanho contextual ──────────────────────────
   if (customerIntent.question_type === 'stock_by_size_color' || customerIntent.intent === 'product_stock_followup') {
-    const recentStockAnswer = buildRecentProductStockAnswer(customerIntent, message, conversationHistory);
+    const recentStockAnswer = buildRecentProductStockAnswer(customerIntent, message, conversationHistory, conversation);
     if (recentStockAnswer) {
       console.log('[FOLLOWUP DECISION] structured_recent_stock=true model=' + recentStockAnswer.model);
       return {
@@ -4562,7 +4650,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     // Redirecionar para product_search com a query extraída.
     const _stockFollowupOverrideQuery = getProductSearchPhrase(message);
     // Tentar responder com dados dos cards recentes antes de buscar
-    const _recentStockCtx = getReliableRecentProductStockContext(conversationHistory);
+    const _recentStockCtx = getReliableRecentProductStockContext(conversationHistory, conversation);
     if (!_stockFollowupOverrideQuery && _recentStockCtx.length > 0) {
       const requestedSizes = customerIntent.filters && customerIntent.filters.size
         ? String(customerIntent.filters.size).split(',').map(s => s.trim()).filter(Boolean)
@@ -4608,6 +4696,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       const _overrideQuery = customerIntent.search_query || _stockFollowupOverrideQuery;
       console.log('[PRODUCT CLEAN QUERY] "' + _overrideQuery + '" (override from product_stock_followup)');
       const _overrideContext = await buildProductContextForConfig(_overrideQuery, effectiveConfig, conversationHistory);
+      saveRecentProductsMemory(conversation, _overrideContext.product_context_products || _overrideContext.recent_products_data || []);
       if (_overrideContext.lookupAttempted) {
         const _overrideCards = _overrideContext.productCards || [];
         if (_overrideCards.length > 0 || _overrideContext.productsFound) {
@@ -4699,6 +4788,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       if (cleanQuery) {
         console.log('[PRODUCT CLEAN QUERY] "' + cleanQuery + '" (product_followup)');
         const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory);
+        saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
         if (productContext.lookupAttempted) {
           const productCards = productContext.productCards || [];
           if (productCards.length > 0 || productContext.productsFound) {
@@ -4804,6 +4894,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     console.log('[PRODUCT CLEAN QUERY] "' + cleanQuery + '"');
     if (cleanQuery) {
       const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory);
+      saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
       if (productContext.lookupAttempted) {
         const productCards = productContext.productCards || [];
         if (productCards.length > 0 || productContext.productsFound) {
@@ -4844,6 +4935,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           if (broadQuery && broadQuery !== cleanQuery) {
             console.log('[SEMANTIC DECISION] allProductsCollected=0 tentando busca ampliada com product_type="' + broadQuery + '"');
             const broadContext = await buildProductContextForConfig(broadQuery, effectiveConfig, conversationHistory);
+            saveRecentProductsMemory(conversation, broadContext.product_context_products || broadContext.recent_products_data || []);
             if (broadContext.allProductsCollected && broadContext.allProductsCollected.length > 0) {
               allProductsCollected = broadContext.allProductsCollected;
               console.log('[SEMANTIC DECISION] busca ampliada retornou ' + allProductsCollected.length + ' candidatos');
@@ -5011,6 +5103,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   const apiKey = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
   if (!isUsableProviderApiKey(provider, apiKey)) {
     const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+    saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
     if (productContext.lookupAttempted) {
       const productCards = productContext.productCards || [];
       console.log('[AI] API key invalida ou ausente, usando busca deterministica do catalogo | provider: ' + provider + ' | cards: ' + productCards.length);
@@ -5105,6 +5198,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     const apiKeyError = /incorrect api key|invalid api key|api key.*invalid|401/i.test(String(error.message || ''));
     if (apiKeyError) {
       const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+      saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
       const productCards = productContext.productCards || [];
       if (productContext.lookupAttempted) {
         console.log('[AI] API key rejeitada pelo provedor, usando busca deterministica do catalogo | cards: ' + productCards.length);
@@ -5157,6 +5251,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     }
 
     const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
+    saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
     const productCards = productContext.productCards || [];
     if (productContext.lookupAttempted) {
       console.log('[AI] Erro no provedor, usando busca deterministica do catalogo | erro: ' + error.message + ' | cards: ' + productCards.length);

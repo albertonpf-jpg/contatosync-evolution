@@ -2983,7 +2983,7 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
   const hasSize = extractRequestedSizes(message).length > 0;
   const productSearchPhrase = getProductSearchPhrase(message);
   const hasProductName = productSearchPhrase.length > 0;
-  const recentProducts = getRecentProductStockContext(conversationHistory);
+  const recentProducts = getReliableRecentProductStockContext(conversationHistory);
   // Guard: mensagem com tema/personagem/marca nunca é stock_followup
   const hasThemeOrBrand = /\b(princesa|princesas|personagem|personagens|disney|frozen|marvel|barbie|frozem|unicornio|unicornios|nike|adidas|tigor|kyly|brandili|fakini)\b/i.test(normalizeSearchText(message));
 
@@ -3193,7 +3193,7 @@ function isStockAvailabilityFollowUp(message = '') {
 }
 
 function buildStockFollowupIntentFromMessage(message = '', conversationHistory = [], reason = 'stock_followup') {
-  const recentProducts = getRecentProductStockContext(conversationHistory);
+  const recentProducts = getReliableRecentProductStockContext(conversationHistory);
   if (recentProducts.length === 0) return null;
   const requestedSizes = extractRequestedSizes(message);
   const colorTokens = getColorTokens(getSearchTokens(message));
@@ -3237,7 +3237,7 @@ function buildStockFollowupIntentFromMessage(message = '', conversationHistory =
 
 function coerceStockFollowupIntent(customerIntent = {}, message = '', conversationHistory = []) {
   if (!isStockAvailabilityFollowUp(message)) return customerIntent;
-  const recentProducts = getRecentProductStockContext(conversationHistory);
+  const recentProducts = getReliableRecentProductStockContext(conversationHistory);
   if (recentProducts.length === 0) return customerIntent;
   if (customerIntent.intent === 'product_stock_followup' || customerIntent.question_type === 'stock_by_size_color') {
     return {
@@ -3369,7 +3369,7 @@ function buildStockAnswerText(product, stockResult, filters = {}) {
 }
 
 function buildRecentProductStockAnswer(customerIntent = {}, message = '', conversationHistory = []) {
-  const recentProducts = getRecentProductStockContext(conversationHistory);
+  const recentProducts = getReliableRecentProductStockContext(conversationHistory);
   console.log('[RECENT PRODUCTS DATA] count=' + recentProducts.length);
   if (recentProducts.length === 0) return null;
 
@@ -3400,6 +3400,42 @@ function buildRecentProductStockAnswer(customerIntent = {}, message = '', conver
   };
 }
 
+function isOrderLikeRecentProductLine(value = '') {
+  const text = normalizeSearchText(value);
+  if (!text) return true;
+  return /\b(pedido|codigo interno|codigo|cliente|total|entrega|status|pagamento|rastreio|integracao|transportadora|sedex|pac|forma entrega|forma_entrega|despachado|separacao|separado|entregue)\b/i.test(text);
+}
+
+function hasProductLineSignal(value = '') {
+  const raw = String(value || '');
+  const text = normalizeSearchText(raw);
+  if (!text || isOrderLikeRecentProductLine(raw)) return false;
+  const hasProductWord = /\b(saia|short|vestido|conjunto|blusa|body|calca|macacao|jardineira|camiseta|cropped|tshirt|moletom|moleton|camisa|bermuda|jaqueta|casaco|manga|bone|pijama|regata|produto)\b/i.test(text);
+  const hasCardSignal = /🛍|produto\/\d+|#produto\d+|preco:|pre[cç]o:|tamanho:|cor:|estoque:|detalhes:/i.test(raw);
+  const hasProductSummary = /^encontrei\s+.+\s+na loja/i.test(raw) && !/\b(pedido|integracao)\b/i.test(text);
+  return hasProductWord || hasCardSignal || hasProductSummary;
+}
+
+function cleanRecentProductTitleLine(value = '') {
+  return String(value || '')
+    .replace(/^🛍️?\s*/u, '')
+    .replace(/^ðŸ›ï¸?\s*/u, '')
+    .replace(/^\u2022\s*/, '')
+    .replace(/^â€¢\s*/, '')
+    .replace(/^\d+\.\s*/, '')
+    .replace(/\s*-\s*foto\s*\d+$/i, '')
+    .replace(/\s*[-—â€”]\s*R\$\s*[\d.,]+$/i, '')
+    .replace(/^encontrei\s+/i, '')
+    .replace(/\s+na loja\.?$/i, '')
+    .trim();
+}
+
+function logRecentProductOptions(products = []) {
+  products.slice(0, 8).forEach(product => {
+    console.log('[RECENT PRODUCT OPTION] index=' + product.displayIndex + ' title="' + String(product.title || '').replace(/"/g, '\\"') + '"');
+  });
+}
+
 function getRecentProductStockContext(conversationHistory = []) {
   if (!Array.isArray(conversationHistory)) return [];
   const results = [];
@@ -3416,7 +3452,9 @@ function getRecentProductStockContext(conversationHistory = []) {
       || []
     );
     for (const product of structuredProducts) {
-      results.push(product);
+      if (product.title && !isOrderLikeRecentProductLine(product.title)) {
+        results.push(product);
+      }
     }
 
     const content = String(msg.content || '');
@@ -3484,6 +3522,114 @@ function getRecentProductStockContext(conversationHistory = []) {
     variationStocks: [],
     rawProduct: null
   }));
+}
+
+function dedupeRecentProductContext(products = []) {
+  const seen = new Set();
+  return products
+    .filter(product => product && product.title && !isOrderLikeRecentProductLine(product.title))
+    .filter(product => {
+      const key = normalizeSearchText(`${product.id || ''}|${product.title || ''}`);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((product, index) => ({ ...product, displayIndex: index + 1 }));
+}
+
+function getReliableRecentProductStockContext(conversationHistory = []) {
+  if (!Array.isArray(conversationHistory)) return [];
+  const recentAi = conversationHistory
+    .filter(item => item && (item.direction === 'out' || item.is_from_ai))
+    .slice(-6);
+  let rejectedOrderLike = 0;
+  const structured = [];
+
+  for (const msg of recentAi) {
+    const products = normalizeRecentProductDataList(
+      msg.product_context_products
+      || msg.recent_products_data
+      || msg.metadata?.product_context_products
+      || msg.metadata?.recent_products_data
+      || []
+    );
+    for (const product of products) {
+      if (!product.title || isOrderLikeRecentProductLine(product.title)) {
+        rejectedOrderLike += 1;
+        continue;
+      }
+      structured.push(product);
+    }
+  }
+
+  const structuredProducts = dedupeRecentProductContext(structured);
+  if (structuredProducts.length > 0) {
+    console.log('[RECENT PRODUCTS SOURCE] source=structured count=' + structuredProducts.length);
+    console.log('[RECENT PRODUCTS FILTERED] rejected_order_like=' + rejectedOrderLike + ' accepted_products=' + structuredProducts.length);
+    logRecentProductOptions(structuredProducts);
+    return structuredProducts;
+  }
+
+  const textProducts = [];
+  for (const msg of recentAi) {
+    const blocks = String(msg.content || '').split(/\n\n+/);
+    for (const block of blocks) {
+      const lines = block.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      if (lines.length === 0) continue;
+      const blockText = [lines[0], ...lines.slice(1, 5)].join('\n');
+      const title = cleanRecentProductTitleLine(lines[0]);
+      if (isOrderLikeRecentProductLine(blockText) || isOrderLikeRecentProductLine(title)) {
+        rejectedOrderLike += 1;
+        continue;
+      }
+      if (!hasProductLineSignal(blockText)) continue;
+      let sizes = [];
+      let stock = null;
+      for (const line of lines.slice(1)) {
+        const norm = line.toLowerCase();
+        const sizesMatch = norm.match(/tamanhos?\s*(?:com\s*estoque)?:\s*([\d, pgmGXx]+)/i);
+        if (sizesMatch) sizes = sizesMatch[1].split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+        const stockMatch = norm.match(/estoque(?:\s*total)?:\s*(\d+)/i);
+        if (stockMatch) stock = Number(stockMatch[1]);
+      }
+      textProducts.push({
+        displayIndex: textProducts.length + 1,
+        id: '',
+        title,
+        price: '',
+        url: '',
+        stock,
+        sizes,
+        availableSizes: sizes,
+        colors: [],
+        variations: sizes,
+        variationStocks: [],
+        rawProduct: null
+      });
+    }
+  }
+
+  const titleFallback = textProducts.length > 0
+    ? []
+    : getRecentlySentProductTitles(conversationHistory).map((title, index) => ({
+        displayIndex: index + 1,
+        id: '',
+        title,
+        price: '',
+        url: '',
+        stock: null,
+        sizes: [],
+        availableSizes: [],
+        colors: [],
+        variations: [],
+        variationStocks: [],
+        rawProduct: null
+      }));
+  const fallbackProducts = dedupeRecentProductContext(textProducts.length > 0 ? textProducts : titleFallback);
+  console.log('[RECENT PRODUCTS SOURCE] source=text_fallback count=' + fallbackProducts.length);
+  console.log('[RECENT PRODUCTS FILTERED] rejected_order_like=' + rejectedOrderLike + ' accepted_products=' + fallbackProducts.length);
+  logRecentProductOptions(fallbackProducts);
+  return fallbackProducts;
 }
 
 function getRecentlySentProductTitles(conversationHistory = []) {
@@ -4416,7 +4562,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     // Redirecionar para product_search com a query extraída.
     const _stockFollowupOverrideQuery = getProductSearchPhrase(message);
     // Tentar responder com dados dos cards recentes antes de buscar
-    const _recentStockCtx = getRecentProductStockContext(conversationHistory);
+    const _recentStockCtx = getReliableRecentProductStockContext(conversationHistory);
     if (!_stockFollowupOverrideQuery && _recentStockCtx.length > 0) {
       const requestedSizes = customerIntent.filters && customerIntent.filters.size
         ? String(customerIntent.filters.size).split(',').map(s => s.trim()).filter(Boolean)

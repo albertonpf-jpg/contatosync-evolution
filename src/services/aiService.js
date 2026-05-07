@@ -2161,7 +2161,15 @@ async function fetchFacilZapProductsFromHtml(html, pageUrl, message) {
 
 async function fetchProductContext(message, sourceUrls = [], options = {}) {
   const sources = expandProductSourcesForSearch(message, normalizeProductSources([message, ...sourceUrls]));
-  if (sources.length === 0) return { contextText: '', imageUrls: [], productCards: [] };
+  if (sources.length === 0) {
+    return {
+      contextText: '',
+      imageUrls: [],
+      productCards: [],
+      product_context_products: [],
+      recent_products_data: []
+    };
+  }
 
   const products = [];
   const imageUrls = [];
@@ -2245,6 +2253,8 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
       contextText: '',
       imageUrls: [],
       productCards: [],
+      product_context_products: [],
+      recent_products_data: [],
       productsFound: false,
       allProductsCollected: products.length > 0 ? products : []
     };
@@ -2263,8 +2273,10 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
     product.images?.length ? `Imagens disponiveis para envio: ${product.images.slice(0, 5).length}` : ''
   ].filter(Boolean).join('\n')).join('\n\n');
 
+  const displayedProducts = relevantProducts.slice(0, 6);
+  const productContextProducts = displayedProducts.map((product, index) => buildProductContextProduct(product, index + 1));
   const productCards = [];
-  for (const product of relevantProducts.slice(0, 6)) {
+  for (const product of displayedProducts) {
     const images = (product.images || []).slice(0, 2);
     for (let index = 0; index < images.length; index += 1) {
       const image = images[index];
@@ -2282,6 +2294,8 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
     contextText: `Informacoes coletadas da loja virtual:\n${contextText}`,
     imageUrls: relevantProducts.flatMap(product => product.images || []).slice(0, 5),
     productCards: productCards.slice(0, 10),
+    product_context_products: productContextProducts,
+    recent_products_data: productContextProducts,
     productsFound: relevantProducts.length > 0,
     lookupAttempted: true,
     allProductsCollected: products  // todos os coletados, para fallback semântico de tema
@@ -3066,6 +3080,221 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
  * "Tamanho: 6" / "Estoque: 2" / "Tamanhos com estoque: 4, 6, 8"
  * Retorna array de { title, sizes, stock } para usar em follow-up de estoque.
  */
+function buildCompactRawProduct(product = {}) {
+  return {
+    id: product.id || '',
+    title: product.title || '',
+    price: product.price || '',
+    url: product.url || '',
+    stock: getProductAvailableStock(product),
+    category: product.category || product.categoryName || product.categoria_nome || '',
+    description: product.description ? String(product.description).slice(0, 300) : '',
+    sizes: Array.isArray(product._sizes) ? product._sizes : extractProductSizes(product),
+    availableSizes: getAvailableProductSizes(product),
+    colors: getAvailableProductVariationLabels(product).length
+      ? getAvailableProductVariationLabels(product)
+      : getDisplayColorVariations(product),
+    variations: Array.isArray(product.variations) ? product.variations.slice(0, 30) : [],
+    variationStocks: getProductVariationStockEntries(product).slice(0, 60)
+  };
+}
+
+function buildProductContextProduct(product = {}, displayIndex = 1) {
+  const sizes = Array.isArray(product._sizes) ? product._sizes : extractProductSizes(product);
+  const availableSizes = getAvailableProductSizes(product);
+  const colors = getAvailableProductVariationLabels(product).length
+    ? getAvailableProductVariationLabels(product)
+    : getDisplayColorVariations(product);
+  return {
+    displayIndex,
+    id: product.id || '',
+    title: product.title || '',
+    price: product.price || '',
+    url: product.url || '',
+    stock: getProductAvailableStock(product),
+    sizes,
+    availableSizes,
+    colors,
+    variations: Array.isArray(product.variations) ? product.variations : [],
+    variationStocks: getProductVariationStockEntries(product),
+    rawProduct: buildCompactRawProduct(product)
+  };
+}
+
+function normalizeRecentProductDataList(value = []) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((product, index) => {
+      if (!product || typeof product !== 'object') return null;
+      return {
+        displayIndex: Number(product.displayIndex || product.display_index || index + 1),
+        id: product.id || '',
+        title: product.title || '',
+        price: product.price || '',
+        url: product.url || '',
+        stock: getStockNumber(firstValue(product.stock, product.total_estoque, product.quantity, null)),
+        sizes: Array.isArray(product.sizes) ? product.sizes.map(String).filter(Boolean) : [],
+        availableSizes: Array.isArray(product.availableSizes) ? product.availableSizes.map(String).filter(Boolean) : [],
+        colors: Array.isArray(product.colors) ? product.colors.map(String).filter(Boolean) : [],
+        variations: Array.isArray(product.variations) ? product.variations.map(String).filter(Boolean) : [],
+        variationStocks: getProductVariationStockEntries(product).length
+          ? getProductVariationStockEntries(product)
+          : (Array.isArray(product.variationStocks) ? product.variationStocks : []),
+        rawProduct: product.rawProduct || null
+      };
+    })
+    .filter(Boolean);
+}
+
+function filtersFromCustomerIntent(customerIntent = {}, message = '') {
+  const entities = customerIntent.entities || {};
+  const filters = customerIntent.filters || {};
+  const requestedSizes = extractRequestedSizes(message);
+  const colorTokens = getColorTokens(getSearchTokens(message));
+  return {
+    size: String(entities.size || filters.size || requestedSizes[0] || '').trim(),
+    color: String(entities.color || filters.color || colorTokens[0] || '').trim(),
+    variation: String(entities.variation || filters.variation || '').trim()
+  };
+}
+
+function labelMatchesStockFilters(label, filters = {}) {
+  const text = normalizeSearchText(label);
+  if (!text) return { matchedAll: false, matchedAny: false };
+  const wanted = [filters.size, filters.color, filters.variation]
+    .map(normalizeSearchText)
+    .filter(Boolean);
+  if (wanted.length === 0) return { matchedAll: true, matchedAny: true };
+  const matches = wanted.map(value => value.split(' ').filter(Boolean).every(token => includesToken(text, token)));
+  return {
+    matchedAll: matches.every(Boolean),
+    matchedAny: matches.some(Boolean)
+  };
+}
+
+function getStockForFilters(product = {}, filters = {}) {
+  const normalizedFilters = {
+    size: normalizeSizeToken(filters.size) || normalizeSearchText(filters.size),
+    color: normalizeSearchText(filters.color),
+    variation: normalizeSearchText(filters.variation)
+  };
+  const hasSpecificFilter = Boolean(normalizedFilters.size || normalizedFilters.color || normalizedFilters.variation);
+  const variationEntries = getProductVariationStockEntries(product);
+
+  for (const entry of variationEntries) {
+    const match = labelMatchesStockFilters(entry.label, normalizedFilters);
+    if (match.matchedAll && entry.stock !== null && entry.stock !== undefined) {
+      return { quantity: Number(entry.stock), confidence: 'exact', matchedVariation: entry.label || '', messageHint: '' };
+    }
+  }
+
+  if (hasSpecificFilter) {
+    const partialEntry = variationEntries.find(entry => {
+      const match = labelMatchesStockFilters(entry.label, normalizedFilters);
+      return match.matchedAny && entry.stock !== null && entry.stock !== undefined;
+    });
+    if (partialEntry) {
+      return { quantity: Number(partialEntry.stock), confidence: 'partial', matchedVariation: partialEntry.label || '', messageHint: '' };
+    }
+  }
+
+  const rawProducts = [product.rawProduct, product.raw_product].filter(Boolean);
+  for (const rawProduct of rawProducts) {
+    const rawEntries = [
+      rawProduct.variacoes,
+      rawProduct.variations,
+      rawProduct.tamanhos,
+      rawProduct.sizes,
+      rawProduct.variationStocks
+    ].flatMap(getVariationStockEntries);
+    for (const entry of rawEntries) {
+      const match = labelMatchesStockFilters(entry.label, normalizedFilters);
+      if (match.matchedAll && entry.stock !== null && entry.stock !== undefined) {
+        return { quantity: Number(entry.stock), confidence: 'exact', matchedVariation: entry.label || '', messageHint: '' };
+      }
+    }
+  }
+
+  const totalStock = getProductAvailableStock(product);
+  const availableSizes = Array.isArray(product.availableSizes) && product.availableSizes.length
+    ? product.availableSizes
+    : getAvailableProductSizes(product);
+  if (normalizedFilters.size && availableSizes.map(normalizeSizeToken).includes(normalizedFilters.size) && totalStock !== null && totalStock !== undefined) {
+    return { quantity: Number(totalStock), confidence: 'partial', matchedVariation: normalizedFilters.size, messageHint: '' };
+  }
+
+  const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : extractProductSizes(product);
+  if (normalizedFilters.size && sizes.map(normalizeSizeToken).includes(normalizedFilters.size) && totalStock !== null && totalStock !== undefined) {
+    return { quantity: Number(totalStock), confidence: 'partial', matchedVariation: normalizedFilters.size, messageHint: '' };
+  }
+
+  if (totalStock !== null && totalStock !== undefined) {
+    return { quantity: Number(totalStock), confidence: hasSpecificFilter ? 'total_only' : 'exact', matchedVariation: '', messageHint: '' };
+  }
+
+  return { quantity: null, confidence: 'unknown', matchedVariation: '', messageHint: '' };
+}
+
+function extractProductIndexReference(message = '') {
+  const text = normalizeSearchText(message);
+  const directNumber = text.match(/\b(?:opcao|produto|modelo|item)\s*(\d{1,2})\b/)?.[1];
+  if (directNumber) return Number(directNumber);
+  const map = { primeiro: 1, primeira: 1, segundo: 2, segunda: 2, terceiro: 3, terceira: 3, quarto: 4, quarta: 4, quinto: 5, quinta: 5 };
+  for (const [word, index] of Object.entries(map)) {
+    if (new RegExp(`\\b${word}\\b`, 'i').test(text)) return index;
+  }
+  return null;
+}
+
+function buildStockAnswerText(product, stockResult, filters = {}) {
+  const title = product?.title ? ` desse modelo (${product.title})` : ' desse modelo';
+  const sizeText = filters.size ? ` no tamanho ${filters.size}` : '';
+  const colorText = filters.color ? ` ${filters.color}` : '';
+  if (stockResult.confidence === 'exact') {
+    return `Tenho ${stockResult.quantity} peca${Number(stockResult.quantity) === 1 ? '' : 's'}${title}${sizeText}${colorText}.`;
+  }
+  if (stockResult.confidence === 'partial') {
+    const missingColor = filters.color ? ' por cor' : '';
+    return `Esse modelo aparece${sizeText ? ` com tamanho ${filters.size}` : ''} e estoque ${stockResult.quantity}, mas nao encontrei a separacao exata${missingColor}.`;
+  }
+  if (stockResult.confidence === 'total_only') {
+    return `Esse produto aparece com estoque total ${stockResult.quantity}. Nao encontrei a quantidade separada por tamanho/cor.`;
+  }
+  return filters.size || filters.color
+    ? 'Nao encontrei a quantidade exata desse tamanho/cor no catalogo.'
+    : 'Nao encontrei a quantidade exata desse produto no catalogo.';
+}
+
+function buildRecentProductStockAnswer(customerIntent = {}, message = '', conversationHistory = []) {
+  const recentProducts = getRecentProductStockContext(conversationHistory);
+  if (recentProducts.length === 0) return null;
+
+  const selectedIndex = customerIntent.selected_product_index !== null && customerIntent.selected_product_index !== undefined
+    ? Number(customerIntent.selected_product_index)
+    : extractProductIndexReference(message);
+  const product = selectedIndex
+    ? recentProducts.find(item => Number(item.displayIndex) === selectedIndex)
+    : recentProducts.length === 1
+      ? recentProducts[0]
+      : null;
+
+  if (!product) {
+    return {
+      response: buildProductSelectionList(recentProducts.map(item => item.title).filter(Boolean)),
+      model: 'recent_product_selection'
+    };
+  }
+
+  const filters = filtersFromCustomerIntent(customerIntent, message);
+  const stockResult = getStockForFilters(product, filters);
+  return {
+    response: buildStockAnswerText(product, stockResult, filters),
+    model: 'recent_product_stock',
+    product,
+    stockResult
+  };
+}
+
 function getRecentProductStockContext(conversationHistory = []) {
   if (!Array.isArray(conversationHistory)) return [];
   const results = [];
@@ -3074,6 +3303,17 @@ function getRecentProductStockContext(conversationHistory = []) {
     .slice(-6);
 
   for (const msg of recentAi) {
+    const structuredProducts = normalizeRecentProductDataList(
+      msg.product_context_products
+      || msg.recent_products_data
+      || msg.metadata?.product_context_products
+      || msg.metadata?.recent_products_data
+      || []
+    );
+    for (const product of structuredProducts) {
+      results.push(product);
+    }
+
     const content = String(msg.content || '');
     // Detectar bloco de card: título + dados
     const blocks = content.split(/\n\n+/);
@@ -3098,11 +3338,31 @@ function getRecentProductStockContext(conversationHistory = []) {
         if (stockMatch) stock = Number(stockMatch[1]);
       }
       if (sizes.length > 0 || stock !== null) {
-        results.push({ title: titleLine, sizes, stock });
+        const displayIndex = results.length + 1;
+        results.push({
+          displayIndex,
+          id: '',
+          title: titleLine,
+          price: '',
+          url: '',
+          stock,
+          sizes,
+          availableSizes: sizes,
+          colors: [],
+          variations: sizes,
+          variationStocks: [],
+          rawProduct: null
+        });
       }
     }
   }
-  return results;
+  const seen = new Set();
+  return results.filter(product => {
+    const key = normalizeSearchText(`${product.displayIndex}|${product.id}|${product.title}`);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function getRecentlySentProductTitles(conversationHistory = []) {
@@ -3403,6 +3663,7 @@ function buildProductInputResult(extra, productContext) {
     ...extra,
     productImages: productContext.imageUrls || [],
     productCards: productContext.productCards || [],
+    productContextProducts: productContext.product_context_products || productContext.recent_products_data || [],
     productLookupAttempted: productContext.lookupAttempted === true,
     productSearchText: productContext.searchText || '',
     productsFound: productContext.productsFound === true || Boolean(productContext.contextText)
@@ -3594,6 +3855,8 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
         processing_time_ms: Date.now() - startedAt,
         product_images: builtInput.productImages || [],
         product_cards: builtInput.productCards || [],
+        product_context_products: builtInput.productContextProducts || [],
+        recent_products_data: builtInput.productContextProducts || [],
         product_lookup_attempted: builtInput.productLookupAttempted === true,
         product_search_text: builtInput.productSearchText || '',
         products_found: builtInput.productsFound === true,
@@ -3613,6 +3876,8 @@ async function callOpenAI({ apiKey, config, input, systemPrompt, media, conversa
     processing_time_ms: Date.now() - startedAt,
     product_images: builtInput.productImages || [],
     product_cards: builtInput.productCards || [],
+    product_context_products: builtInput.productContextProducts || [],
+    recent_products_data: builtInput.productContextProducts || [],
     product_lookup_attempted: builtInput.productLookupAttempted === true,
     product_search_text: builtInput.productSearchText || '',
     products_found: builtInput.productsFound === true,
@@ -3639,6 +3904,7 @@ async function buildClaudeInputContent({ input, media, config, conversationHisto
     inputText: parts.filter(Boolean).join('\n\n'),
     productImages: productContext.imageUrls || [],
     productCards: productContext.productCards || [],
+    productContextProducts: productContext.product_context_products || productContext.recent_products_data || [],
     productLookupAttempted: productContext.lookupAttempted === true,
     productSearchText: productContext.searchText || '',
     productsFound: productContext.productsFound === true || Boolean(productContext.contextText)
@@ -3711,6 +3977,8 @@ async function callClaude({ apiKey, config, input, systemPrompt, media, conversa
     processing_time_ms: Date.now() - startedAt,
     product_images: builtInput.productImages || [],
     product_cards: builtInput.productCards || [],
+    product_context_products: builtInput.productContextProducts || [],
+    recent_products_data: builtInput.productContextProducts || [],
     product_lookup_attempted: builtInput.productLookupAttempted === true,
     product_search_text: builtInput.productSearchText || '',
     products_found: builtInput.productsFound === true
@@ -3976,6 +4244,27 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   }
 
   // ─── 2. Follow-up de estoque/tamanho contextual ──────────────────────────
+  if (customerIntent.question_type === 'stock_by_size_color' || customerIntent.intent === 'product_stock_followup') {
+    const recentStockAnswer = buildRecentProductStockAnswer(customerIntent, message, conversationHistory);
+    if (recentStockAnswer) {
+      console.log('[FOLLOWUP DECISION] structured_recent_stock=true model=' + recentStockAnswer.model);
+      return {
+        skipped: false,
+        response: recentStockAnswer.response,
+        provider: 'system',
+        model: recentStockAnswer.model,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: [],
+        product_lookup_attempted: false,
+        product_search_text: ''
+      };
+    }
+  }
+
   if (customerIntent.intent === 'product_stock_followup') {
     // Guard: se a mensagem contém produto explícito, o LLM classificou errado.
     // Redirecionar para product_search com a query extraída.

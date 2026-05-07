@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 const RECENT_PRODUCTS_MEMORY_TTL_MS = 30 * 60 * 1000;
 const recentProductsByConversation = new Map();
 const pendingStockFiltersByConversation = new Map();
+const selectedProductByConversation = new Map();
 
 const DEFAULT_INTEGRATION_CONFIG = {
   facilzap: {
@@ -3196,9 +3197,16 @@ function isStockAvailabilityFollowUp(message = '') {
   return asksQuantity || shortSizeFollowup || (hasSize && asksAvailability) || (hasColor && asksAvailability) || (referencesRecent && asksAvailability);
 }
 
+function isSelectedProductFollowUp(message = '') {
+  const text = normalizeSearchText(message);
+  if (!text) return false;
+  return /\b(outros tamanhos|outro tamanho|demais tamanhos|cada tamanho|por tamanho|todos tamanhos|todos os tamanhos|outras cores|outra cor|cores|desse|dessa|desse modelo|dessa opcao)\b/i.test(text);
+}
+
 function buildStockFollowupIntentFromMessage(message = '', conversationHistory = [], reason = 'stock_followup', conversation = {}) {
   const recentProducts = getReliableRecentProductStockContext(conversationHistory, conversation);
-  if (recentProducts.length === 0) return null;
+  const selectedMemory = getSelectedProductMemory(conversation);
+  if (recentProducts.length === 0 && !selectedMemory) return null;
   const requestedSizes = extractRequestedSizes(message);
   const colorTokens = getColorTokens(getSearchTokens(message));
   const selectedIndex = extractProductIndexReference(message);
@@ -3220,8 +3228,8 @@ function buildStockFollowupIntentFromMessage(message = '', conversationHistory =
     tracking_id: '',
     reference: 'recent_products',
     selected_product_index: selectedIndex,
-    needs_clarification: !selectedIndex && recentProducts.length > 1,
-    clarification_question: !selectedIndex && recentProducts.length > 1 ? 'Voce quer saber de qual opcao?' : '',
+    needs_clarification: !selectedMemory && !selectedIndex && recentProducts.length > 1,
+    clarification_question: !selectedMemory && !selectedIndex && recentProducts.length > 1 ? 'Voce quer saber de qual opcao?' : '',
     question_type: 'stock_by_size_color',
     sources_needed: ['recent_products'],
     entities: {
@@ -3407,10 +3415,85 @@ function buildStockAnswerText(product, stockResult, filters = {}) {
     : 'Nao encontrei a quantidade exata desse produto.';
 }
 
+function getSelectedProductQuestionType(message = '', filters = {}) {
+  const text = normalizeSearchText(message);
+  if (/\b(cada tamanho|por tamanho|todos tamanhos|todos os tamanhos|quantos de cada tamanho|quantas de cada tamanho)\b/i.test(text)) return 'all_sizes';
+  if (/\b(outros tamanhos|outro tamanho|demais tamanhos)\b/i.test(text)) return 'other_sizes';
+  if (/\b(cor|cores|outras cores|outra cor)\b/i.test(text)) return 'colors';
+  if (filters.size) return 'stock_by_size';
+  return 'stock_total';
+}
+
+function formatList(values = []) {
+  return [...new Set((Array.isArray(values) ? values : []).map(String).map(item => item.trim()).filter(Boolean))].join(', ');
+}
+
+function answerSelectedProductQuestion(message = '', selectedProduct = {}, filters = {}) {
+  const questionType = getSelectedProductQuestionType(message, filters);
+  const totalStock = getStockNumber(firstValue(selectedProduct.stock, selectedProduct.total_estoque, selectedProduct.quantity, selectedProduct.rawProduct?.stock, null));
+  const sizes = (Array.isArray(selectedProduct.availableSizes) && selectedProduct.availableSizes.length)
+    ? selectedProduct.availableSizes
+    : (Array.isArray(selectedProduct.sizes) ? selectedProduct.sizes : []);
+  const colors = Array.isArray(selectedProduct.colors) ? selectedProduct.colors : [];
+  const variationEntries = getProductVariationStockEntries(selectedProduct);
+  const sizeStockMap = new Map();
+  variationEntries
+    .map(entry => {
+      const size = normalizeSearchText(entry.label).match(/\b(\d{1,2}|pp|p|m|g|gg|xg|xgg)\b/i)?.[1] || '';
+      return size && entry.stock !== null && entry.stock !== undefined ? { size: normalizeSizeToken(size) || size, stock: Number(entry.stock) } : null;
+    })
+    .filter(Boolean)
+    .filter(entry => Number.isFinite(entry.stock))
+    .forEach(entry => {
+      sizeStockMap.set(entry.size, (sizeStockMap.get(entry.size) || 0) + entry.stock);
+    });
+  const sizeStockEntries = Array.from(sizeStockMap.entries()).map(([size, stock]) => ({ size, stock }));
+
+  if (questionType === 'all_sizes' || questionType === 'other_sizes') {
+    if (sizeStockEntries.length > 0) {
+      const lines = sizeStockEntries.map(entry => `Tamanho ${entry.size}: ${entry.stock} peca${entry.stock === 1 ? '' : 's'}`);
+      return {
+        response: `Desse modelo encontrei:\n${lines.join('\n')}`,
+        questionType,
+        confidence: 'exact'
+      };
+    }
+    if (sizes.length > 0 && totalStock !== null && totalStock !== undefined) {
+      return {
+        response: `Esse modelo aparece nos tamanhos ${formatList(sizes)}, com estoque total ${totalStock}. Nao encontrei a quantidade separada por cada tamanho.`,
+        questionType,
+        confidence: 'total_only'
+      };
+    }
+    return {
+      response: 'Nao encontrei a quantidade separada por tamanho para esse produto.',
+      questionType,
+      confidence: 'unknown'
+    };
+  }
+
+  if (questionType === 'colors') {
+    return {
+      response: colors.length > 0
+        ? `Esse modelo aparece nas cores ${formatList(colors)}.`
+        : 'Nao encontrei as cores disponiveis desse produto.',
+      questionType,
+      confidence: colors.length > 0 ? 'partial' : 'unknown'
+    };
+  }
+
+  const stockResult = getStockForFilters(selectedProduct, filters);
+  return {
+    response: buildStockAnswerText(selectedProduct, stockResult, filters),
+    questionType,
+    confidence: stockResult.confidence,
+    stockResult
+  };
+}
+
 function buildRecentProductStockAnswer(customerIntent = {}, message = '', conversationHistory = [], conversation = {}) {
   const recentProducts = getReliableRecentProductStockContext(conversationHistory, conversation);
   console.log('[RECENT PRODUCTS DATA] count=' + recentProducts.length);
-  if (recentProducts.length === 0) return null;
 
   const selectedIndex = customerIntent.selected_product_index !== null && customerIntent.selected_product_index !== undefined
     ? Number(customerIntent.selected_product_index)
@@ -3420,6 +3503,25 @@ function buildRecentProductStockAnswer(customerIntent = {}, message = '', conver
   if (!filters.size && pendingFilters.size) filters = { ...filters, size: pendingFilters.size };
   if (!filters.color && pendingFilters.color) filters = { ...filters, color: pendingFilters.color };
   if (!filters.variation && pendingFilters.variation) filters = { ...filters, variation: pendingFilters.variation };
+  const selectedMemory = getSelectedProductMemory(conversation);
+  if (selectedMemory && !selectedIndex) {
+    if (!filters.size && selectedMemory.lastFilters?.size) filters = { ...filters, size: selectedMemory.lastFilters.size };
+    if (!filters.color && selectedMemory.lastFilters?.color) filters = { ...filters, color: selectedMemory.lastFilters.color };
+    const selectedAnswer = answerSelectedProductQuestion(message, selectedMemory.product, filters);
+    console.log('[SELECTED PRODUCT ANSWER] question_type=' + selectedAnswer.questionType + ' confidence=' + selectedAnswer.confidence);
+    if (selectedAnswer.stockResult) {
+      console.log('[STOCK FILTER RESULT] confidence=' + selectedAnswer.stockResult.confidence + ' quantity=' + (selectedAnswer.stockResult.quantity === null || selectedAnswer.stockResult.quantity === undefined ? '' : selectedAnswer.stockResult.quantity) + ' reason=' + (selectedAnswer.stockResult.reason || ''));
+    }
+    return {
+      response: selectedAnswer.response,
+      model: 'selected_product_stock',
+      product: selectedMemory.product,
+      stockResult: selectedAnswer.stockResult || { confidence: selectedAnswer.confidence }
+    };
+  }
+
+  if (recentProducts.length === 0) return null;
+
   const product = selectedIndex
     ? recentProducts.find(item => Number(item.displayIndex) === selectedIndex)
     : recentProducts.length === 1
@@ -3431,6 +3533,21 @@ function buildRecentProductStockAnswer(customerIntent = {}, message = '', conver
     return {
       response: buildProductSelectionList(recentProducts.map(item => item.title).filter(Boolean)),
       model: 'recent_product_selection'
+    };
+  }
+
+  saveSelectedProductMemory(conversation, product, selectedIndex || product.displayIndex || null, filters);
+  const selectedAnswer = answerSelectedProductQuestion(message, product, filters);
+  if (selectedAnswer.questionType !== 'stock_total' || !filters.size) {
+    console.log('[SELECTED PRODUCT ANSWER] question_type=' + selectedAnswer.questionType + ' confidence=' + selectedAnswer.confidence);
+    if (selectedAnswer.stockResult) {
+      console.log('[STOCK FILTER RESULT] confidence=' + selectedAnswer.stockResult.confidence + ' quantity=' + (selectedAnswer.stockResult.quantity === null || selectedAnswer.stockResult.quantity === undefined ? '' : selectedAnswer.stockResult.quantity) + ' reason=' + (selectedAnswer.stockResult.reason || ''));
+    }
+    return {
+      response: selectedAnswer.response,
+      model: 'selected_product_stock',
+      product,
+      stockResult: selectedAnswer.stockResult || { confidence: selectedAnswer.confidence }
     };
   }
 
@@ -3508,6 +3625,39 @@ function getPendingStockFilters(conversation = {}) {
     return {};
   }
   return entry.filters || {};
+}
+
+function saveSelectedProductMemory(conversation = {}, product = {}, selectedProductIndex = null, filters = {}) {
+  const key = getConversationMemoryKey(conversation);
+  if (!key || !product?.title) return;
+  selectedProductByConversation.set(key, {
+    product,
+    selectedProductIndex,
+    selectedAt: Date.now(),
+    ttlMs: RECENT_PRODUCTS_MEMORY_TTL_MS,
+    lastFilters: {
+      size: String(filters.size || '').trim(),
+      color: String(filters.color || '').trim(),
+      variation: String(filters.variation || '').trim()
+    }
+  });
+  console.log('[SELECTED PRODUCT SAVE] conv=' + key + ' index=' + (selectedProductIndex || '') + ' title="' + String(product.title || '').replace(/"/g, '\\"') + '"');
+}
+
+function getSelectedProductMemory(conversation = {}) {
+  const key = getConversationMemoryKey(conversation);
+  if (!key) return null;
+  const entry = selectedProductByConversation.get(key);
+  if (!entry) return null;
+  if (Date.now() - Number(entry.selectedAt || 0) > Number(entry.ttlMs || RECENT_PRODUCTS_MEMORY_TTL_MS)) {
+    selectedProductByConversation.delete(key);
+    return null;
+  }
+  if (entry.product?.title) {
+    console.log('[SELECTED PRODUCT SOURCE] source=selected_cache title="' + String(entry.product.title || '').replace(/"/g, '\\"') + '"');
+    return entry;
+  }
+  return null;
 }
 
 function saveRecentProductsMemory(conversation = {}, products = []) {
@@ -4506,7 +4656,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     };
   }
 
-  const earlyStockFollowupIntent = (isStockAvailabilityFollowUp(message) || (extractProductIndexReference(message) && getRecentProductsMemory(conversation).length > 0))
+  const hasSelectedProductMemory = Boolean(getSelectedProductMemory(conversation));
+  const earlyStockFollowupIntent = (isStockAvailabilityFollowUp(message) || (hasSelectedProductMemory && isSelectedProductFollowUp(message)) || (extractProductIndexReference(message) && getRecentProductsMemory(conversation).length > 0))
     ? buildStockFollowupIntentFromMessage(message, conversationHistory, 'early_before_product_lookup', conversation)
     : null;
   if (earlyStockFollowupIntent) {

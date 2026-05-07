@@ -616,7 +616,7 @@ function buildProductIntegrationSources(integration) {
 
 function getProductSearchPhrase(message) {
   const tokens = getSpecificProductTokens(getSearchTokens(message))
-    .filter(token => !['tem', 'vende', 'vender', 'quero', 'queria', 'procuro', 'preciso', 'fotos', 'foto', 'opcoes', 'opcao'].includes(token));
+    .filter(token => !['tem', 'vende', 'vender', 'quero', 'queria', 'procuro', 'preciso', 'fotos', 'foto', 'opcoes', 'opcao', 'quantas', 'quantos', 'quanto', 'quanta', 'peca', 'pecas', 'estoque', 'disponivel', 'disponiveis'].includes(token));
   return tokens.slice(0, 4).join(' ');
 }
 
@@ -1119,7 +1119,16 @@ function getSearchTokens(value) {
       'opcao',
       'opcoes',
       'modelo',
-      'modelos'
+      'modelos',
+      'quantas',
+      'quantos',
+      'quanta',
+      'quanto',
+      'estoque',
+      'peca',
+      'pecas',
+      'disponivel',
+      'disponiveis'
     ].includes(token))
     .filter(token => !/^\d+$/.test(token));
 }
@@ -1146,6 +1155,13 @@ function getSpecificProductTokens(tokens) {
     'modelo',
     'peca',
     'pecas',
+    'quantas',
+    'quantos',
+    'quanta',
+    'quanto',
+    'estoque',
+    'disponivel',
+    'disponiveis',
     'tem',
     'vende',
     'vender',
@@ -2842,7 +2858,7 @@ Responda SOMENTE com JSON (todos os campos obrigatórios):
     if (parsed.sources_needed.length === 0) {
       const intentToSources = {
         product_search:       ['product_api'],
-        product_stock_followup: ['recent_products', 'product_api'],
+        product_stock_followup: ['recent_products'],
         product_followup:     ['recent_products', 'product_api'],
         order_lookup:         ['order_api'],
         tracking_lookup:      ['tracking_api'],
@@ -2871,7 +2887,7 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
   function _buildPhase1Fields(intent, overrides = {}) {
     const intentToSources = {
       product_search:         ['product_api'],
-      product_stock_followup: ['recent_products', 'product_api'],
+      product_stock_followup: ['recent_products'],
       product_followup:       ['recent_products', 'product_api'],
       order_lookup:           ['order_api'],
       tracking_lookup:        ['tracking_api'],
@@ -2967,9 +2983,14 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
   const hasSize = extractRequestedSizes(message).length > 0;
   const productSearchPhrase = getProductSearchPhrase(message);
   const hasProductName = productSearchPhrase.length > 0;
-  const recentProducts = getRecentlySentProductTitles(conversationHistory);
+  const recentProducts = getRecentProductStockContext(conversationHistory);
   // Guard: mensagem com tema/personagem/marca nunca é stock_followup
   const hasThemeOrBrand = /\b(princesa|princesas|personagem|personagens|disney|frozen|marvel|barbie|frozem|unicornio|unicornios|nike|adidas|tigor|kyly|brandili|fakini)\b/i.test(normalizeSearchText(message));
+
+  const stockFollowupIntent = isStockAvailabilityFollowUp(message) && !hasThemeOrBrand
+    ? buildStockFollowupIntentFromMessage(message, conversationHistory, hasSize ? 'size_or_quantity' : 'quantity_or_availability')
+    : null;
+  if (stockFollowupIntent) return stockFollowupIntent;
 
   if (hasSize && !hasProductName && !hasThemeOrBrand && recentProducts.length > 0) {
     const requestedSizes = extractRequestedSizes(message);
@@ -3158,6 +3179,88 @@ function filtersFromCustomerIntent(customerIntent = {}, message = '') {
   };
 }
 
+function isStockAvailabilityFollowUp(message = '') {
+  const text = normalizeSearchText(message);
+  if (!text) return false;
+  const hasSize = extractRequestedSizes(message).length > 0;
+  const hasColor = getColorTokens(getSearchTokens(message)).length > 0
+    || PRODUCT_COLOR_TOKENS.some(color => new RegExp(`\\b${color}\\b`, 'i').test(text));
+  const asksQuantity = /\b(quantas|quantos|quanta|quanto|qtd|quantidade)\b/i.test(text);
+  const asksAvailability = /\b(tem|teria|possui|disponivel|disponiveis|estoque|peca|pecas)\b/i.test(text);
+  const referencesRecent = /\b(esse|essa|desse|dessa|modelo|primeiro|primeira|segundo|segunda|terceiro|terceira|quarto|quarta|quinto|quinta|opcao|produto|item)\b/i.test(text);
+  const shortSizeFollowup = hasSize && text.split(' ').filter(Boolean).length <= 5;
+  return asksQuantity || shortSizeFollowup || (hasSize && asksAvailability) || (hasColor && asksAvailability) || (referencesRecent && asksAvailability);
+}
+
+function buildStockFollowupIntentFromMessage(message = '', conversationHistory = [], reason = 'stock_followup') {
+  const recentProducts = getRecentProductStockContext(conversationHistory);
+  if (recentProducts.length === 0) return null;
+  const requestedSizes = extractRequestedSizes(message);
+  const colorTokens = getColorTokens(getSearchTokens(message));
+  const selectedIndex = extractProductIndexReference(message);
+  console.log('[STOCK FOLLOWUP DETECTED] size=' + (requestedSizes.join(',') || '') + ' color=' + (colorTokens.join(',') || '') + ' reason=' + reason);
+  return {
+    intent: 'product_stock_followup',
+    source: 'recent_context',
+    search_query: '',
+    semantic_query: '',
+    product_type: '',
+    theme: '',
+    allow_related_products: false,
+    filters: {
+      size: requestedSizes.join(','),
+      color: colorTokens.join(','),
+      category: ''
+    },
+    order_id: '',
+    tracking_id: '',
+    reference: 'recent_products',
+    selected_product_index: selectedIndex,
+    needs_clarification: !selectedIndex && recentProducts.length > 1,
+    clarification_question: !selectedIndex && recentProducts.length > 1 ? 'Voce quer saber de qual opcao?' : '',
+    question_type: 'stock_by_size_color',
+    sources_needed: ['recent_products'],
+    entities: {
+      product: '',
+      product_id: '',
+      size: requestedSizes.join(','),
+      color: colorTokens.join(','),
+      theme: '',
+      category: '',
+      order_id: '',
+      date: '',
+      location: ''
+    },
+    operation: 'calculate'
+  };
+}
+
+function coerceStockFollowupIntent(customerIntent = {}, message = '', conversationHistory = []) {
+  if (!isStockAvailabilityFollowUp(message)) return customerIntent;
+  const recentProducts = getRecentProductStockContext(conversationHistory);
+  if (recentProducts.length === 0) return customerIntent;
+  if (customerIntent.intent === 'product_stock_followup' || customerIntent.question_type === 'stock_by_size_color') {
+    return {
+      ...customerIntent,
+      intent: 'product_stock_followup',
+      source: 'recent_context',
+      search_query: '',
+      semantic_query: '',
+      question_type: 'stock_by_size_color',
+      sources_needed: ['recent_products'],
+      reference: 'recent_products',
+      operation: 'calculate',
+      entities: {
+        ...(customerIntent.entities || {}),
+        product: '',
+        size: String(customerIntent.entities?.size || customerIntent.filters?.size || extractRequestedSizes(message).join(',') || ''),
+        color: String(customerIntent.entities?.color || customerIntent.filters?.color || getColorTokens(getSearchTokens(message)).join(',') || '')
+      }
+    };
+  }
+  return buildStockFollowupIntentFromMessage(message, conversationHistory, 'coerced_from_' + (customerIntent.intent || 'unknown')) || customerIntent;
+}
+
 function labelMatchesStockFilters(label, filters = {}) {
   const text = normalizeSearchText(label);
   if (!text) return { matchedAll: false, matchedAny: false };
@@ -3267,6 +3370,7 @@ function buildStockAnswerText(product, stockResult, filters = {}) {
 
 function buildRecentProductStockAnswer(customerIntent = {}, message = '', conversationHistory = []) {
   const recentProducts = getRecentProductStockContext(conversationHistory);
+  console.log('[RECENT PRODUCTS DATA] count=' + recentProducts.length);
   if (recentProducts.length === 0) return null;
 
   const selectedIndex = customerIntent.selected_product_index !== null && customerIntent.selected_product_index !== undefined
@@ -3287,6 +3391,7 @@ function buildRecentProductStockAnswer(customerIntent = {}, message = '', conver
 
   const filters = filtersFromCustomerIntent(customerIntent, message);
   const stockResult = getStockForFilters(product, filters);
+  console.log('[STOCK FILTER RESULT] confidence=' + stockResult.confidence + ' quantity=' + (stockResult.quantity === null || stockResult.quantity === undefined ? '' : stockResult.quantity));
   return {
     response: buildStockAnswerText(product, stockResult, filters),
     model: 'recent_product_stock',
@@ -3357,12 +3462,28 @@ function getRecentProductStockContext(conversationHistory = []) {
     }
   }
   const seen = new Set();
-  return results.filter(product => {
+  const uniqueResults = results.filter(product => {
     const key = normalizeSearchText(`${product.displayIndex}|${product.id}|${product.title}`);
     if (!key || seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+  if (uniqueResults.length > 0) return uniqueResults;
+
+  return getRecentlySentProductTitles(conversationHistory).map((title, index) => ({
+    displayIndex: index + 1,
+    id: '',
+    title,
+    price: '',
+    url: '',
+    stock: null,
+    sizes: [],
+    availableSizes: [],
+    colors: [],
+    variations: [],
+    variationStocks: [],
+    rawProduct: null
+  }));
 }
 
 function getRecentlySentProductTitles(conversationHistory = []) {
@@ -4119,6 +4240,30 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     };
   }
 
+  const earlyStockFollowupIntent = isStockAvailabilityFollowUp(message)
+    ? buildStockFollowupIntentFromMessage(message, conversationHistory, 'early_before_product_lookup')
+    : null;
+  if (earlyStockFollowupIntent) {
+    const earlyStockAnswer = buildRecentProductStockAnswer(earlyStockFollowupIntent, message, conversationHistory);
+    if (earlyStockAnswer) {
+      console.log('[FOLLOWUP DECISION] structured_recent_stock=true model=' + earlyStockAnswer.model);
+      return {
+        skipped: false,
+        response: earlyStockAnswer.response,
+        provider: 'system',
+        model: earlyStockAnswer.model,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: [],
+        product_lookup_attempted: false,
+        product_search_text: ''
+      };
+    }
+  }
+
   if (!isWithinWorkingHours(config, config.timezone || 'America/Sao_Paulo')) {
     const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
     if (productContext.lookupAttempted) {
@@ -4200,13 +4345,14 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
 
   // ─── NOVO: Classificação de intenção ────────────────────────────────────────
   const apiKeyForClassify = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
-  const customerIntent = await classifyCustomerIntent({
+  let customerIntent = await classifyCustomerIntent({
     apiKey: apiKeyForClassify,
     provider,
     message,
     conversationHistory,
     config: effectiveConfig
   });
+  customerIntent = coerceStockFollowupIntent(customerIntent, message, conversationHistory);
 
   // Log seguro da intenção completa (sem token)
   console.log('[INTENT FULL] intent=' + customerIntent.intent

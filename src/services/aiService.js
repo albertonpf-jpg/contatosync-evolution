@@ -3279,6 +3279,14 @@ function labelMatchesStockFilters(label, filters = {}) {
   };
 }
 
+function listIncludesNormalized(values = [], wanted = '') {
+  const target = normalizeSizeToken(wanted) || normalizeSearchText(wanted);
+  if (!target) return false;
+  return (Array.isArray(values) ? values : [])
+    .map(value => normalizeSizeToken(value) || normalizeSearchText(value))
+    .some(value => value === target || (target.length > 2 && includesToken(value, target)));
+}
+
 function getStockForFilters(product = {}, filters = {}) {
   const normalizedFilters = {
     size: normalizeSizeToken(filters.size) || normalizeSearchText(filters.size),
@@ -3287,21 +3295,46 @@ function getStockForFilters(product = {}, filters = {}) {
   };
   const hasSpecificFilter = Boolean(normalizedFilters.size || normalizedFilters.color || normalizedFilters.variation);
   const variationEntries = getProductVariationStockEntries(product);
+  const totalStock = getStockNumber(firstValue(product.stock, product.estoque, product.total_estoque, product.quantity, product.rawProduct?.stock, null));
+  const hasPositiveTotalStock = Number(totalStock) > 0;
+  const availableSizes = Array.isArray(product.availableSizes) && product.availableSizes.length
+    ? product.availableSizes
+    : getAvailableProductSizes(product);
+  const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : extractProductSizes(product);
+  const sizeFound = normalizedFilters.size && (listIncludesNormalized(availableSizes, normalizedFilters.size) || listIncludesNormalized(sizes, normalizedFilters.size));
+  const colors = Array.isArray(product.colors) ? product.colors : [];
+  const variations = Array.isArray(product.variations) ? product.variations : [];
+  const colorFound = normalizedFilters.color && (listIncludesNormalized(colors, normalizedFilters.color) || listIncludesNormalized(variations, normalizedFilters.color));
+  let explicitZeroMatch = null;
 
   for (const entry of variationEntries) {
     const match = labelMatchesStockFilters(entry.label, normalizedFilters);
     if (match.matchedAll && entry.stock !== null && entry.stock !== undefined) {
-      return { quantity: Number(entry.stock), confidence: 'exact', matchedVariation: entry.label || '', messageHint: '' };
+      const quantity = Number(entry.stock);
+      if (quantity > 0) {
+        return { quantity, confidence: 'exact', matchedVariation: entry.label || '', messageHint: '', reason: 'explicit_variation_stock' };
+      }
+      explicitZeroMatch = { quantity: 0, confidence: 'exact', matchedVariation: entry.label || '', messageHint: '', reason: 'explicit_variation_zero' };
     }
+  }
+
+  if (sizeFound && hasPositiveTotalStock) {
+    return {
+      quantity: Number(totalStock),
+      confidence: normalizedFilters.color && colorFound ? 'partial' : 'total_only',
+      matchedVariation: '',
+      messageHint: '',
+      reason: normalizedFilters.color && colorFound ? 'size_color_found_total_stock_only' : 'size_found_total_stock_only'
+    };
   }
 
   if (hasSpecificFilter) {
     const partialEntry = variationEntries.find(entry => {
       const match = labelMatchesStockFilters(entry.label, normalizedFilters);
-      return match.matchedAny && entry.stock !== null && entry.stock !== undefined;
+      return match.matchedAny && Number(entry.stock) > 0;
     });
     if (partialEntry) {
-      return { quantity: Number(partialEntry.stock), confidence: 'partial', matchedVariation: partialEntry.label || '', messageHint: '' };
+      return { quantity: Number(partialEntry.stock), confidence: 'partial', matchedVariation: partialEntry.label || '', messageHint: '', reason: 'partial_variation_stock' };
     }
   }
 
@@ -3317,29 +3350,28 @@ function getStockForFilters(product = {}, filters = {}) {
     for (const entry of rawEntries) {
       const match = labelMatchesStockFilters(entry.label, normalizedFilters);
       if (match.matchedAll && entry.stock !== null && entry.stock !== undefined) {
-        return { quantity: Number(entry.stock), confidence: 'exact', matchedVariation: entry.label || '', messageHint: '' };
+        const quantity = Number(entry.stock);
+        if (quantity > 0) {
+          return { quantity, confidence: 'exact', matchedVariation: entry.label || '', messageHint: '', reason: 'explicit_raw_variation_stock' };
+        }
+        explicitZeroMatch = { quantity: 0, confidence: 'exact', matchedVariation: entry.label || '', messageHint: '', reason: 'explicit_variation_zero' };
       }
     }
   }
 
-  const totalStock = getProductAvailableStock(product);
-  const availableSizes = Array.isArray(product.availableSizes) && product.availableSizes.length
-    ? product.availableSizes
-    : getAvailableProductSizes(product);
-  if (normalizedFilters.size && availableSizes.map(normalizeSizeToken).includes(normalizedFilters.size) && totalStock !== null && totalStock !== undefined) {
-    return { quantity: Number(totalStock), confidence: 'partial', matchedVariation: normalizedFilters.size, messageHint: '' };
+  if (explicitZeroMatch && !hasPositiveTotalStock) {
+    return explicitZeroMatch;
   }
 
-  const sizes = Array.isArray(product.sizes) && product.sizes.length ? product.sizes : extractProductSizes(product);
-  if (normalizedFilters.size && sizes.map(normalizeSizeToken).includes(normalizedFilters.size) && totalStock !== null && totalStock !== undefined) {
-    return { quantity: Number(totalStock), confidence: 'partial', matchedVariation: normalizedFilters.size, messageHint: '' };
+  if (normalizedFilters.size && !sizeFound) {
+    return { quantity: null, confidence: 'unknown', matchedVariation: '', messageHint: '', reason: 'requested_size_not_found' };
   }
 
   if (totalStock !== null && totalStock !== undefined) {
-    return { quantity: Number(totalStock), confidence: hasSpecificFilter ? 'total_only' : 'exact', matchedVariation: '', messageHint: '' };
+    return { quantity: Number(totalStock), confidence: hasSpecificFilter ? 'total_only' : 'exact', matchedVariation: '', messageHint: '', reason: hasSpecificFilter ? 'total_stock_only' : 'total_stock_no_filter' };
   }
 
-  return { quantity: null, confidence: 'unknown', matchedVariation: '', messageHint: '' };
+  return { quantity: null, confidence: 'unknown', matchedVariation: '', messageHint: '', reason: 'no_stock_data' };
 }
 
 function extractProductIndexReference(message = '') {
@@ -3362,11 +3394,13 @@ function buildStockAnswerText(product, stockResult, filters = {}) {
     return `Tenho ${stockResult.quantity} peca${Number(stockResult.quantity) === 1 ? '' : 's'}${title}${sizeText}${colorText}.`;
   }
   if (stockResult.confidence === 'partial') {
-    const missingColor = filters.color ? ' por cor' : '';
-    return `Esse modelo aparece${sizeText ? ` com tamanho ${filters.size}` : ''} e estoque ${stockResult.quantity}, mas nao encontrei a separacao exata${missingColor}.`;
+    const sizeColorText = [filters.size ? `tamanho ${filters.size}` : '', filters.color ? `cor ${filters.color}` : ''].filter(Boolean).join(' e ');
+    return `Esse produto aparece${sizeColorText ? ` com ${sizeColorText}` : ''} e estoque total ${stockResult.quantity}, mas nao encontrei a separacao exata por variacao.`;
   }
   if (stockResult.confidence === 'total_only') {
-    return `Esse produto aparece com estoque total ${stockResult.quantity}. Nao encontrei a quantidade separada por tamanho/cor.`;
+    return filters.size
+      ? `Esse produto aparece com tamanho ${filters.size} e estoque total ${stockResult.quantity}. Nao encontrei a quantidade separada por tamanho.`
+      : `Esse produto aparece com estoque total ${stockResult.quantity}. Nao encontrei a quantidade separada por tamanho/cor.`;
   }
   return filters.size || filters.color
     ? 'Nao encontrei a quantidade exata desse tamanho/cor para esse produto.'
@@ -3401,7 +3435,7 @@ function buildRecentProductStockAnswer(customerIntent = {}, message = '', conver
   }
 
   const stockResult = getStockForFilters(product, filters);
-  console.log('[STOCK FILTER RESULT] confidence=' + stockResult.confidence + ' quantity=' + (stockResult.quantity === null || stockResult.quantity === undefined ? '' : stockResult.quantity));
+  console.log('[STOCK FILTER RESULT] confidence=' + stockResult.confidence + ' quantity=' + (stockResult.quantity === null || stockResult.quantity === undefined ? '' : stockResult.quantity) + ' reason=' + (stockResult.reason || ''));
   return {
     response: buildStockAnswerText(product, stockResult, filters),
     model: 'recent_product_stock',

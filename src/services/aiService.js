@@ -1197,6 +1197,50 @@ function isPendingActionConfirmation(message = '') {
   return /^(pode|pode sim|quero|quero sim|sim|manda|manda sim|pode procurar|quero ver|ok|okay)$/i.test(text);
 }
 
+function getStorePolicyKnowledgeQuery(message = '') {
+  const text = normalizeSearchText(message);
+  if (!text) return '';
+  if (/\bcnpj\b/i.test(text)) return 'cnpj';
+  if (/\bcpf\b|pessoa fisica|pessoa física/i.test(text)) return 'cpf pessoa fisica';
+  if (/precisa ter cadastro|tem que ter cadastro|cadastro/i.test(text)) return 'cadastro';
+  if (/precisa ter loja|tem que ter loja|loja para comprar/i.test(text)) return 'loja para comprar';
+  if (/pedido minimo|minimo de pecas|mínimo de peças|valor minimo|compra minima/i.test(text)) return 'pedido minimo';
+  if (/como comprar|comprar com voces|comprar com vocês/i.test(text)) return 'como comprar';
+  if (/\bpagamento\b|\bpagar\b|\bpix\b|\bcartao\b|\bcartão\b|\bboleto\b/i.test(text)) return 'pagamento';
+  if (/\bentrega\b|\bfrete\b|\benviar\b|\benvio\b/i.test(text)) return 'entrega frete';
+  if (/\bendereco\b|\bendereço\b|onde fica|localizacao|localização/i.test(text)) return 'endereco';
+  if (/\btroca\b|\bdevolucao\b|\bdevolução\b/i.test(text)) return text.includes('devolu') ? 'devolucao' : 'troca';
+  if (/\bretirada\b|\bretirar\b/i.test(text)) return 'retirada';
+  if (/\bhorario\b|\bhorário\b|funcionamento/i.test(text)) return 'horario';
+  return '';
+}
+
+function getRelatedThemeLabel(value = '', customerIntent = {}) {
+  const explicitTheme = normalizeSearchText(customerIntent.theme || customerIntent.entities?.theme || '');
+  if (explicitTheme) return explicitTheme;
+  const text = normalizeSearchText(value);
+  const themeTokens = ['princesas', 'princesa', 'disney', 'frozen', 'elsa', 'stitch', 'minnie', 'mickey', 'barbie', 'marvel', 'personagem', 'personagens', 'unicornio', 'unicornios']
+    .filter(token => text.includes(token));
+  return themeTokens[0] || '';
+}
+
+function buildRelatedSemanticQuery(originalQuery = '', customerIntent = {}) {
+  const theme = getRelatedThemeLabel([originalQuery, customerIntent.theme || '', customerIntent.semantic_query || ''].join(' '), customerIntent);
+  const productType = normalizeSearchText(customerIntent.product_type || customerIntent.entities?.product || customerIntent.search_query || originalQuery)
+    .split(' ')
+    .filter(token => token && !['tem', 'quero', 'procuro', 'precisa', 'comprar'].includes(token))
+    .slice(0, 4)
+    .join(' ');
+  if (theme) return `roupa infantil relacionada a ${theme}/personagens`;
+  return productType || normalizeSearchText(originalQuery);
+}
+
+function buildRelatedProductsNote(originalQuery = '', customerIntent = {}) {
+  const requested = normalizeSearchText(originalQuery).replace(/\b(tem|quero|procuro|mostra|manda)\b/g, '').replace(/\s+/g, ' ').trim() || 'esse modelo';
+  const theme = getRelatedThemeLabel(originalQuery, customerIntent);
+  return `Nao encontrei exatamente ${requested}, mas encontrei opcoes relacionadas${theme ? ' ao tema ' + theme : ''} 😊`;
+}
+
 function getSpecificProductTokens(tokens) {
   const generic = new Set([
     'roupa',
@@ -2998,6 +3042,26 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
   }
 
   // 1. Se tem número de pedido → order_lookup ou tracking_lookup
+  const storePolicyQuery = getStorePolicyKnowledgeQuery(message);
+  if (storePolicyQuery) {
+    console.log('[CLASSIFY-FALLBACK KNOWLEDGE] reason=store_policy query="' + storePolicyQuery + '"');
+    return {
+      intent: 'knowledge_question',
+      source: 'knowledge_base',
+      search_query: storePolicyQuery,
+      filters: { size: '', color: '', category: '' },
+      order_id: '',
+      reference: 'none',
+      needs_clarification: false,
+      clarification_question: '',
+      ..._buildPhase1Fields('knowledge_question', {
+        question_type: 'store_info',
+        sources_needed: ['knowledge_base', 'site_urls', 'files'],
+        operation: 'lookup'
+      })
+    };
+  }
+
   const orderId = extractOrderReference(message);
   if (orderId) {
     const isTracking = /rastreio|rastrear|codigo de rastreio|enviado|despacho/i.test(normalized);
@@ -3783,7 +3847,7 @@ function savePendingActionMemory(conversation = {}, action = {}) {
     createdAt: Date.now(),
     ttlMs: action.ttlMs || PENDING_ACTION_TTL_MS
   });
-  console.log('[PENDING ACTION SAVE] type=' + action.type + ' query="' + String(action.originalQuery || action.semanticQuery || '').replace(/"/g, '\\"') + '"');
+  console.log('[PENDING ACTION SAVE] type=' + action.type + ' originalQuery="' + String(action.originalQuery || '').replace(/"/g, '\\"') + '"');
 }
 
 function getPendingActionMemory(conversation = {}) {
@@ -3799,9 +3863,12 @@ function getPendingActionMemory(conversation = {}) {
   return entry;
 }
 
-function clearPendingActionMemory(conversation = {}) {
+function clearPendingActionMemory(conversation = {}, reason = 'clear') {
   const key = getConversationMemoryKey(conversation);
-  if (key) pendingActionByConversation.delete(key);
+  if (key) {
+    pendingActionByConversation.delete(key);
+    console.log('[PENDING ACTION CLEAR] reason=' + reason);
+  }
 }
 
 function saveRecentProductsMemory(conversation = {}, products = []) {
@@ -4310,9 +4377,11 @@ Retorne APENAS JSON valido, sem markdown, sem comentarios:
 
     // Montar productCards usando 100% os dados reais do produto original
     const productCards = [];
+    const matchedProducts = [];
     for (const match of validMatches) {
       const product = productById.get(String(match.id));
       if (!product) continue;
+      matchedProducts.push(product);
       const images = (product.images || []).slice(0, 2);
       if (images.length === 0) {
         // Produto sem imagem: card textual, SEM imageUrl, sem prometer foto
@@ -4339,7 +4408,7 @@ Retorne APENAS JSON valido, sem markdown, sem comentarios:
       || 'Nao encontrei exatamente o que voce pediu, mas encontrei opcoes relacionadas:';
 
     console.log('[SEMANTIC RANK] ranking interno concluido | candidatos: ' + candidateSample.length + ' | matches validos: ' + validMatches.length + ' | cards montados: ' + productCards.length);
-    return { productCards: productCards.slice(0, 10), customerNote };
+    return { productCards: productCards.slice(0, 10), customerNote, products: matchedProducts };
 
   } catch (err) {
     if (/aborted|abort/i.test(String((err && err.message) || err))) {
@@ -4351,7 +4420,10 @@ Retorne APENAS JSON valido, sem markdown, sem comentarios:
 }
 
 async function executePendingActionForConversation(action = {}, confirmation = '', context = {}) {
-  if (!action || action.type !== 'search_related_products') return null;
+  if (!action || action.type !== 'search_related_products') {
+    console.log('[PENDING ACTION MISS] reason=invalid');
+    return null;
+  }
   const {
     effectiveConfig,
     conversationHistory,
@@ -4359,11 +4431,36 @@ async function executePendingActionForConversation(action = {}, confirmation = '
     apiKey,
     provider
   } = context;
-  const semanticQuery = String(action.semanticQuery || action.originalQuery || '').trim();
-  if (!semanticQuery) return null;
+  const originalQuery = String(action.originalQuery || action.semanticQuery || '').trim();
+  const semanticQuery = String(action.semanticQuery || buildRelatedSemanticQuery(originalQuery, action.customerIntent || {})).trim();
+  if (!semanticQuery && !originalQuery) {
+    console.log('[PENDING ACTION MISS] reason=invalid');
+    return null;
+  }
   console.log('[PENDING ACTION EXECUTE] type=' + action.type + ' confirmation="' + normalizeSearchText(confirmation).slice(0, 40) + '"');
-  const productContext = await buildProductContextForConfig(semanticQuery, effectiveConfig, conversationHistory);
+  const productContext = await buildProductContextForConfig(originalQuery || semanticQuery, effectiveConfig, conversationHistory);
   saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
+  const directCards = productContext.productCards || [];
+  if (directCards.length > 0) {
+    console.log('[PENDING ACTION RESULT] cards=' + directCards.length + ' products=' + ((productContext.product_context_products || productContext.recent_products_data || []).length));
+    return {
+      skipped: false,
+      response: buildRelatedProductsNote(originalQuery || semanticQuery, action.customerIntent || {}) + '\n\n' + buildProductCardsResponse(directCards),
+      provider: 'catalog',
+      model: 'pending_related_product_search',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: directCards.map(card => card.imageUrl).filter(Boolean),
+      product_cards: directCards,
+      product_lookup_attempted: true,
+      product_search_text: originalQuery || semanticQuery,
+      products_found: true,
+      semantic_rank_used: false
+    };
+  }
+
   const candidates = selectSemanticCandidateProducts(productContext.allProductsCollected || [], action.customerIntent || {}, semanticQuery, 60);
   const semanticResult = isUsableProviderApiKey(provider, apiKey)
     ? await semanticRankProducts(candidates, action.customerIntent || {}, semanticQuery, apiKey, provider)
@@ -4372,9 +4469,11 @@ async function executePendingActionForConversation(action = {}, confirmation = '
   if (cards.length > 0) {
     const cardsWithImage = cards.filter(card => card.imageUrl);
     const responseCards = cardsWithImage.length > 0 ? cardsWithImage : cards;
+    saveRecentProductsMemory(conversation, semanticResult.products || []);
+    console.log('[PENDING ACTION RESULT] cards=' + responseCards.length + ' products=' + ((semanticResult.products || []).length));
     return {
       skipped: false,
-      response: (semanticResult.customerNote || 'Encontrei opcoes parecidas.') + '\n\n' + buildProductCardsResponse(responseCards),
+      response: buildRelatedProductsNote(originalQuery || semanticQuery, action.customerIntent || {}) + '\n\n' + buildProductCardsResponse(responseCards),
       provider: 'catalog',
       model: 'pending_related_product_search',
       prompt_tokens: 0,
@@ -4389,9 +4488,10 @@ async function executePendingActionForConversation(action = {}, confirmation = '
       semantic_rank_used: true
     };
   }
+  console.log('[PENDING ACTION RESULT] cards=0 products=0');
   return {
     skipped: false,
-    response: buildProductLookupEmptyResponse(semanticQuery),
+    response: 'Nao encontrei opcoes parecidas no momento. Pode me passar outro detalhe, como tamanho, cor ou personagem?',
     provider: 'catalog',
     model: 'pending_related_product_empty',
     prompt_tokens: 0,
@@ -4401,7 +4501,7 @@ async function executePendingActionForConversation(action = {}, confirmation = '
     product_images: [],
     product_cards: [],
     product_lookup_attempted: true,
-    product_search_text: semanticQuery,
+    product_search_text: originalQuery || semanticQuery,
     products_found: false
   };
 }
@@ -4944,7 +5044,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         apiKey: apiKeyForClassify,
         provider
       });
-      clearPendingActionMemory(conversation);
+      clearPendingActionMemory(conversation, 'executed');
       if (pendingResult) return pendingResult;
     } else {
       console.log('[PENDING ACTION MISS] reason=no_pending_action');
@@ -5314,11 +5414,13 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
               if (_semResult.productCards && _semResult.productCards.length > 0) {
                 const _semCardsImg = _semResult.productCards.filter(c => c.imageUrl);
                 const _semCardsTxt = _semResult.productCards.filter(c => !c.imageUrl);
+                const _semNoteText = buildRelatedProductsNote(cleanQuery || _semQuery, customerIntent);
+                saveRecentProductsMemory(conversation, _semResult.products || []);
                 console.log('[SEMANTIC CARDS] cards com imagem: ' + _semCardsImg.length + ' | sem imagem: ' + _semCardsTxt.length);
                 if (_semCardsImg.length > 0) {
                   return {
                     skipped: false,
-                    response: _semResult.customerNote + '\n\n' + buildProductCardsResponse(_semCardsImg),
+                    response: _semNoteText + '\n\n' + buildProductCardsResponse(_semCardsImg),
                     provider: 'catalog',
                     model: 'semantic_catalog_lookup',
                     prompt_tokens: 0,
@@ -5336,7 +5438,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
                 const _semListaTxt = _semCardsTxt.map(c => '• ' + c.title + (c.description ? ' — ' + c.description : '')).join('\n');
                 return {
                   skipped: false,
-                  response: _semResult.customerNote + '\n\n' + _semListaTxt,
+                  response: _semNoteText + '\n\n' + _semListaTxt,
                   provider: 'catalog',
                   model: 'semantic_catalog_lookup_text',
                   prompt_tokens: 0,
@@ -5459,7 +5561,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
             // Separar cards com e sem imageUrl para não prometer foto quando não há imagem
             const cardsComImagem = semanticResult.productCards.filter(c => c.imageUrl);
             const cardsSemImagem = semanticResult.productCards.filter(c => !c.imageUrl);
-            const noteText = semanticResult.customerNote;
+            const noteText = buildRelatedProductsNote(cleanQuery || semanticQuery, customerIntent);
+            saveRecentProductsMemory(conversation, semanticResult.products || []);
             console.log('[SEMANTIC CARDS] cards com imagem: ' + cardsComImagem.length + ' | sem imagem: ' + cardsSemImagem.length);
             if (cardsComImagem.length > 0) {
               // Retorna product_cards + response com buildProductCardsResponse
@@ -5511,8 +5614,12 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           savePendingActionMemory(conversation, {
             type: 'search_related_products',
             originalQuery: _humanFallbackQuery,
-            semanticQuery,
-            customerIntent
+            semanticQuery: buildRelatedSemanticQuery(_humanFallbackQuery, customerIntent),
+            allow_related_products: true,
+            customerIntent: {
+              ...customerIntent,
+              allow_related_products: true
+            }
           });
           return {
             skipped: false,

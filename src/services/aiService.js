@@ -11,6 +11,9 @@ const RECENT_PRODUCTS_MEMORY_TTL_MS = 30 * 60 * 1000;
 const recentProductsByConversation = new Map();
 const pendingStockFiltersByConversation = new Map();
 const selectedProductByConversation = new Map();
+const pendingProductSelectionByConversation = new Map();
+const pendingActionByConversation = new Map();
+const PENDING_ACTION_TTL_MS = 10 * 60 * 1000;
 
 const DEFAULT_INTEGRATION_CONFIG = {
   facilzap: {
@@ -655,6 +658,49 @@ function buildConfiguredProductSources(config = {}) {
   ]);
 }
 
+function isProductApiSource(source = {}) {
+  const url = String(source.url || '').toLowerCase();
+  return /\/produtos(?:[/?#]|$)/i.test(url) || /products_path|stock_path/i.test(String(source.name || ''));
+}
+
+function buildProductSourcesForConfig(config = {}) {
+  return buildConfiguredProductSources(config);
+}
+
+function buildKnowledgeSourcesForConfig(config = {}) {
+  const integrationPublicUrls = (Array.isArray(config.product_integrations) ? config.product_integrations : [])
+    .flatMap(integration => {
+      const integrationType = integration.integration_type || integration.type;
+      const cfg = {
+        ...(DEFAULT_INTEGRATION_CONFIG[integrationType] || {}),
+        ...(integration.config || {})
+      };
+      return [
+        cfg.site_url,
+        cfg.store_url,
+        cfg.public_catalog_url,
+        cfg.product_catalog_url,
+        cfg.catalog_url
+      ];
+    });
+  return normalizeProductSources([
+    config.site_url,
+    config.store_url,
+    config.knowledge_base_url,
+    config.product_catalog_url,
+    ...(Array.isArray(config.site_urls) ? config.site_urls : []),
+    ...(Array.isArray(config.knowledge_source_urls) ? config.knowledge_source_urls : []),
+    ...(Array.isArray(config.source_urls) ? config.source_urls : []),
+    ...(Array.isArray(config.product_source_urls) ? config.product_source_urls : []),
+    ...integrationPublicUrls,
+    config.system_prompt
+  ]).filter(source => !isProductApiSource(source));
+}
+
+function buildOperationalSourcesForConfig(config = {}, message = '', contact = {}, conversation = {}) {
+  return buildOperationalIntegrationSources(config, message, contact, conversation);
+}
+
 function hasStrongProductIntent(message) {
   const text = normalizeSearchText(message);
   if (!text) return false;
@@ -696,8 +742,10 @@ function shouldUseConfiguredSiteSources(message) {
   if (extractUrls(message).length > 0) return true;
   const text = normalizeSearchText(message);
   if (!text) return false;
+  if (isShortContextualReply(message)) return false;
   if (!hasStrongProductIntent(message)) return true;
   return [
+    'cnpj',
     'endereco',
     'localizacao',
     'loja fisica',
@@ -1136,6 +1184,17 @@ function getSearchTokens(value) {
       'disponiveis'
     ].includes(token))
     .filter(token => !/^\d+$/.test(token));
+}
+
+function isShortContextualReply(message = '') {
+  const text = normalizeSearchText(message);
+  if (!text) return false;
+  return /^(pode|pode sim|quero|quero sim|sim|manda|manda sim|pode procurar|ok|okay|1|2|3|4|5|primeiro|primeira|segundo|segunda|terceiro|terceira|quarto|quarta|quinto|quinta|esse|essa|desse|dessa)$/i.test(text);
+}
+
+function isPendingActionConfirmation(message = '') {
+  const text = normalizeSearchText(message);
+  return /^(pode|pode sim|quero|quero sim|sim|manda|manda sim|pode procurar|quero ver|ok|okay)$/i.test(text);
 }
 
 function getSpecificProductTokens(tokens) {
@@ -3206,7 +3265,8 @@ function isSelectedProductFollowUp(message = '') {
 function buildStockFollowupIntentFromMessage(message = '', conversationHistory = [], reason = 'stock_followup', conversation = {}) {
   const recentProducts = getReliableRecentProductStockContext(conversationHistory, conversation);
   const selectedMemory = getSelectedProductMemory(conversation);
-  if (recentProducts.length === 0 && !selectedMemory) return null;
+  const pendingSelection = getPendingProductSelectionMemory(conversation);
+  if (recentProducts.length === 0 && !selectedMemory && !pendingSelection) return null;
   const requestedSizes = extractRequestedSizes(message);
   const colorTokens = getColorTokens(getSearchTokens(message));
   const selectedIndex = extractProductIndexReference(message);
@@ -3503,6 +3563,31 @@ function buildRecentProductStockAnswer(customerIntent = {}, message = '', conver
   if (!filters.size && pendingFilters.size) filters = { ...filters, size: pendingFilters.size };
   if (!filters.color && pendingFilters.color) filters = { ...filters, color: pendingFilters.color };
   if (!filters.variation && pendingFilters.variation) filters = { ...filters, variation: pendingFilters.variation };
+  const pendingSelection = getPendingProductSelectionMemory(conversation);
+  if (selectedIndex && pendingSelection?.options?.length) {
+    const pendingProduct = pendingSelection.options.find(item => Number(item.displayIndex) === selectedIndex)
+      || pendingSelection.options[selectedIndex - 1];
+    if (pendingProduct) {
+      const mergedFilters = {
+        ...filters,
+        ...Object.fromEntries(Object.entries(pendingSelection.pendingFilters || {}).filter(([, value]) => value))
+      };
+      console.log('[PENDING PRODUCT SELECTION USE] selectedIndex=' + selectedIndex + ' title="' + String(pendingProduct.title || '').replace(/"/g, '\\"') + '"');
+      saveSelectedProductMemory(conversation, pendingProduct, selectedIndex, mergedFilters);
+      pendingProductSelectionByConversation.delete(getConversationMemoryKey(conversation));
+      const selectedAnswer = answerSelectedProductQuestion(message, pendingProduct, mergedFilters);
+      console.log('[SELECTED PRODUCT ANSWER] question_type=' + selectedAnswer.questionType + ' confidence=' + selectedAnswer.confidence);
+      if (selectedAnswer.stockResult) {
+        console.log('[STOCK FILTER RESULT] confidence=' + selectedAnswer.stockResult.confidence + ' quantity=' + (selectedAnswer.stockResult.quantity === null || selectedAnswer.stockResult.quantity === undefined ? '' : selectedAnswer.stockResult.quantity) + ' reason=' + (selectedAnswer.stockResult.reason || ''));
+      }
+      return {
+        response: selectedAnswer.response,
+        model: 'selected_product_stock',
+        product: pendingProduct,
+        stockResult: selectedAnswer.stockResult || { confidence: selectedAnswer.confidence }
+      };
+    }
+  }
   const selectedMemory = getSelectedProductMemory(conversation);
   if (selectedMemory && !selectedIndex) {
     if (!filters.size && selectedMemory.lastFilters?.size) filters = { ...filters, size: selectedMemory.lastFilters.size };
@@ -3530,6 +3615,7 @@ function buildRecentProductStockAnswer(customerIntent = {}, message = '', conver
 
   if (!product) {
     savePendingStockFilters(conversation, filters);
+    savePendingProductSelectionMemory(conversation, recentProducts, filters);
     return {
       response: buildProductSelectionList(recentProducts.map(item => item.title).filter(Boolean)),
       model: 'recent_product_selection'
@@ -3565,7 +3651,8 @@ function isOrderLikeRecentProductLine(value = '') {
   const text = normalizeSearchText(value);
   if (!text) return true;
   return /\b(pedido|codigo interno|codigo|cliente|total|entrega|status|pagamento|rastreio|integracao|transportadora|sedex|pac|forma entrega|forma_entrega|despachado|separacao|separado|entregue)\b/i.test(text)
-    || /\b(nao encontrei|no momento|quer que eu|posso procurar|posso buscar|de qual produto|qual opcao|atendente)\b/i.test(text);
+    || /\b(nao encontrei|no momento|quer que eu|posso procurar|posso buscar|de qual produto|qual opcao|atendente|pode me mandar|o endereco|esse produto aparece)\b/i.test(text)
+    || /^\s*tenho\s+\d+\s+peca/i.test(text);
 }
 
 function hasProductLineSignal(value = '') {
@@ -3575,7 +3662,7 @@ function hasProductLineSignal(value = '') {
   const hasProductWord = /\b(saia|short|vestido|conjunto|blusa|body|calca|macacao|jardineira|camiseta|cropped|tshirt|moletom|moleton|camisa|bermuda|jaqueta|casaco|manga|bone|pijama|regata|produto)\b/i.test(text);
   const hasCardSignal = /🛍|produto\/\d+|#produto\d+|preco:|pre[cç]o:|tamanho:|cor:|estoque:|detalhes:/i.test(raw);
   const hasProductSummary = /^encontrei\s+.+\s+na loja/i.test(raw) && !/\b(pedido|integracao)\b/i.test(text);
-  return hasProductWord || hasCardSignal || hasProductSummary;
+  return hasCardSignal || hasProductSummary || (hasProductWord && /\b(preco|tamanho|cor|estoque|detalhes)\b/i.test(text));
 }
 
 function cleanRecentProductTitleLine(value = '') {
@@ -3658,6 +3745,63 @@ function getSelectedProductMemory(conversation = {}) {
     return entry;
   }
   return null;
+}
+
+function savePendingProductSelectionMemory(conversation = {}, products = [], pendingFilters = {}) {
+  const key = getConversationMemoryKey(conversation);
+  const options = (Array.isArray(products) ? products : []).slice(0, 5).map((product, index) => ({
+    ...product,
+    displayIndex: index + 1
+  }));
+  if (!key || options.length === 0) return;
+  pendingProductSelectionByConversation.set(key, {
+    options,
+    pendingFilters,
+    createdAt: Date.now(),
+    ttlMs: RECENT_PRODUCTS_MEMORY_TTL_MS
+  });
+  console.log('[PENDING PRODUCT SELECTION SAVE] conv=' + key + ' count=' + options.length);
+}
+
+function getPendingProductSelectionMemory(conversation = {}) {
+  const key = getConversationMemoryKey(conversation);
+  if (!key) return null;
+  const entry = pendingProductSelectionByConversation.get(key);
+  if (!entry) return null;
+  if (Date.now() - Number(entry.createdAt || 0) > Number(entry.ttlMs || RECENT_PRODUCTS_MEMORY_TTL_MS)) {
+    pendingProductSelectionByConversation.delete(key);
+    return null;
+  }
+  return entry;
+}
+
+function savePendingActionMemory(conversation = {}, action = {}) {
+  const key = getConversationMemoryKey(conversation);
+  if (!key || !action.type) return;
+  pendingActionByConversation.set(key, {
+    ...action,
+    createdAt: Date.now(),
+    ttlMs: action.ttlMs || PENDING_ACTION_TTL_MS
+  });
+  console.log('[PENDING ACTION SAVE] type=' + action.type + ' query="' + String(action.originalQuery || action.semanticQuery || '').replace(/"/g, '\\"') + '"');
+}
+
+function getPendingActionMemory(conversation = {}) {
+  const key = getConversationMemoryKey(conversation);
+  if (!key) return null;
+  const entry = pendingActionByConversation.get(key);
+  if (!entry) return null;
+  if (Date.now() - Number(entry.createdAt || 0) > Number(entry.ttlMs || PENDING_ACTION_TTL_MS)) {
+    pendingActionByConversation.delete(key);
+    console.log('[PENDING ACTION MISS] reason=expired');
+    return null;
+  }
+  return entry;
+}
+
+function clearPendingActionMemory(conversation = {}) {
+  const key = getConversationMemoryKey(conversation);
+  if (key) pendingActionByConversation.delete(key);
 }
 
 function saveRecentProductsMemory(conversation = {}, products = []) {
@@ -3986,18 +4130,66 @@ function buildProductSelectionList(titles) {
  * @param {string} provider          - 'claude' | 'openai'
  * @returns {Promise<{productCards: Array, customerNote: string}>}
  */
+function selectSemanticCandidateProducts(allProducts = [], customerIntent = {}, semanticQuery = '', limit = 60) {
+  const products = Array.isArray(allProducts) ? allProducts : [];
+  const queryTokens = getSpecificProductTokens(getSearchTokens([
+    semanticQuery,
+    customerIntent.search_query || '',
+    customerIntent.semantic_query || '',
+    customerIntent.product_type || '',
+    customerIntent.theme || ''
+  ].join(' ')));
+  const themeTokens = getSpecificProductTokens(getSearchTokens(customerIntent.theme || ''));
+  const productTypeTokens = getSpecificProductTokens(getSearchTokens(customerIntent.product_type || ''));
+  const scored = products.map((product, index) => {
+    const haystack = normalizeSearchText([
+      product.title,
+      product.description,
+      product.category,
+      product.categoryName,
+      product.categoria_nome,
+      Array.isArray(product.variations) ? product.variations.join(' ') : '',
+      Array.isArray(product.variacoes) ? product.variacoes.map(v => JSON.stringify(v)).join(' ') : ''
+    ].join(' '));
+    let score = 0;
+    for (const token of queryTokens) if (token.length >= 3 && haystack.includes(token)) score += 3;
+    for (const token of themeTokens) if (token.length >= 3 && haystack.includes(token)) score += 5;
+    for (const token of productTypeTokens) if (token.length >= 3 && haystack.includes(token)) score += 4;
+    if (getProductAvailableStock(product) > 0) score += 1;
+    if ((product.images || []).length > 0) score += 1;
+    return { product, score, index };
+  });
+  const positives = scored
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, limit)
+    .map(item => item.product);
+  const selected = positives.length > 0
+    ? positives
+    : scored
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .slice(0, limit)
+      .map(item => item.product);
+  console.log('[SEMANTIC PREFILTER] before=' + products.length + ' after=' + selected.length + ' reason=' + (positives.length > 0 ? 'local_token_score' : 'fallback_sample'));
+  return selected;
+}
+
 async function semanticRankProducts(candidateProducts, customerIntent, semanticQuery, apiKey, provider) {
-  const SEMANTIC_MAX_CANDIDATES = 50;
+  const SEMANTIC_MAX_CANDIDATES = 60;
   const SEMANTIC_MAX_RESULTS = 6;
-  const SEMANTIC_TIMEOUT_MS = 6000;
+  const SEMANTIC_TIMEOUT_MS = 9000;
 
   if (!candidateProducts || candidateProducts.length === 0 || !semanticQuery) {
     return { productCards: [], customerNote: '' };
   }
 
+  const rankedCandidates = candidateProducts.length > SEMANTIC_MAX_CANDIDATES
+    ? selectSemanticCandidateProducts(candidateProducts, customerIntent, semanticQuery, SEMANTIC_MAX_CANDIDATES)
+    : candidateProducts.slice(0, SEMANTIC_MAX_CANDIDATES);
+  console.log('[SEMANTIC BATCH] batch=1 size=' + rankedCandidates.length);
+
   // Lista compacta para a IA — sem URLs longas, sem base64, sem HTML
-  const candidateSample = candidateProducts
-    .slice(0, SEMANTIC_MAX_CANDIDATES)
+  const candidateSample = rankedCandidates
     .map(p => ({
       id: String(p.id || p.url || ''),
       title: String(p.title || ''),
@@ -4100,7 +4292,7 @@ Retorne APENAS JSON valido, sem markdown, sem comentarios:
 
     // Mapa id → produto original (preserva imagens, urls e preços reais da API)
     const productById = new Map();
-    for (const p of candidateProducts) {
+    for (const p of rankedCandidates) {
       const key = String(p.id || p.url || '');
       if (key) productById.set(key, p);
     }
@@ -4150,16 +4342,75 @@ Retorne APENAS JSON valido, sem markdown, sem comentarios:
     return { productCards: productCards.slice(0, 10), customerNote };
 
   } catch (err) {
+    if (/aborted|abort/i.test(String((err && err.message) || err))) {
+      console.warn('[SEMANTIC TIMEOUT] query=' + String(semanticQuery || '').slice(0, 120));
+    }
     console.warn('[SEMANTIC] Falha no ranking semantico, usando resposta padrao | erro: ' + String((err && err.message) || err));
     return { productCards: [], customerNote: '' };
   }
+}
+
+async function executePendingActionForConversation(action = {}, confirmation = '', context = {}) {
+  if (!action || action.type !== 'search_related_products') return null;
+  const {
+    effectiveConfig,
+    conversationHistory,
+    conversation,
+    apiKey,
+    provider
+  } = context;
+  const semanticQuery = String(action.semanticQuery || action.originalQuery || '').trim();
+  if (!semanticQuery) return null;
+  console.log('[PENDING ACTION EXECUTE] type=' + action.type + ' confirmation="' + normalizeSearchText(confirmation).slice(0, 40) + '"');
+  const productContext = await buildProductContextForConfig(semanticQuery, effectiveConfig, conversationHistory);
+  saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
+  const candidates = selectSemanticCandidateProducts(productContext.allProductsCollected || [], action.customerIntent || {}, semanticQuery, 60);
+  const semanticResult = isUsableProviderApiKey(provider, apiKey)
+    ? await semanticRankProducts(candidates, action.customerIntent || {}, semanticQuery, apiKey, provider)
+    : { productCards: [], customerNote: '' };
+  const cards = semanticResult.productCards || [];
+  if (cards.length > 0) {
+    const cardsWithImage = cards.filter(card => card.imageUrl);
+    const responseCards = cardsWithImage.length > 0 ? cardsWithImage : cards;
+    return {
+      skipped: false,
+      response: (semanticResult.customerNote || 'Encontrei opcoes parecidas.') + '\n\n' + buildProductCardsResponse(responseCards),
+      provider: 'catalog',
+      model: 'pending_related_product_search',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: responseCards.map(card => card.imageUrl).filter(Boolean),
+      product_cards: responseCards,
+      product_lookup_attempted: true,
+      product_search_text: semanticQuery,
+      products_found: true,
+      semantic_rank_used: true
+    };
+  }
+  return {
+    skipped: false,
+    response: buildProductLookupEmptyResponse(semanticQuery),
+    provider: 'catalog',
+    model: 'pending_related_product_empty',
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    processing_time_ms: 0,
+    product_images: [],
+    product_cards: [],
+    product_lookup_attempted: true,
+    product_search_text: semanticQuery,
+    products_found: false
+  };
 }
 
 // ─── FIM BUSCA SEMÂNTICA ──────────────────────────────────────────────────────
 
 async function buildProductContextForConfig(message, config, conversationHistory = []) {
   const searchText = buildProductSearchText(message, conversationHistory);
-  const configuredSources = buildConfiguredProductSources(config);
+  const configuredSources = buildProductSourcesForConfig(config);
   if (config?.product_search_enabled === false && configuredSources.length === 0) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
   const shouldSearch = shouldUseConfiguredProductSources(searchText);
   const excludeTitles = isCatalogFollowUpRequest(message)
@@ -4170,7 +4421,7 @@ async function buildProductContextForConfig(message, config, conversationHistory
 }
 
 async function buildSiteContextForConfig(message, config) {
-  const configuredSources = buildConfiguredProductSources(config);
+  const configuredSources = buildKnowledgeSourcesForConfig(config);
   const shouldSearch = shouldUseConfiguredSiteSources(message);
   if (!shouldSearch) return { contextText: '', lookupAttempted: false };
   const siteContext = await fetchSiteInfoContext(message, configuredSources);
@@ -4178,7 +4429,7 @@ async function buildSiteContextForConfig(message, config) {
 }
 
 async function buildOperationalContextForConfig(message, config, contact, conversation) {
-  const sources = buildOperationalIntegrationSources(config, message, contact, conversation);
+  const sources = buildOperationalSourcesForConfig(config, message, contact, conversation);
   if (sources.length === 0) return { contextText: '', lookupAttempted: false };
   const context = await fetchSiteInfoContext(message, sources);
   return {
@@ -4639,6 +4890,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   };
   const systemPrompt = buildSystemPrompt(effectiveConfig, contact, conversation);
   const conversationHistory = await getConversationMessagesFromStart(supabase, clientId, conversation?.id);
+  const apiKeyForClassify = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
 
   if (isSimpleGreeting(message)) {
     const response = suppressRepeatedGreeting(buildGreetingResponse(message, effectiveConfig), effectiveConfig.greeting_message, conversation);
@@ -4657,7 +4909,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   }
 
   const hasSelectedProductMemory = Boolean(getSelectedProductMemory(conversation));
-  const earlyStockFollowupIntent = (isStockAvailabilityFollowUp(message) || (hasSelectedProductMemory && isSelectedProductFollowUp(message)) || (extractProductIndexReference(message) && getRecentProductsMemory(conversation).length > 0))
+  const hasPendingProductSelection = Boolean(getPendingProductSelectionMemory(conversation));
+  const earlyStockFollowupIntent = (isStockAvailabilityFollowUp(message) || (hasSelectedProductMemory && isSelectedProductFollowUp(message)) || (extractProductIndexReference(message) && (getRecentProductsMemory(conversation).length > 0 || hasPendingProductSelection)))
     ? buildStockFollowupIntentFromMessage(message, conversationHistory, 'early_before_product_lookup', conversation)
     : null;
   if (earlyStockFollowupIntent) {
@@ -4679,6 +4932,40 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         product_search_text: ''
       };
     }
+  }
+
+  if (isPendingActionConfirmation(message)) {
+    const pendingAction = getPendingActionMemory(conversation);
+    if (pendingAction) {
+      const pendingResult = await executePendingActionForConversation(pendingAction, message, {
+        effectiveConfig,
+        conversationHistory,
+        conversation,
+        apiKey: apiKeyForClassify,
+        provider
+      });
+      clearPendingActionMemory(conversation);
+      if (pendingResult) return pendingResult;
+    } else {
+      console.log('[PENDING ACTION MISS] reason=no_pending_action');
+    }
+  }
+
+  if (isShortContextualReply(message)) {
+    return {
+      skipped: false,
+      response: 'Certo. Me diga o que voce quer consultar.',
+      provider: 'system',
+      model: 'contextual_short_reply_without_context',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: [],
+      product_lookup_attempted: false,
+      product_search_text: ''
+    };
   }
 
   if (!isWithinWorkingHours(config, config.timezone || 'America/Sao_Paulo')) {
@@ -4763,7 +5050,6 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   }
 
   // ─── NOVO: Classificação de intenção ────────────────────────────────────────
-  const apiKeyForClassify = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
   let customerIntent = await classifyCustomerIntent({
     apiKey: apiKeyForClassify,
     provider,
@@ -5222,6 +5508,12 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         if (productContext.lookupAttempted) {
           const _humanFallbackQuery = cleanQuery || semanticQuery || '';
           console.log('[PRODUCT FALLBACK HUMAN] reason=semantic_failed query="' + _humanFallbackQuery + '"');
+          savePendingActionMemory(conversation, {
+            type: 'search_related_products',
+            originalQuery: _humanFallbackQuery,
+            semanticQuery,
+            customerIntent
+          });
           return {
             skipped: false,
             response: buildProductLookupEmptyResponse(_humanFallbackQuery),

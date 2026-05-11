@@ -4387,7 +4387,235 @@ async function answerPlannerShadowMode(context = {}) {
   if (!plan) return null;
   const evidenceBundle = executePlannerToolsShadow(plan, conversationState, context);
   logPlannerShadowResult(plan, evidenceBundle, { ms: Date.now() - startedAt });
-  return { plan, evidenceBundle };
+  return { plan, evidenceBundle, conversationState };
+}
+
+function shouldUsePlannerForStorePolicy(plan = {}) {
+  if (!plan || plan.answer_type !== 'store_policy') return false;
+  if (plan.confidence !== 'high') return false;
+  if (plan.needs_clarification === true) return false;
+  const toolNames = Array.isArray(plan.tools) ? plan.tools.map(tool => tool.name).filter(Boolean) : [];
+  return toolNames.some(name => ['get_store_policy', 'search_knowledge_base', 'search_site_sources'].includes(name));
+}
+
+async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, context = {}) {
+  const conv = conversationState.conversationId || getConversationMemoryKey(context.conversation || {});
+  console.log('[PLANNER ACTIVE] type=store_policy conv=' + conv);
+  const evidenceBundle = {
+    facts: [],
+    products: [],
+    product_cards_preview: [],
+    missing_data: [],
+    warnings: [],
+    tools_executed: [],
+    tools_skipped: [],
+    contextText: ''
+  };
+  const tools = Array.isArray(plan.tools) ? plan.tools : [];
+  const query = String(
+    tools.map(tool => tool?.args?.query || tool?.args?.topic).find(Boolean)
+    || plan.understanding
+    || conversationState.message
+    || ''
+  ).trim();
+
+  for (const tool of tools) {
+    const name = tool.name;
+    if (name === 'get_store_policy') {
+      const topic = String(tool.args?.topic || query || conversationState.message || '').trim();
+      if (topic) {
+        evidenceBundle.facts.push('store_policy_topic=' + topic);
+        evidenceBundle.tools_executed.push({ name, reason: 'topic_identified' });
+        console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
+      } else {
+        evidenceBundle.missing_data.push('store_policy_topic');
+        evidenceBundle.tools_skipped.push({ name, reason: 'missing_topic' });
+        console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+      }
+      continue;
+    }
+
+    if (name === 'search_knowledge_base' || name === 'search_files') {
+      const knowledgeContext = buildKnowledgeContextForConfig(context.effectiveConfig || context.config || {});
+      if (knowledgeContext) {
+        evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + knowledgeContext.slice(0, 12000);
+        evidenceBundle.facts.push('knowledge_base_available=true');
+        evidenceBundle.tools_executed.push({ name, reason: 'knowledge_context_loaded' });
+        console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
+      } else {
+        evidenceBundle.missing_data.push('knowledge_base');
+        evidenceBundle.tools_skipped.push({ name, reason: 'no_knowledge_context' });
+        console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+      }
+      continue;
+    }
+
+    if (name === 'search_site_sources') {
+      const sources = buildKnowledgeSourcesForConfig(context.effectiveConfig || context.config || {});
+      if (sources.length > 0) {
+        const siteContext = await fetchSiteInfoContext(query || conversationState.message, sources);
+        if (siteContext.contextText) {
+          evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + buildSiteContextText(siteContext).slice(0, 12000);
+          evidenceBundle.facts.push('site_sources_available=true');
+          evidenceBundle.tools_executed.push({ name, reason: 'site_context_loaded' });
+          console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
+        } else {
+          evidenceBundle.missing_data.push('site_sources');
+          evidenceBundle.tools_skipped.push({ name, reason: 'empty_site_context' });
+          console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+        }
+      } else {
+        evidenceBundle.missing_data.push('site_sources');
+        evidenceBundle.tools_skipped.push({ name, reason: 'no_site_sources' });
+        console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+      }
+      continue;
+    }
+
+    evidenceBundle.tools_skipped.push({ name, reason: 'not_allowed_for_store_policy_active' });
+    console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+  }
+
+  console.log('[PLANNER ACTIVE EVIDENCE] facts=' + evidenceBundle.facts.length + ' missing=' + evidenceBundle.missing_data.length);
+  if (!evidenceBundle.contextText && evidenceBundle.facts.length === 0) {
+    console.log('[PLANNER ACTIVE FALLBACK] reason=no_evidence');
+    return null;
+  }
+
+  const answer = await generateFinalAnswerFromEvidence(
+    conversationState.message || context.message,
+    plan,
+    evidenceBundle,
+    {
+      ...(context.effectiveConfig || context.config || {}),
+      _plannerProvider: context.provider,
+      _plannerApiKey: context.apiKey
+    }
+  );
+  if (!answer || !answer.response) {
+    console.log('[PLANNER ACTIVE FALLBACK] reason=empty_answer');
+    return null;
+  }
+  console.log('[PLANNER ACTIVE ANSWER] confidence=' + (plan.confidence || ''));
+  return answer;
+}
+
+async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundle = {}, config = {}) {
+  const evidenceText = String(evidenceBundle.contextText || '').trim();
+  if (!evidenceText) {
+    return {
+      skipped: false,
+      response: 'Nao encontrei essa informacao nas fontes configuradas. Pode confirmar com um atendente?',
+      provider: 'planner',
+      model: 'planner_store_policy_no_evidence',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: [],
+      product_lookup_attempted: false,
+      product_search_text: ''
+    };
+  }
+
+  const provider = config._plannerProvider || getProviderForModel(config.model);
+  const apiKey = config._plannerApiKey;
+  const prompt = `Voce e atendente da Cabide Rosa Kids Atacado.
+Responda a pergunta do cliente usando somente as evidencias abaixo.
+Se a evidencia nao responder claramente, diga que nao encontrou essa informacao nas fontes configuradas e peca confirmacao.
+Nao invente regras, prazos, valores, endereco, excecoes ou politicas.
+Seja curto e humano.
+
+Pergunta do cliente: "${String(message || '').replace(/"/g, '\\"')}"
+Entendimento do planner: "${String(plan.understanding || '').replace(/"/g, '\\"')}"
+
+Evidencias:
+${evidenceText.slice(0, 16000)}`;
+
+  if (!isUsableProviderApiKey(provider, apiKey)) {
+    return {
+      skipped: false,
+      response: buildSiteContextSummaryResponse({ contextText: evidenceText }),
+      provider: 'planner',
+      model: 'planner_store_policy_summary',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: [],
+      product_lookup_attempted: false,
+      product_search_text: ''
+    };
+  }
+
+  const startedAt = Date.now();
+  if (provider === 'claude') {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: config.planner_final_model || config.planner_shadow_model || 'claude-3-haiku-20240307',
+        max_tokens: 450,
+        temperature: 0,
+        messages: [{ role: 'user', content: prompt }]
+      }),
+      signal: AbortSignal.timeout(Number(config.planner_active_timeout_ms || 7000))
+    });
+    if (!res.ok) throw new Error('planner_final_http_' + res.status);
+    const data = await res.json().catch(() => null);
+    const text = String(data?.content?.[0]?.text || '').trim();
+    if (!text) return null;
+    return {
+      skipped: false,
+      response: text,
+      provider: 'planner',
+      model: data?.model || config.planner_final_model || config.planner_shadow_model || 'claude-3-haiku-20240307',
+      prompt_tokens: data?.usage?.input_tokens || 0,
+      completion_tokens: data?.usage?.output_tokens || 0,
+      total_tokens: (data?.usage?.input_tokens || 0) + (data?.usage?.output_tokens || 0),
+      processing_time_ms: Date.now() - startedAt,
+      product_images: [],
+      product_cards: [],
+      product_lookup_attempted: false,
+      product_search_text: ''
+    };
+  }
+
+  const res = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: config.planner_final_model || config.planner_shadow_model || 'gpt-4o-mini',
+      temperature: 0,
+      max_output_tokens: 450,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }]
+    }),
+    signal: AbortSignal.timeout(Number(config.planner_active_timeout_ms || 7000))
+  });
+  if (!res.ok) throw new Error('planner_final_http_' + res.status);
+  const data = await res.json().catch(() => null);
+  const text = String(getOpenAIText(data) || '').trim();
+  if (!text) return null;
+  return {
+    skipped: false,
+    response: text,
+    provider: 'planner',
+    model: data?.model || config.planner_final_model || config.planner_shadow_model || 'gpt-4o-mini',
+    prompt_tokens: data?.usage?.input_tokens || data?.usage?.prompt_tokens || 0,
+    completion_tokens: data?.usage?.output_tokens || data?.usage?.completion_tokens || 0,
+    total_tokens: data?.usage?.total_tokens || 0,
+    processing_time_ms: Date.now() - startedAt,
+    product_images: [],
+    product_cards: [],
+    product_lookup_attempted: false,
+    product_search_text: ''
+  };
 }
 
 function savePendingActionMemory(conversation = {}, action = {}) {
@@ -5658,8 +5886,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   const conversationHistory = await getConversationMessagesFromStart(supabase, clientId, conversation?.id);
   const apiKeyForClassify = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
 
+  let plannerShadowResult = null;
   try {
-    await answerPlannerShadowMode({
+    plannerShadowResult = await answerPlannerShadowMode({
       message,
       conversation,
       contact,
@@ -5671,6 +5900,28 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     });
   } catch (error) {
     console.warn('[PLANNER SHADOW ERROR] message=' + String(error?.message || error).slice(0, 180));
+  }
+
+  if (shouldUsePlannerForStorePolicy(plannerShadowResult?.plan)) {
+    try {
+      const plannerActiveResult = await resolveStorePolicyWithPlanner(
+        plannerShadowResult.plan,
+        plannerShadowResult.conversationState || buildConversationStateForPlanner({ message, conversation, contact, conversationHistory }),
+        {
+          message,
+          conversation,
+          contact,
+          conversationHistory,
+          effectiveConfig,
+          config,
+          provider,
+          apiKey: apiKeyForClassify
+        }
+      );
+      if (plannerActiveResult) return plannerActiveResult;
+    } catch (error) {
+      console.warn('[PLANNER ACTIVE FALLBACK] reason=' + String(error?.message || error).slice(0, 180));
+    }
   }
 
   if (isSimpleGreeting(message)) {

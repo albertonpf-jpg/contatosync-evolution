@@ -3679,9 +3679,10 @@ function buildRecentProductStockAnswer(customerIntent = {}, message = '', conver
 
   if (!product) {
     savePendingStockFilters(conversation, filters);
-    savePendingProductSelectionMemory(conversation, recentProducts, filters);
+    const pendingOptions = savePendingProductSelectionMemory(conversation, recentProducts, filters, 5)
+      || buildPendingProductSelectionOptions(recentProducts, 5);
     return {
-      response: buildProductSelectionList(recentProducts.map(item => item.title).filter(Boolean)),
+      response: buildProductSelectionList(pendingOptions.map(item => item.title).filter(Boolean)),
       model: 'recent_product_selection'
     };
   }
@@ -3811,12 +3812,17 @@ function getSelectedProductMemory(conversation = {}) {
   return null;
 }
 
-function savePendingProductSelectionMemory(conversation = {}, products = [], pendingFilters = {}) {
-  const key = getConversationMemoryKey(conversation);
-  const options = (Array.isArray(products) ? products : []).slice(0, 5).map((product, index) => ({
+function buildPendingProductSelectionOptions(products = [], limit = 5) {
+  return (Array.isArray(products) ? products : []).slice(0, limit).map((product, index) => ({
     ...product,
     displayIndex: index + 1
   }));
+}
+
+function savePendingProductSelectionMemory(conversation = {}, products = [], pendingFilters = {}, limit = 5) {
+  const key = getConversationMemoryKey(conversation);
+  const totalCandidates = Array.isArray(products) ? products.length : 0;
+  const options = buildPendingProductSelectionOptions(products, limit);
   if (!key || options.length === 0) return;
   pendingProductSelectionByConversation.set(key, {
     options,
@@ -3824,7 +3830,8 @@ function savePendingProductSelectionMemory(conversation = {}, products = [], pen
     createdAt: Date.now(),
     ttlMs: RECENT_PRODUCTS_MEMORY_TTL_MS
   });
-  console.log('[PENDING PRODUCT SELECTION SAVE] conv=' + key + ' count=' + options.length);
+  console.log('[PENDING PRODUCT SELECTION SAVE] conv=' + key + ' count=' + options.length + ' totalCandidates=' + totalCandidates + ' limit=' + limit);
+  return options;
 }
 
 function getPendingProductSelectionMemory(conversation = {}) {
@@ -4197,8 +4204,97 @@ function buildProductSelectionList(titles) {
  * @param {string} provider          - 'claude' | 'openai'
  * @returns {Promise<{productCards: Array, customerNote: string}>}
  */
+function getSemanticProductHaystack(product = {}) {
+  return normalizeSearchText([
+    product.title,
+    product.description,
+    product.category,
+    product.categoryName,
+    product.categoria_nome,
+    Array.isArray(product.variations) ? product.variations.join(' ') : '',
+    Array.isArray(product.variacoes) ? product.variacoes.map(v => JSON.stringify(v)).join(' ') : ''
+  ].join(' '));
+}
+
+function hasAnySemanticTerm(haystack = '', terms = []) {
+  return terms.some(term => {
+    const normalized = normalizeSearchText(term);
+    return normalized && haystack.includes(normalized);
+  });
+}
+
+function getSemanticRequestProfile(customerIntent = {}, semanticQuery = '') {
+  const requestText = normalizeSearchText([
+    semanticQuery,
+    customerIntent.search_query || '',
+    customerIntent.semantic_query || '',
+    customerIntent.product_type || '',
+    customerIntent.theme || ''
+  ].join(' '));
+  const princessTerms = [
+    'princesa',
+    'princesas',
+    'rapunzel',
+    'elsa',
+    'frozen',
+    'disney',
+    'minnie',
+    'barbie',
+    'ariel',
+    'bela',
+    'jasmine',
+    'aurora',
+    'cinderela',
+    'moana',
+    'mulan',
+    'tiana',
+    'merida',
+    'sofia',
+    'branca de neve'
+  ];
+  return {
+    requestText,
+    wantsUpperPiece: hasAnySemanticTerm(requestText, ['camiseta', 'camisa', 'blusa', 't shirt', 'tshirt', 'cropped', 'body', 'moletom']),
+    wantsPrincessTheme: hasAnySemanticTerm(requestText, ['princesa', 'princesas']) || princessTerms.some(term => hasAnySemanticTerm(requestText, [term])),
+    princessTerms,
+    upperPieceTerms: ['camiseta', 'camisa', 'blusa', 't shirt', 'tshirt', 'cropped', 'body', 'moletom', 'regata', 'top'],
+    setTerms: ['conjunto', 'kit'],
+    pajamaTerms: ['pijama', 'camisola'],
+    isolatedBottomTerms: ['calca', 'saia', 'short', 'shorts', 'bermuda', 'legging', 'wide leg']
+  };
+}
+
+function evaluateSemanticProductFit(product = {}, requestProfile = {}) {
+  const haystack = getSemanticProductHaystack(product);
+  const hasPrincessTheme = hasAnySemanticTerm(haystack, requestProfile.princessTerms || []);
+  const isUpperPiece = hasAnySemanticTerm(haystack, requestProfile.upperPieceTerms || []);
+  const isSet = hasAnySemanticTerm(haystack, requestProfile.setTerms || []);
+  const isPajama = hasAnySemanticTerm(haystack, requestProfile.pajamaTerms || []);
+  const isIsolatedBottom = hasAnySemanticTerm(haystack, requestProfile.isolatedBottomTerms || []);
+
+  if (requestProfile.wantsPrincessTheme && !hasPrincessTheme) {
+    return { rejectReason: 'weak_theme_match', scoreAdjustment: -20 };
+  }
+
+  let scoreAdjustment = 0;
+  if (requestProfile.wantsUpperPiece) {
+    if (isUpperPiece) scoreAdjustment += 12;
+    if (isSet && hasPrincessTheme) scoreAdjustment += 7;
+    if (isPajama && hasPrincessTheme) scoreAdjustment += 4;
+    if (isIsolatedBottom && !hasPrincessTheme) scoreAdjustment -= 12;
+    if (!isUpperPiece && !isSet && !isPajama && !hasPrincessTheme) scoreAdjustment -= 6;
+  }
+  if (requestProfile.wantsPrincessTheme && hasPrincessTheme) scoreAdjustment += 10;
+  return { rejectReason: '', scoreAdjustment };
+}
+
+function escapeLogValue(value = '') {
+  return String(value || '').replace(/"/g, '\\"');
+}
+
 function selectSemanticCandidateProducts(allProducts = [], customerIntent = {}, semanticQuery = '', limit = 60) {
   const products = Array.isArray(allProducts) ? allProducts : [];
+  const requestProfile = getSemanticRequestProfile(customerIntent, semanticQuery);
   const queryTokens = getSpecificProductTokens(getSearchTokens([
     semanticQuery,
     customerIntent.search_query || '',
@@ -4209,31 +4305,29 @@ function selectSemanticCandidateProducts(allProducts = [], customerIntent = {}, 
   const themeTokens = getSpecificProductTokens(getSearchTokens(customerIntent.theme || ''));
   const productTypeTokens = getSpecificProductTokens(getSearchTokens(customerIntent.product_type || ''));
   const scored = products.map((product, index) => {
-    const haystack = normalizeSearchText([
-      product.title,
-      product.description,
-      product.category,
-      product.categoryName,
-      product.categoria_nome,
-      Array.isArray(product.variations) ? product.variations.join(' ') : '',
-      Array.isArray(product.variacoes) ? product.variacoes.map(v => JSON.stringify(v)).join(' ') : ''
-    ].join(' '));
+    const haystack = getSemanticProductHaystack(product);
+    const semanticFit = evaluateSemanticProductFit(product, requestProfile);
+    if (semanticFit.rejectReason) {
+      console.log('[SEMANTIC FILTER REJECT] title="' + escapeLogValue(product.title || '') + '" reason="' + semanticFit.rejectReason + '"');
+    }
     let score = 0;
     for (const token of queryTokens) if (token.length >= 3 && haystack.includes(token)) score += 3;
     for (const token of themeTokens) if (token.length >= 3 && haystack.includes(token)) score += 5;
     for (const token of productTypeTokens) if (token.length >= 3 && haystack.includes(token)) score += 4;
+    score += semanticFit.scoreAdjustment || 0;
     if (getProductAvailableStock(product) > 0) score += 1;
     if ((product.images || []).length > 0) score += 1;
-    return { product, score, index };
+    return { product, score, index, rejectReason: semanticFit.rejectReason };
   });
   const positives = scored
-    .filter(item => item.score > 0)
+    .filter(item => item.score > 0 && !item.rejectReason)
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .slice(0, limit)
     .map(item => item.product);
   const selected = positives.length > 0
     ? positives
     : scored
+      .filter(item => !item.rejectReason)
       .sort((a, b) => b.score - a.score || a.index - b.index)
       .slice(0, limit)
       .map(item => item.product);
@@ -4250,6 +4344,7 @@ async function semanticRankProducts(candidateProducts, customerIntent, semanticQ
     return { productCards: [], customerNote: '' };
   }
 
+  const requestProfile = getSemanticRequestProfile(customerIntent, semanticQuery);
   const rankedCandidates = candidateProducts.length > SEMANTIC_MAX_CANDIDATES
     ? selectSemanticCandidateProducts(candidateProducts, customerIntent, semanticQuery, SEMANTIC_MAX_CANDIDATES)
     : candidateProducts.slice(0, SEMANTIC_MAX_CANDIDATES);
@@ -4288,6 +4383,10 @@ Regras de selecao:
 - Use apenas o campo "id" exato dos produtos listados abaixo
 - Nao invente produtos nem altere dados
 - Prefira produtos com stock maior que zero (campo stock)
+- Se o cliente pediu camiseta, camisa, blusa ou t-shirt, priorize camiseta, camisa, blusa, t-shirt, cropped, body e moletom
+- Conjunto pode entrar se tiver tema/personagem forte; pijama pode entrar com score menor se tiver tema/personagem forte
+- Nao trate estrela sozinha como princesa/personagem
+- Para tema princesa, use apenas produtos com sinais claros como princesa, princesas, Rapunzel, Elsa, Frozen, Disney, Minnie, Barbie ou personagem equivalente
 - Se nenhum for compativel semanticamente, retorne matches: []
 - Maximo de ${SEMANTIC_MAX_RESULTS} produtos
 - Ordene por score decrescente (mais compativel primeiro)
@@ -4366,7 +4465,17 @@ Retorne APENAS JSON valido, sem markdown, sem comentarios:
 
     // Filtrar apenas IDs que existem na lista original — descartar qualquer invenção da IA
     const validMatches = rankResult.matches
-      .filter(m => m && productById.has(String(m.id || '')))
+      .filter(m => {
+        if (!m || !productById.has(String(m.id || ''))) return false;
+        const product = productById.get(String(m.id || ''));
+        const semanticFit = evaluateSemanticProductFit(product, requestProfile);
+        if (semanticFit.rejectReason) {
+          console.log('[SEMANTIC FILTER REJECT] title="' + escapeLogValue(product.title || '') + '" reason="' + semanticFit.rejectReason + '"');
+          return false;
+        }
+        m.score = Number(m.score || 0) + ((semanticFit.scoreAdjustment || 0) / 100);
+        return true;
+      })
       .sort((a, b) => (b.score || 0) - (a.score || 0))
       .slice(0, SEMANTIC_MAX_RESULTS);
 

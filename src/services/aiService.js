@@ -3846,6 +3846,428 @@ function getPendingProductSelectionMemory(conversation = {}) {
   return entry;
 }
 
+function getPlannerMemoryEntry(map, key) {
+  if (!key || !map || typeof map.get !== 'function') return null;
+  const entry = map.get(key);
+  if (!entry) return null;
+  const ttlMs = Number(entry.ttlMs || RECENT_PRODUCTS_MEMORY_TTL_MS);
+  const createdAt = Number(entry.createdAt || entry.selectedAt || 0);
+  if (createdAt && Date.now() - createdAt > ttlMs) return null;
+  return entry;
+}
+
+function summarizePlannerHistory(conversationHistory = []) {
+  return (Array.isArray(conversationHistory) ? conversationHistory : [])
+    .slice(-8)
+    .map(item => {
+      const author = (item.direction === 'out' || item.is_from_ai) ? 'Atendente/IA' : 'Cliente';
+      return `${author}: ${String(item.content || '').replace(/\s+/g, ' ').trim().slice(0, 160)}`;
+    })
+    .filter(line => line.trim() !== 'Cliente:' && line.trim() !== 'Atendente/IA:')
+    .join('\n')
+    .slice(0, 1200);
+}
+
+function buildPlannerProductSnapshot(product = {}, index = 1) {
+  const safeProduct = product && typeof product === 'object' ? product : {};
+  const rawProduct = safeProduct.rawProduct || safeProduct.raw_product || {};
+  return {
+    index: Number(safeProduct.displayIndex || safeProduct.display_index || index),
+    id: String(safeProduct.id || rawProduct.id || ''),
+    title: String(safeProduct.title || rawProduct.title || ''),
+    price: String(safeProduct.price || rawProduct.price || ''),
+    stock: firstValue(safeProduct.stock, safeProduct.total_estoque, safeProduct.quantity, rawProduct.stock, ''),
+    sizes: Array.isArray(safeProduct.sizes) && safeProduct.sizes.length
+      ? safeProduct.sizes.map(String).filter(Boolean).slice(0, 12)
+      : extractProductSizes(safeProduct).map(String).filter(Boolean).slice(0, 12),
+    availableSizes: Array.isArray(safeProduct.availableSizes) && safeProduct.availableSizes.length
+      ? safeProduct.availableSizes.map(String).filter(Boolean).slice(0, 12)
+      : getAvailableProductSizes(safeProduct).map(String).filter(Boolean).slice(0, 12),
+    colors: Array.isArray(safeProduct.colors) && safeProduct.colors.length
+      ? safeProduct.colors.map(String).filter(Boolean).slice(0, 12)
+      : (getAvailableProductVariationLabels(safeProduct).length
+        ? getAvailableProductVariationLabels(safeProduct)
+        : getDisplayColorVariations(safeProduct)).map(String).filter(Boolean).slice(0, 12)
+  };
+}
+
+function getPlannerProductSource(product = {}) {
+  if (!product || typeof product !== 'object') return {};
+  return product.rawProduct || product.raw_product || product;
+}
+
+function buildConversationStateForPlanner(context = {}) {
+  const conversation = context.conversation || {};
+  const contact = context.contact || {};
+  const key = getConversationMemoryKey(conversation);
+  const recentEntry = getPlannerMemoryEntry(recentProductsByConversation, key);
+  const selectedEntry = getPlannerMemoryEntry(selectedProductByConversation, key);
+  const pendingSelectionEntry = getPlannerMemoryEntry(pendingProductSelectionByConversation, key);
+  const pendingActionEntry = getPlannerMemoryEntry(pendingActionByConversation, key);
+  const pendingFiltersEntry = getPlannerMemoryEntry(pendingStockFiltersByConversation, key);
+  const recentProducts = dedupeRecentProductContext(recentEntry?.products || [])
+    .slice(0, 8)
+    .map((product, index) => buildPlannerProductSnapshot(product, index + 1));
+  const selectedProduct = selectedEntry?.product
+    ? buildPlannerProductSnapshot(selectedEntry.product, selectedEntry.selectedProductIndex || 1)
+    : null;
+
+  return {
+    conversationId: key,
+    message: String(context.message || ''),
+    contactPhone: String(contact.phone || contact.number || contact.whatsapp || ''),
+    recentHistorySummary: summarizePlannerHistory(context.conversationHistory || []),
+    hasRecentProducts: recentProducts.length > 0,
+    recentProducts,
+    hasSelectedProduct: Boolean(selectedProduct),
+    selectedProduct: selectedProduct || {
+      id: '',
+      title: '',
+      price: '',
+      stock: '',
+      sizes: [],
+      availableSizes: [],
+      colors: []
+    },
+    hasPendingSelection: Boolean(pendingSelectionEntry?.options?.length),
+    pendingSelectionCount: Array.isArray(pendingSelectionEntry?.options) ? pendingSelectionEntry.options.length : 0,
+    pendingSelectionOptions: Array.isArray(pendingSelectionEntry?.options)
+      ? pendingSelectionEntry.options.slice(0, 5).map((product, index) => buildPlannerProductSnapshot(product, index + 1))
+      : [],
+    hasPendingAction: Boolean(pendingActionEntry?.type),
+    pendingActionType: String(pendingActionEntry?.type || ''),
+    pendingFilters: pendingFiltersEntry?.filters || {},
+    availableSources: [
+      'product_api',
+      'order_api',
+      'tracking_api',
+      'knowledge_base',
+      'site_urls',
+      'files',
+      'conversation_history',
+      'recent_products',
+      'selected_product'
+    ]
+  };
+}
+
+function sanitizePlannerTool(tool = {}) {
+  const allowedTools = new Set([
+    'get_recent_products',
+    'get_selected_product',
+    'get_pending_product_selection',
+    'use_pending_action',
+    'search_products',
+    'semantic_search_products',
+    'inspect_product',
+    'inspect_product_variations',
+    'get_product_stock',
+    'get_order_status',
+    'get_tracking',
+    'search_knowledge_base',
+    'search_site_sources',
+    'search_files',
+    'get_store_policy',
+    'ask_clarification'
+  ]);
+  const name = String(tool.name || '').trim();
+  if (!allowedTools.has(name)) return null;
+  return {
+    name,
+    args: tool.args && typeof tool.args === 'object' && !Array.isArray(tool.args) ? tool.args : {},
+    reason: String(tool.reason || '').slice(0, 180)
+  };
+}
+
+function sanitizePlannerPlan(plan = {}) {
+  const validAnswerTypes = new Set([
+    'product_search',
+    'product_info',
+    'stock',
+    'variation',
+    'store_policy',
+    'order',
+    'tracking',
+    'pending_confirmation',
+    'selection',
+    'general',
+    'clarification'
+  ]);
+  const validConfidence = new Set(['high', 'medium', 'low']);
+  const tools = Array.isArray(plan.tools) ? plan.tools.map(sanitizePlannerTool).filter(Boolean).slice(0, 5) : [];
+  return {
+    understanding: String(plan.understanding || '').slice(0, 220),
+    answer_type: validAnswerTypes.has(plan.answer_type) ? plan.answer_type : 'general',
+    confidence: validConfidence.has(plan.confidence) ? plan.confidence : 'low',
+    needs_clarification: Boolean(plan.needs_clarification),
+    clarification_question: String(plan.clarification_question || '').slice(0, 220),
+    tools,
+    expected_answer_strategy: String(plan.expected_answer_strategy || '').slice(0, 300)
+  };
+}
+
+async function planCustomerRequestShadow(message, conversationState, config, provider, apiKey) {
+  if (!isUsableProviderApiKey(provider, apiKey)) {
+    console.log('[PLANNER SHADOW] skipped reason=no_api_key');
+    return null;
+  }
+
+  const plannerPrompt = `Voce e um planejador de atendimento WhatsApp da Cabide Rosa Kids Atacado.
+Sua tarefa nao e responder ao cliente.
+Sua tarefa e entender a mensagem e escolher quais ferramentas o sistema deveria usar para obter evidencias reais.
+
+Retorne apenas JSON valido.
+
+Voce recebe:
+- mensagem atual;
+- resumo do estado da conversa;
+- produtos recentes;
+- produto selecionado;
+- acoes pendentes;
+- fontes disponiveis.
+
+Voce deve:
+1. explicar em uma frase o que o cliente quer;
+2. escolher answer_type;
+3. escolher ferramentas necessarias;
+4. indicar se precisa de esclarecimento;
+5. nunca inventar resultado de ferramenta;
+6. nunca escrever a resposta final ao cliente.
+
+Ferramentas permitidas:
+get_recent_products, get_selected_product, get_pending_product_selection, use_pending_action, search_products, semantic_search_products, inspect_product, inspect_product_variations, get_product_stock, get_order_status, get_tracking, search_knowledge_base, search_site_sources, search_files, get_store_policy, ask_clarification.
+
+Regras:
+- Se a pergunta for "e nas outras cores?", planeje get_selected_product + inspect_product_variations quando houver selectedProduct.
+- Se a pergunta for "tem no tamanho 6?", planeje get_recent_products ou get_selected_product + get_product_stock.
+- Se a mensagem for "2", planeje get_pending_product_selection quando houver pendingProductSelection.
+- Se a mensagem for "Pode", planeje use_pending_action quando houver pendingAction.
+- Se a pergunta for "Precisa ter CNPJ?", planeje get_store_policy + search_knowledge_base/search_site_sources.
+- Se a pergunta for "Tem roupa da Minnie tamanho 4?", planeje semantic_search_products.
+- Se a pergunta for "Meu pedido 12345 saiu?", planeje get_order_status + get_tracking.
+- Se faltar contexto, use ask_clarification.
+
+Schema obrigatorio:
+{"understanding":"","answer_type":"product_search|product_info|stock|variation|store_policy|order|tracking|pending_confirmation|selection|general|clarification","confidence":"high|medium|low","needs_clarification":false,"clarification_question":"","tools":[{"name":"get_selected_product","args":{},"reason":""}],"expected_answer_strategy":""}
+
+Estado da conversa:
+${JSON.stringify(conversationState)}
+
+Mensagem atual: "${String(message || '').replace(/"/g, '\\"')}"`;
+
+  const timeoutMs = Number(config?.planner_shadow_timeout_ms || 4000);
+  const plannerModel = String(config?.planner_shadow_model || '').trim();
+  let responseText = '';
+  if (provider === 'claude') {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: plannerModel || 'claude-3-haiku-20240307',
+        max_tokens: 450,
+        temperature: 0,
+        messages: [{ role: 'user', content: plannerPrompt }]
+      }),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!res.ok) throw new Error('planner_http_' + res.status);
+    const data = await res.json().catch(() => null);
+    responseText = data?.content?.[0]?.text || '';
+  } else {
+    const res = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model: plannerModel || 'gpt-4o-mini',
+        temperature: 0,
+        max_output_tokens: 450,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: plannerPrompt }] }]
+      }),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!res.ok) throw new Error('planner_http_' + res.status);
+    const data = await res.json().catch(() => null);
+    responseText = getOpenAIText(data) || '';
+  }
+
+  const parsed = JSON.parse(String(responseText || '').replace(/```json|```/g, '').trim());
+  return sanitizePlannerPlan(parsed);
+}
+
+function addPlannerToolStatus(evidenceBundle, name, status, reason) {
+  const key = status === 'executed' ? 'tools_executed' : 'tools_skipped';
+  evidenceBundle[key].push({ name, reason });
+  console.log('[PLANNER TOOL] name=' + name + ' status=' + status + ' reason="' + escapeLogValue(reason || '') + '"');
+}
+
+function findPlannerProductForTool(tool = {}, conversationState = {}, context = {}) {
+  const key = getConversationMemoryKey(context.conversation || {});
+  const selectedEntry = getPlannerMemoryEntry(selectedProductByConversation, key);
+  if (tool.args?.product_ref === 'selected' && selectedEntry?.product) return selectedEntry.product;
+  if (selectedEntry?.product) return selectedEntry.product;
+  const recentEntry = getPlannerMemoryEntry(recentProductsByConversation, key);
+  const recentProducts = dedupeRecentProductContext(recentEntry?.products || []);
+  const requestedIndex = Number(tool.args?.index || tool.args?.displayIndex || extractProductIndexReference(conversationState.message));
+  if (requestedIndex) {
+    return recentProducts.find(product => Number(product.displayIndex) === requestedIndex) || recentProducts[requestedIndex - 1] || null;
+  }
+  return recentProducts[0] || null;
+}
+
+function executePlannerToolsShadow(plan = {}, conversationState = {}, context = {}) {
+  const evidenceBundle = {
+    facts: [],
+    products: [],
+    product_cards_preview: [],
+    missing_data: [],
+    warnings: [],
+    tools_executed: [],
+    tools_skipped: []
+  };
+  const tools = Array.isArray(plan.tools) ? plan.tools : [];
+  const key = getConversationMemoryKey(context.conversation || {});
+
+  for (const tool of tools) {
+    const name = tool.name;
+    if (name === 'get_recent_products') {
+      if (conversationState.hasRecentProducts) {
+        evidenceBundle.products.push(...conversationState.recentProducts);
+        evidenceBundle.facts.push('recent_products_count=' + conversationState.recentProducts.length);
+        addPlannerToolStatus(evidenceBundle, name, 'executed', 'read_recent_products_memory');
+      } else {
+        evidenceBundle.missing_data.push('recent_products');
+        addPlannerToolStatus(evidenceBundle, name, 'skipped', 'no_recent_products');
+      }
+      continue;
+    }
+
+    if (name === 'get_selected_product') {
+      if (conversationState.hasSelectedProduct) {
+        evidenceBundle.products.push(conversationState.selectedProduct);
+        evidenceBundle.facts.push('selected_product=' + conversationState.selectedProduct.title);
+        addPlannerToolStatus(evidenceBundle, name, 'executed', 'read_selected_product_memory');
+      } else {
+        evidenceBundle.missing_data.push('selected_product');
+        addPlannerToolStatus(evidenceBundle, name, 'skipped', 'no_selected_product');
+      }
+      continue;
+    }
+
+    if (name === 'get_pending_product_selection') {
+      if (conversationState.hasPendingSelection) {
+        evidenceBundle.products.push(...conversationState.pendingSelectionOptions);
+        evidenceBundle.facts.push('pending_selection_count=' + conversationState.pendingSelectionCount);
+        addPlannerToolStatus(evidenceBundle, name, 'executed', 'read_pending_selection_memory');
+      } else {
+        evidenceBundle.missing_data.push('pending_product_selection');
+        addPlannerToolStatus(evidenceBundle, name, 'skipped', 'no_pending_selection');
+      }
+      continue;
+    }
+
+    if (name === 'use_pending_action') {
+      if (conversationState.hasPendingAction) {
+        evidenceBundle.facts.push('pending_action_type=' + conversationState.pendingActionType);
+        addPlannerToolStatus(evidenceBundle, name, 'executed', 'reported_pending_action_only');
+      } else {
+        evidenceBundle.missing_data.push('pending_action');
+        addPlannerToolStatus(evidenceBundle, name, 'skipped', 'no_pending_action');
+      }
+      continue;
+    }
+
+    if (name === 'inspect_product' || name === 'inspect_product_variations') {
+      const product = findPlannerProductForTool(tool, conversationState, context);
+      if (product) {
+        const snapshot = buildPlannerProductSnapshot(product, Number(product.displayIndex || 1));
+        evidenceBundle.products.push(snapshot);
+        evidenceBundle.facts.push(name + '_title=' + snapshot.title);
+        evidenceBundle.facts.push('colors=' + snapshot.colors.join(', '));
+        evidenceBundle.facts.push('available_sizes=' + snapshot.availableSizes.join(', '));
+        addPlannerToolStatus(evidenceBundle, name, 'executed', 'read_product_variation_data');
+      } else {
+        evidenceBundle.missing_data.push('product');
+        addPlannerToolStatus(evidenceBundle, name, 'skipped', 'no_product_context');
+      }
+      continue;
+    }
+
+    if (name === 'get_product_stock') {
+      const product = findPlannerProductForTool(tool, conversationState, context);
+      if (product) {
+        const filters = {
+          ...(conversationState.pendingFilters || {}),
+          size: tool.args?.size || conversationState.pendingFilters?.size || extractRequestedSizes(conversationState.message)[0] || '',
+          color: tool.args?.color || conversationState.pendingFilters?.color || getColorTokens(getSearchTokens(conversationState.message))[0] || '',
+          variation: tool.args?.variation || conversationState.pendingFilters?.variation || ''
+        };
+        const stockResult = getStockForFilters(getPlannerProductSource(product), filters);
+        evidenceBundle.facts.push('stock_confidence=' + stockResult.confidence);
+        evidenceBundle.facts.push('stock_quantity=' + (stockResult.quantity === null || stockResult.quantity === undefined ? '' : stockResult.quantity));
+        addPlannerToolStatus(evidenceBundle, name, 'executed', 'calculated_stock_from_memory');
+      } else {
+        evidenceBundle.missing_data.push('product_stock');
+        addPlannerToolStatus(evidenceBundle, name, 'skipped', 'no_product_context');
+      }
+      continue;
+    }
+
+    if (['get_store_policy', 'search_knowledge_base', 'search_site_sources', 'search_files'].includes(name)) {
+      evidenceBundle.warnings.push(name + '_not_executed_in_phase_a');
+      addPlannerToolStatus(evidenceBundle, name, 'skipped', 'phase_a_source_lookup_not_executed');
+      continue;
+    }
+
+    if (['search_products', 'semantic_search_products', 'get_order_status', 'get_tracking'].includes(name)) {
+      evidenceBundle.warnings.push(name + '_not_executed_in_shadow_mode');
+      addPlannerToolStatus(evidenceBundle, name, 'skipped', 'side_effect_or_heavy_lookup_skipped');
+      continue;
+    }
+
+    if (name === 'ask_clarification') {
+      evidenceBundle.missing_data.push(tool.args?.topic || 'clarification_needed');
+      addPlannerToolStatus(evidenceBundle, name, 'executed', 'planned_clarification_only');
+      continue;
+    }
+
+    addPlannerToolStatus(evidenceBundle, name, 'skipped', 'unsupported_tool');
+  }
+
+  if (!key) evidenceBundle.warnings.push('no_conversation_id');
+  return evidenceBundle;
+}
+
+function logPlannerShadowResult(plan = {}, evidenceBundle = {}, meta = {}) {
+  const tools = (Array.isArray(plan.tools) ? plan.tools : []).map(tool => tool.name).filter(Boolean).join(',');
+  console.log('[PLANNER PLAN] answer_type=' + (plan.answer_type || '') + ' confidence=' + (plan.confidence || '') + ' tools=' + tools);
+  console.log('[PLANNER EVIDENCE] facts=' + (evidenceBundle.facts || []).length
+    + ' products=' + (evidenceBundle.products || []).length
+    + ' missing=' + (evidenceBundle.missing_data || []).length
+    + ' warnings=' + (evidenceBundle.warnings || []).length);
+  console.log('[PLANNER SHADOW DONE] ms=' + Number(meta.ms || 0));
+}
+
+async function answerPlannerShadowMode(context = {}) {
+  const startedAt = Date.now();
+  const conversationState = buildConversationStateForPlanner(context);
+  console.log('[PLANNER SHADOW] enabled=true conv=' + (conversationState.conversationId || '') + ' message="' + escapeLogValue(String(context.message || '').slice(0, 160)) + '"');
+  const plan = await planCustomerRequestShadow(
+    context.message,
+    conversationState,
+    context.effectiveConfig || context.config || {},
+    context.provider,
+    context.apiKey
+  );
+  if (!plan) return null;
+  const evidenceBundle = executePlannerToolsShadow(plan, conversationState, context);
+  logPlannerShadowResult(plan, evidenceBundle, { ms: Date.now() - startedAt });
+  return { plan, evidenceBundle };
+}
+
 function savePendingActionMemory(conversation = {}, action = {}) {
   const key = getConversationMemoryKey(conversation);
   if (!key || !action.type) return;
@@ -5100,6 +5522,21 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   const systemPrompt = buildSystemPrompt(effectiveConfig, contact, conversation);
   const conversationHistory = await getConversationMessagesFromStart(supabase, clientId, conversation?.id);
   const apiKeyForClassify = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
+
+  try {
+    await answerPlannerShadowMode({
+      message,
+      conversation,
+      contact,
+      conversationHistory,
+      effectiveConfig,
+      config,
+      provider,
+      apiKey: apiKeyForClassify
+    });
+  } catch (error) {
+    console.warn('[PLANNER SHADOW ERROR] message=' + String(error?.message || error).slice(0, 180));
+  }
 
   if (isSimpleGreeting(message)) {
     const response = suppressRepeatedGreeting(buildGreetingResponse(message, effectiveConfig), effectiveConfig.greeting_message, conversation);

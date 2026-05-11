@@ -1189,17 +1189,30 @@ function getSearchTokens(value) {
 function isShortContextualReply(message = '') {
   const text = normalizeSearchText(message);
   if (!text) return false;
-  return /^(pode|pode sim|quero|quero sim|sim|manda|manda sim|pode procurar|ok|okay|1|2|3|4|5|primeiro|primeira|segundo|segunda|terceiro|terceira|quarto|quarta|quinto|quinta|esse|essa|desse|dessa)$/i.test(text);
+  return /^(pode|pode sim|pode ser|quero|quero sim|sim|sim quero|manda|manda sim|pode procurar|ok|okay|isso|1|2|3|4|5|primeiro|primeira|segundo|segunda|terceiro|terceira|quarto|quarta|quinto|quinta|esse|essa|desse|dessa)$/i.test(text);
 }
 
 function isPendingActionConfirmation(message = '') {
   const text = normalizeSearchText(message);
-  return /^(pode|pode sim|quero|quero sim|sim|manda|manda sim|pode procurar|quero ver|ok|okay)$/i.test(text);
+  return /^(pode|pode sim|pode ser|quero|quero sim|sim|sim quero|manda|manda sim|pode procurar|quero ver|ok|okay|isso)$/i.test(text);
+}
+
+function getMinimumOrderPolicyQuery(message = '') {
+  const text = normalizeSearchText(message);
+  if (!text) return '';
+  if (/\b(pedido minimo|compra minima|minimo|valor minimo|fecha o minimo)\b/i.test(text)) return 'pedido mínimo 6 peças';
+  if (/\b(deixam passar|posso comprar menos|quantas pecas minimo)\b/i.test(text)) return 'pedido mínimo 6 peças';
+  if (/\bso\s+\d+\s+pecas?\b/i.test(text)) return 'pedido mínimo 6 peças';
+  if (/\bmenos de\s+\d+\b/i.test(text)) return 'pedido mínimo 6 peças';
+  if (/\bposso comprar\s+\d+\b/i.test(text)) return 'pedido mínimo 6 peças';
+  return '';
 }
 
 function getStorePolicyKnowledgeQuery(message = '') {
   const text = normalizeSearchText(message);
   if (!text) return '';
+  const minimumOrderQuery = getMinimumOrderPolicyQuery(message);
+  if (minimumOrderQuery) return minimumOrderQuery;
   if (/\bcnpj\b/i.test(text)) return 'cnpj';
   if (/\bcpf\b|pessoa fisica|pessoa física/i.test(text)) return 'cpf pessoa fisica';
   if (/precisa ter cadastro|tem que ter cadastro|cadastro/i.test(text)) return 'cadastro';
@@ -1207,10 +1220,11 @@ function getStorePolicyKnowledgeQuery(message = '') {
   if (/pedido minimo|minimo de pecas|mínimo de peças|valor minimo|compra minima/i.test(text)) return 'pedido minimo';
   if (/como comprar|comprar com voces|comprar com vocês/i.test(text)) return 'como comprar';
   if (/\bpagamento\b|\bpagar\b|\bpix\b|\bcartao\b|\bcartão\b|\bboleto\b/i.test(text)) return 'pagamento';
-  if (/\bentrega\b|\bfrete\b|\benviar\b|\benvio\b/i.test(text)) return 'entrega frete';
+  if (/\b(excursao|bras|br[aá]s)\b/i.test(text) && /\b(entrega|entregam|enviar|envio|retirada|retirar|buscar)\b/i.test(text)) return 'entrega excursao bras';
+  if (/\bentrega\b|\bentregam\b|\bfrete\b|\benviar\b|\benvio\b|\bmotoboy\b/i.test(text)) return 'entrega frete';
   if (/\bendereco\b|\bendereço\b|onde fica|localizacao|localização/i.test(text)) return 'endereco';
   if (/\btroca\b|\bdevolucao\b|\bdevolução\b/i.test(text)) return text.includes('devolu') ? 'devolucao' : 'troca';
-  if (/\bretirada\b|\bretirar\b/i.test(text)) return 'retirada';
+  if (/\bretirada\b|\bretirar\b|\bpessoalmente\b|buscar ai|posso retirar|retirar no estoque|endereco retirada|manda o endereco pra retirar/i.test(text)) return 'retirada endereco';
   if (/\bhorario\b|\bhorário\b|funcionamento/i.test(text)) return 'horario';
   return '';
 }
@@ -2787,6 +2801,10 @@ function buildProductSearchText(message, conversationHistory = []) {
  * Se a IA falhar, usa fallback determinístico leve.
  */
 async function classifyCustomerIntent({ apiKey, provider, message, conversationHistory, config }) {
+  if (getStorePolicyKnowledgeQuery(message)) {
+    return classifyCustomerIntentFallback(message, conversationHistory);
+  }
+
   // Tenta classificação por IA se houver API key válida
   if (isUsableProviderApiKey(provider, apiKey)) {
     try {
@@ -2867,6 +2885,9 @@ Retorne APENAS um JSON válido, sem markdown, sem comentários, sem texto adicio
 - REGRA ABSOLUTA: se a mensagem contém nome de produto (camisa, camiseta, blusa, vestido, saia, conjunto, moletom, body, roupa, pijama, jaqueta, casaco, bermuda, short, calca, cropped) OU tema/personagem/marca (princesa, disney, frozen, personagem, marvel, etc), é SEMPRE product_search, NUNCA product_stock_followup.
 - product_stock_followup SOMENTE para mensagens sem nome de produto E sem tema/personagem: "tem no tamanho 6?", "quantas tem?", "tem PP?", "ainda tem?".
 - "quantas" NUNCA é nome de produto.
+- Perguntas sobre pedido minimo ou quantidade minima de compra sao knowledge_question, nao product_search. Ex: "Se eu comprar so 4 pecas voces deixam passar?", "posso comprar menos?", "quantas pecas minimo?".
+- Perguntas sobre retirada pessoal, entrega em excursao no Bras, motoboy, frete, envio ou endereco sao knowledge_question/store_info, nao general_message.
+- Confirmacoes curtas como "sim quero", "quero", "sim", "pode", "manda" so podem virar acao se houver contexto pendente; sem contexto, use clarification.
 - Se há produtos no contexto recente e o cliente pergunta sobre tamanho/estoque sem especificar qual produto, needs_clarification=true.
 - search_query deve conter o substantivo de produto E os modificadores importantes: tema, personagem, marca, estampa. NUNCA remova tema/personagem/marca do search_query. Exemplos corretos: "camiseta princesas", "camisa princesa Disney", "camisa personagens", "moletom frozen". Exemplos ERRADOS (perdem o modificador): "camiseta", "camisa", "moletom".
 - Se a mensagem pede tema/personagem de forma ampla ("tem algo de princesa?", "nao tem nada com tema disney?"), é product_search com search_query apenas dos tokens do tema, SEM herdar produto anterior do contexto.
@@ -3042,6 +3063,26 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
   }
 
   // 1. Se tem número de pedido → order_lookup ou tracking_lookup
+  const minimumOrderQuery = getMinimumOrderPolicyQuery(message);
+  if (minimumOrderQuery) {
+    console.log('[CLASSIFY-FALLBACK KNOWLEDGE] reason=minimum_order query="pedido mínimo"');
+    return {
+      intent: 'knowledge_question',
+      source: 'knowledge_base',
+      search_query: minimumOrderQuery,
+      filters: { size: '', color: '', category: '' },
+      order_id: '',
+      reference: 'none',
+      needs_clarification: false,
+      clarification_question: '',
+      ..._buildPhase1Fields('knowledge_question', {
+        question_type: 'store_info',
+        sources_needed: ['knowledge_base', 'site_urls', 'files'],
+        operation: 'lookup'
+      })
+    };
+  }
+
   const storePolicyQuery = getStorePolicyKnowledgeQuery(message);
   if (storePolicyQuery) {
     console.log('[CLASSIFY-FALLBACK KNOWLEDGE] reason=store_policy query="' + storePolicyQuery + '"');
@@ -4047,21 +4088,80 @@ function buildDeterministicStorePolicyPlannerPlan(message = '') {
   const query = getStorePolicyKnowledgeQuery(message);
   if (!query) return null;
   console.log('[PLANNER SHADOW] deterministic=true reason=store_policy');
+  const minimumOrderQuery = getMinimumOrderPolicyQuery(message);
+  const shouldSearchSite = /\b(entrega|entregam|excursao|bras|br[aá]s|retirada|retirar|pessoalmente|endereco|motoboy|frete|envio)\b/i.test(normalizeSearchText(message));
+  const tools = [
+    { name: 'get_store_policy', args: { topic: query }, reason: 'pergunta sobre regra da loja' },
+    { name: 'search_knowledge_base', args: { query }, reason: 'confirmar a regra nas fontes disponiveis' }
+  ];
+  if (shouldSearchSite) {
+    tools.push({ name: 'search_site_sources', args: { query }, reason: 'confirmar informacao em fontes do site' });
+  }
   return {
-    understanding: 'Cliente quer saber uma regra de compra ou politica da loja.',
+    understanding: minimumOrderQuery
+      ? 'Cliente quer saber se pode comprar abaixo do pedido minimo.'
+      : shouldSearchSite
+        ? 'Cliente quer saber uma regra de entrega, retirada ou endereco da loja.'
+        : 'Cliente quer saber uma regra de compra ou politica da loja.',
     answer_type: 'store_policy',
     confidence: 'high',
     needs_clarification: false,
     clarification_question: '',
-    tools: [
-      { name: 'get_store_policy', args: { topic: query }, reason: 'pergunta sobre regra de compra da loja' },
-      { name: 'search_knowledge_base', args: { query }, reason: 'confirmar a regra nas fontes disponiveis' }
-    ],
+    tools,
     expected_answer_strategy: 'Responder usando somente a politica encontrada nas fontes da loja.'
   };
 }
 
+function buildDeterministicContextualPlannerPlan(message = '', conversationState = {}) {
+  if (!isShortContextualReply(message)) return null;
+  if (conversationState.hasPendingAction) {
+    return {
+      understanding: 'Cliente esta confirmando a acao pendente.',
+      answer_type: 'pending_confirmation',
+      confidence: 'high',
+      needs_clarification: false,
+      clarification_question: '',
+      tools: [{ name: 'use_pending_action', args: {}, reason: 'mensagem curta confirma a acao pendente' }],
+      expected_answer_strategy: 'Executar a acao pendente e responder com evidencias reais.'
+    };
+  }
+  if (conversationState.hasPendingSelection) {
+    return {
+      understanding: 'Cliente respondeu dentro de uma selecao pendente.',
+      answer_type: 'selection',
+      confidence: 'medium',
+      needs_clarification: false,
+      clarification_question: '',
+      tools: [{ name: 'get_pending_product_selection', args: {}, reason: 'ha selecao de produto pendente' }],
+      expected_answer_strategy: 'Usar a selecao pendente antes de qualquer busca nova.'
+    };
+  }
+  if (conversationState.hasSelectedProduct) {
+    return {
+      understanding: 'Cliente confirmou algo sobre o produto ativo, mas falta a pergunta especifica.',
+      answer_type: 'clarification',
+      confidence: 'medium',
+      needs_clarification: true,
+      clarification_question: 'Claro. Me diz o que voce quer saber desse produto.',
+      tools: [{ name: 'get_selected_product', args: {}, reason: 'ha produto ativo na conversa' }],
+      expected_answer_strategy: 'Pedir o detalhe que falta antes de consultar dados do produto.'
+    };
+  }
+  return {
+    understanding: 'Cliente enviou uma confirmacao curta sem contexto pendente.',
+    answer_type: 'clarification',
+    confidence: 'high',
+    needs_clarification: true,
+    clarification_question: 'Claro 😊 Me diz qual produto ou informação você quer que eu veja.',
+    tools: [{ name: 'ask_clarification', args: { topic: 'missing_context' }, reason: 'nao ha estado pendente para confirmar' }],
+    expected_answer_strategy: 'Pedir contexto antes de buscar catalogo ou responder.'
+  };
+}
+
 async function planCustomerRequestShadow(message, conversationState, config, provider, apiKey) {
+  const contextualPlan = buildDeterministicContextualPlannerPlan(message, conversationState);
+  if (contextualPlan) return contextualPlan;
+
   const deterministicPlan = buildDeterministicStorePolicyPlannerPlan(message);
   if (deterministicPlan) return deterministicPlan;
 
@@ -4074,7 +4174,7 @@ async function planCustomerRequestShadow(message, conversationState, config, pro
   const plannerPrompt = `Planeje atendimento WhatsApp da Cabide Rosa Kids Atacado. Nao responda ao cliente. Retorne somente JSON valido.
 Schema: {"understanding":"","answer_type":"product_search|product_info|stock|variation|store_policy|order|tracking|pending_confirmation|selection|general|clarification","confidence":"high|medium|low","needs_clarification":false,"clarification_question":"","tools":[{"name":"get_selected_product","args":{},"reason":""}],"expected_answer_strategy":""}
 Ferramentas: get_recent_products,get_selected_product,get_pending_product_selection,use_pending_action,search_products,semantic_search_products,inspect_product,inspect_product_variations,get_product_stock,get_order_status,get_tracking,search_knowledge_base,search_site_sources,search_files,get_store_policy,ask_clarification.
-Regras: "outras cores" => get_selected_product + inspect_product_variations; "tamanho 6" => get_selected_product/get_recent_products + get_product_stock; "2" => get_pending_product_selection; "Pode" => use_pending_action; "CNPJ" => get_store_policy + search_knowledge_base; "Minnie tamanho 4" => semantic_search_products; "pedido 12345 saiu" => get_order_status + get_tracking; se faltar contexto => ask_clarification.
+Regras: "outras cores" => get_selected_product + inspect_product_variations; "tamanho 6" => get_selected_product/get_recent_products + get_product_stock; "2" => get_pending_product_selection; "Pode" => use_pending_action; "CNPJ" => get_store_policy + search_knowledge_base; "Se eu comprar so 4 pecas voces deixam passar?" => store_policy com get_store_policy + search_knowledge_base; "Voces entregam em excursao no Bras?" => store_policy com get_store_policy + search_site_sources; "Consigo retirar ai pessoalmente?" => store_policy com get_store_policy + search_site_sources; "Manda o endereco pra retirar" => store_policy com get_store_policy + search_site_sources; "sim quero" sem estado pendente => clarification + ask_clarification; "Minnie tamanho 4" => semantic_search_products; "pedido 12345 saiu" => get_order_status + get_tracking; se faltar contexto => ask_clarification.
 Estado compacto: ${JSON.stringify(compactState)}`;
 
   const timeoutMs = Number(config?.planner_shadow_timeout_ms || 4000);
@@ -5589,8 +5689,12 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     };
   }
 
-  const hasSelectedProductMemory = Boolean(getSelectedProductMemory(conversation));
-  const hasPendingProductSelection = Boolean(getPendingProductSelectionMemory(conversation));
+  const selectedProductMemory = getSelectedProductMemory(conversation);
+  const pendingProductSelectionMemory = getPendingProductSelectionMemory(conversation);
+  const pendingActionMemory = getPendingActionMemory(conversation);
+  const hasSelectedProductMemory = Boolean(selectedProductMemory);
+  const hasPendingProductSelection = Boolean(pendingProductSelectionMemory);
+  const hasPendingActionMemory = Boolean(pendingActionMemory);
   const earlyStockFollowupIntent = (isStockAvailabilityFollowUp(message) || (hasSelectedProductMemory && isSelectedProductFollowUp(message)) || (extractProductIndexReference(message) && (getRecentProductsMemory(conversation).length > 0 || hasPendingProductSelection)))
     ? buildStockFollowupIntentFromMessage(message, conversationHistory, 'early_before_product_lookup', conversation)
     : null;
@@ -5616,7 +5720,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   }
 
   if (isPendingActionConfirmation(message)) {
-    const pendingAction = getPendingActionMemory(conversation);
+    const pendingAction = pendingActionMemory || getPendingActionMemory(conversation);
     if (pendingAction) {
       const pendingResult = await executePendingActionForConversation(pendingAction, message, {
         effectiveConfig,
@@ -5632,7 +5736,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     }
   }
 
-  if (isShortContextualReply(message)) {
+  if (isShortContextualReply(message) && !hasPendingActionMemory && !hasPendingProductSelection && !hasSelectedProductMemory) {
+    console.log('[CONTEXTUAL SHORT MESSAGE] action=clarify reason=no_pending_state');
     return {
       skipped: false,
       response: 'Certo. Me diga o que voce quer consultar.',

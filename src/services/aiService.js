@@ -3716,7 +3716,16 @@ function isOrderLikeRecentProductLine(value = '') {
   const text = normalizeSearchText(value);
   if (!text) return true;
   return /\b(pedido|codigo interno|codigo|cliente|total|entrega|status|pagamento|rastreio|integracao|transportadora|sedex|pac|forma entrega|forma_entrega|despachado|separacao|separado|entregue)\b/i.test(text)
-    || /\b(nao encontrei|no momento|quer que eu|posso procurar|posso buscar|de qual produto|qual opcao|atendente|pode me mandar|o endereco|esse produto aparece)\b/i.test(text)
+    || /\b(desse modelo encontrei|nao encontrei|não encontrei|no momento|quer que eu|posso procurar|posso buscar|de qual produto|qual opcao|atendente|pode me mandar|o endereco|esse produto aparece)\b/i.test(text)
+    || /^\s*tenho\s+\d+\s+peca/i.test(text)
+    || /^\s*tamanho\s+\w+\s*:/i.test(text);
+}
+
+function isBotStockResponseLine(value = '') {
+  const text = normalizeSearchText(value);
+  if (!text) return true;
+  return /\b(desse modelo encontrei|nao encontrei|não encontrei|posso procurar|quer que eu|esse produto aparece)\b/i.test(text)
+    || /^\s*tamanho\s+\w+\s*:/i.test(text)
     || /^\s*tenho\s+\d+\s+peca/i.test(text);
 }
 
@@ -3891,6 +3900,34 @@ function buildPlannerProductSnapshot(product = {}, index = 1) {
   };
 }
 
+function buildCompactPlannerState(conversationState = {}) {
+  return {
+    message: String(conversationState.message || ''),
+    hasRecentProducts: Boolean(conversationState.hasRecentProducts),
+    hasSelectedProduct: Boolean(conversationState.hasSelectedProduct),
+    hasPendingAction: Boolean(conversationState.hasPendingAction),
+    hasPendingSelection: Boolean(conversationState.hasPendingSelection),
+    pendingActionType: String(conversationState.pendingActionType || ''),
+    pendingSelectionCount: Number(conversationState.pendingSelectionCount || 0),
+    recentProducts: (conversationState.recentProducts || []).slice(0, 5).map(product => ({
+      index: product.index,
+      id: product.id,
+      title: product.title,
+      stock: product.stock,
+      availableSizes: (product.availableSizes || []).slice(0, 8),
+      colors: (product.colors || []).slice(0, 8)
+    })),
+    selectedProduct: conversationState.hasSelectedProduct ? {
+      id: conversationState.selectedProduct.id,
+      title: conversationState.selectedProduct.title,
+      stock: conversationState.selectedProduct.stock,
+      availableSizes: (conversationState.selectedProduct.availableSizes || []).slice(0, 8),
+      colors: (conversationState.selectedProduct.colors || []).slice(0, 8)
+    } : null,
+    availableSources: conversationState.availableSources || []
+  };
+}
+
 function getPlannerProductSource(product = {}) {
   if (!product || typeof product !== 'object') return {};
   return product.rawProduct || product.raw_product || product;
@@ -4006,54 +4043,39 @@ function sanitizePlannerPlan(plan = {}) {
   };
 }
 
+function buildDeterministicStorePolicyPlannerPlan(message = '') {
+  const query = getStorePolicyKnowledgeQuery(message);
+  if (!query) return null;
+  console.log('[PLANNER SHADOW] deterministic=true reason=store_policy');
+  return {
+    understanding: 'Cliente quer saber uma regra de compra ou politica da loja.',
+    answer_type: 'store_policy',
+    confidence: 'high',
+    needs_clarification: false,
+    clarification_question: '',
+    tools: [
+      { name: 'get_store_policy', args: { topic: query }, reason: 'pergunta sobre regra de compra da loja' },
+      { name: 'search_knowledge_base', args: { query }, reason: 'confirmar a regra nas fontes disponiveis' }
+    ],
+    expected_answer_strategy: 'Responder usando somente a politica encontrada nas fontes da loja.'
+  };
+}
+
 async function planCustomerRequestShadow(message, conversationState, config, provider, apiKey) {
+  const deterministicPlan = buildDeterministicStorePolicyPlannerPlan(message);
+  if (deterministicPlan) return deterministicPlan;
+
   if (!isUsableProviderApiKey(provider, apiKey)) {
     console.log('[PLANNER SHADOW] skipped reason=no_api_key');
     return null;
   }
 
-  const plannerPrompt = `Voce e um planejador de atendimento WhatsApp da Cabide Rosa Kids Atacado.
-Sua tarefa nao e responder ao cliente.
-Sua tarefa e entender a mensagem e escolher quais ferramentas o sistema deveria usar para obter evidencias reais.
-
-Retorne apenas JSON valido.
-
-Voce recebe:
-- mensagem atual;
-- resumo do estado da conversa;
-- produtos recentes;
-- produto selecionado;
-- acoes pendentes;
-- fontes disponiveis.
-
-Voce deve:
-1. explicar em uma frase o que o cliente quer;
-2. escolher answer_type;
-3. escolher ferramentas necessarias;
-4. indicar se precisa de esclarecimento;
-5. nunca inventar resultado de ferramenta;
-6. nunca escrever a resposta final ao cliente.
-
-Ferramentas permitidas:
-get_recent_products, get_selected_product, get_pending_product_selection, use_pending_action, search_products, semantic_search_products, inspect_product, inspect_product_variations, get_product_stock, get_order_status, get_tracking, search_knowledge_base, search_site_sources, search_files, get_store_policy, ask_clarification.
-
-Regras:
-- Se a pergunta for "e nas outras cores?", planeje get_selected_product + inspect_product_variations quando houver selectedProduct.
-- Se a pergunta for "tem no tamanho 6?", planeje get_recent_products ou get_selected_product + get_product_stock.
-- Se a mensagem for "2", planeje get_pending_product_selection quando houver pendingProductSelection.
-- Se a mensagem for "Pode", planeje use_pending_action quando houver pendingAction.
-- Se a pergunta for "Precisa ter CNPJ?", planeje get_store_policy + search_knowledge_base/search_site_sources.
-- Se a pergunta for "Tem roupa da Minnie tamanho 4?", planeje semantic_search_products.
-- Se a pergunta for "Meu pedido 12345 saiu?", planeje get_order_status + get_tracking.
-- Se faltar contexto, use ask_clarification.
-
-Schema obrigatorio:
-{"understanding":"","answer_type":"product_search|product_info|stock|variation|store_policy|order|tracking|pending_confirmation|selection|general|clarification","confidence":"high|medium|low","needs_clarification":false,"clarification_question":"","tools":[{"name":"get_selected_product","args":{},"reason":""}],"expected_answer_strategy":""}
-
-Estado da conversa:
-${JSON.stringify(conversationState)}
-
-Mensagem atual: "${String(message || '').replace(/"/g, '\\"')}"`;
+  const compactState = buildCompactPlannerState(conversationState);
+  const plannerPrompt = `Planeje atendimento WhatsApp da Cabide Rosa Kids Atacado. Nao responda ao cliente. Retorne somente JSON valido.
+Schema: {"understanding":"","answer_type":"product_search|product_info|stock|variation|store_policy|order|tracking|pending_confirmation|selection|general|clarification","confidence":"high|medium|low","needs_clarification":false,"clarification_question":"","tools":[{"name":"get_selected_product","args":{},"reason":""}],"expected_answer_strategy":""}
+Ferramentas: get_recent_products,get_selected_product,get_pending_product_selection,use_pending_action,search_products,semantic_search_products,inspect_product,inspect_product_variations,get_product_stock,get_order_status,get_tracking,search_knowledge_base,search_site_sources,search_files,get_store_policy,ask_clarification.
+Regras: "outras cores" => get_selected_product + inspect_product_variations; "tamanho 6" => get_selected_product/get_recent_products + get_product_stock; "2" => get_pending_product_selection; "Pode" => use_pending_action; "CNPJ" => get_store_policy + search_knowledge_base; "Minnie tamanho 4" => semantic_search_products; "pedido 12345 saiu" => get_order_status + get_tracking; se faltar contexto => ask_clarification.
+Estado compacto: ${JSON.stringify(compactState)}`;
 
   const timeoutMs = Number(config?.planner_shadow_timeout_ms || 4000);
   const plannerModel = String(config?.planner_shadow_model || '').trim();
@@ -4443,8 +4465,14 @@ function dedupeRecentProductContext(products = []) {
 }
 
 function getReliableRecentProductStockContext(conversationHistory = [], conversation = {}) {
+  const conversationKey = getConversationMemoryKey(conversation);
   const memoryProducts = getRecentProductsMemory(conversation);
   if (memoryProducts.length > 0) return memoryProducts;
+
+  if (!conversationKey) {
+    console.log('[RECENT PRODUCTS SOURCE] source=none count=0 reason=no_conversation_id');
+    return [];
+  }
 
   if (!Array.isArray(conversationHistory)) return [];
   const recentAi = conversationHistory
@@ -4479,6 +4507,7 @@ function getReliableRecentProductStockContext(conversationHistory = [], conversa
   }
 
   const textProducts = [];
+  let rejectedBotResponse = 0;
   for (const msg of recentAi) {
     const blocks = String(msg.content || '').split(/\n\n+/);
     for (const block of blocks) {
@@ -4486,6 +4515,10 @@ function getReliableRecentProductStockContext(conversationHistory = [], conversa
       if (lines.length === 0) continue;
       const blockText = [lines[0], ...lines.slice(1, 5)].join('\n');
       const title = cleanRecentProductTitleLine(lines[0]);
+      if (isBotStockResponseLine(blockText) || isBotStockResponseLine(title)) {
+        rejectedBotResponse += 1;
+        continue;
+      }
       if (isOrderLikeRecentProductLine(blockText) || isOrderLikeRecentProductLine(title)) {
         rejectedOrderLike += 1;
         continue;
@@ -4535,7 +4568,7 @@ function getReliableRecentProductStockContext(conversationHistory = [], conversa
       }));
   const fallbackProducts = dedupeRecentProductContext(textProducts.length > 0 ? textProducts : titleFallback);
   console.log('[RECENT PRODUCTS SOURCE] source=text_fallback count=' + fallbackProducts.length);
-  console.log('[RECENT PRODUCTS FILTERED] rejected_order_like=' + rejectedOrderLike + ' accepted_products=' + fallbackProducts.length);
+  console.log('[RECENT PRODUCTS FILTERED] rejected_order_like=' + rejectedOrderLike + ' rejected_bot_response=' + rejectedBotResponse + ' accepted_products=' + fallbackProducts.length);
   logRecentProductOptions(fallbackProducts);
   return fallbackProducts;
 }
@@ -4558,6 +4591,7 @@ function getRecentlySentProductTitles(conversationHistory = []) {
       // Pula linhas genéricas
       if (/as fotos foram enviadas|se quiser|posso verificar/i.test(line)) continue;
       if (/^encontrei\s/i.test(line) && /\d+\s*opcoes/i.test(line)) continue;
+      if (isBotStockResponseLine(line) || isOrderLikeRecentProductLine(line)) continue;
 
       let cleaned = line
         .replace(/^🛍️?\s*/u, '')           // Remove emoji 🛍️
@@ -4568,6 +4602,7 @@ function getRecentlySentProductTitles(conversationHistory = []) {
         .trim();
 
       if (!cleaned || cleaned.length < 4 || cleaned.length > 90) continue;
+      if (isBotStockResponseLine(cleaned) || isOrderLikeRecentProductLine(cleaned)) continue;
 
       const hasProductWord = /\b(saia|short|vestido|conjunto|blusa|body|calca|macacao|jardineira|camiseta|cropped|tshirt|moletom|moleton|camisa|bermuda|jaqueta|casaco|manga|bone)\b/i.test(normalizeSearchText(cleaned));
       const looksLikeTitle = /[A-ZÀ-Ú][a-zà-ú]/.test(cleaned) && cleaned.split(' ').length >= 2;

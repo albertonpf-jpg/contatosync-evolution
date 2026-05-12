@@ -140,6 +140,17 @@ function buildSystemPrompt(config, contact, conversation) {
   return `${basePrompt}${greeting}${fallback}${triggerContext}\n\n${context}`;
 }
 
+function getStoreDisplayName(config = {}) {
+  return String(
+    config.store_name
+    || config.business_name
+    || config.company_name
+    || config.assistant_name
+    || config.integration_name
+    || ''
+  ).trim() || 'a loja atendida';
+}
+
 function suppressRepeatedGreeting(text, greetingMessage, conversation) {
   const totalMessages = Number(conversation?.total_messages || 0);
   const canGreet = conversation?.conversation_created === true || totalMessages <= 1;
@@ -1200,11 +1211,11 @@ function isPendingActionConfirmation(message = '') {
 function getMinimumOrderPolicyQuery(message = '') {
   const text = normalizeSearchText(message);
   if (!text) return '';
-  if (/\b(pedido minimo|compra minima|minimo|valor minimo|fecha o minimo)\b/i.test(text)) return 'pedido mínimo 6 peças';
-  if (/\b(deixam passar|posso comprar menos|quantas pecas minimo)\b/i.test(text)) return 'pedido mínimo 6 peças';
-  if (/\bso\s+\d+\s+pecas?\b/i.test(text)) return 'pedido mínimo 6 peças';
-  if (/\bmenos de\s+\d+\b/i.test(text)) return 'pedido mínimo 6 peças';
-  if (/\bposso comprar\s+\d+\b/i.test(text)) return 'pedido mínimo 6 peças';
+  if (/\b(pedido minimo|compra minima|minimo|valor minimo|fecha o minimo)\b/i.test(text)) return 'pedido mínimo compra mínima quantidade mínima';
+  if (/\b(deixam passar|posso comprar menos|quantas pecas minimo)\b/i.test(text)) return 'pedido mínimo compra mínima quantidade mínima';
+  if (/\bso\s+\d+\s+pecas?\b/i.test(text)) return 'pedido mínimo compra mínima quantidade mínima';
+  if (/\bmenos de\s+\d+\b/i.test(text)) return 'pedido mínimo compra mínima quantidade mínima';
+  if (/\bposso comprar\s+\d+\b/i.test(text)) return 'pedido mínimo compra mínima quantidade mínima';
   return '';
 }
 
@@ -1220,7 +1231,7 @@ function getStorePolicyKnowledgeQuery(message = '') {
   if (/pedido minimo|minimo de pecas|mínimo de peças|valor minimo|compra minima/i.test(text)) return 'pedido minimo';
   if (/como comprar|comprar com voces|comprar com vocês/i.test(text)) return 'como comprar';
   if (/\bpagamento\b|\bpagar\b|\bpix\b|\bcartao\b|\bcartão\b|\bboleto\b/i.test(text)) return 'pagamento';
-  if (/\b(excursao|bras|br[aá]s)\b/i.test(text) && /\b(entrega|entregam|enviar|envio|retirada|retirar|buscar)\b/i.test(text)) return 'entrega excursao bras';
+  if (/\b(excursao|ponto de encontro|local de retirada)\b/i.test(text) && /\b(entrega|entregam|enviar|envio|retirada|retirar|buscar)\b/i.test(text)) return 'entrega retirada localizacao';
   if (/\bentrega\b|\bentregam\b|\bfrete\b|\benviar\b|\benvio\b|\bmotoboy\b/i.test(text)) return 'entrega frete';
   if (/\bendereco\b|\bendereço\b|onde fica|localizacao|localização/i.test(text)) return 'endereco';
   if (/\btroca\b|\bdevolucao\b|\bdevolução\b/i.test(text)) return text.includes('devolu') ? 'devolucao' : 'troca';
@@ -1233,7 +1244,7 @@ function getRelatedThemeLabel(value = '', customerIntent = {}) {
   const explicitTheme = normalizeSearchText(customerIntent.theme || customerIntent.entities?.theme || '');
   if (explicitTheme) return explicitTheme;
   const text = normalizeSearchText(value);
-  const themeTokens = ['princesas', 'princesa', 'disney', 'frozen', 'elsa', 'stitch', 'minnie', 'mickey', 'barbie', 'marvel', 'personagem', 'personagens', 'unicornio', 'unicornios']
+  const themeTokens = ['tema', 'personagem', 'personagens', 'marca', 'estampa', 'licenciado', 'licenciada']
     .filter(token => text.includes(token));
   return themeTokens[0] || '';
 }
@@ -1245,7 +1256,7 @@ function buildRelatedSemanticQuery(originalQuery = '', customerIntent = {}) {
     .filter(token => token && !['tem', 'quero', 'procuro', 'precisa', 'comprar'].includes(token))
     .slice(0, 4)
     .join(' ');
-  if (theme) return `roupa infantil relacionada a ${theme}/personagens`;
+  if (theme) return `produto relacionado ao tema ${theme}`;
   return productType || normalizeSearchText(originalQuery);
 }
 
@@ -1259,10 +1270,6 @@ function getSpecificProductTokens(tokens) {
   const generic = new Set([
     'roupa',
     'roupas',
-    'infantil',
-    'infantis',
-    'crianca',
-    'criancas',
     'criança',
     'crianças',
     'ano',
@@ -1356,7 +1363,7 @@ function extractRequestedSizes(message) {
   const patterns = [
     /\b(?:tamanho|tamanhos|tam|numero|n)\s*(\d{1,2}|pp|p|m|g|gg|xg|xgg)\b/gi,
     /\b(\d{1,2})\s*(?:anos|ano|idade)\b/gi,
-    /\b(?:crianca|criancas|infantil|menino|menina|beb[eê])\s*(?:de|com|para)?\s*(\d{1,2})\b/gi
+    /\b(?:idade|anos?)\s*(?:de|com|para)?\s*(\d{1,2})\b/gi
   ];
 
   for (const pattern of patterns) {
@@ -2882,18 +2889,18 @@ Retorne APENAS um JSON válido, sem markdown, sem comentários, sem texto adicio
    → needs_clarification=true, clarification_question preenchido
 
 ### REGRAS CRÍTICAS:
-- REGRA ABSOLUTA: se a mensagem contém nome de produto (camisa, camiseta, blusa, vestido, saia, conjunto, moletom, body, roupa, pijama, jaqueta, casaco, bermuda, short, calca, cropped) OU tema/personagem/marca (princesa, disney, frozen, personagem, marvel, etc), é SEMPRE product_search, NUNCA product_stock_followup.
+- REGRA ABSOLUTA: se a mensagem contém nome de produto (camisa, camiseta, blusa, vestido, saia, conjunto, moletom, body, roupa, pijama, jaqueta, casaco, bermuda, short, calca, cropped) OU tema/personagem/marca/estampa, é SEMPRE product_search, NUNCA product_stock_followup.
 - product_stock_followup SOMENTE para mensagens sem nome de produto E sem tema/personagem: "tem no tamanho 6?", "quantas tem?", "tem PP?", "ainda tem?".
 - "quantas" NUNCA é nome de produto.
-- Perguntas sobre pedido minimo ou quantidade minima de compra sao knowledge_question, nao product_search. Ex: "Se eu comprar so 4 pecas voces deixam passar?", "posso comprar menos?", "quantas pecas minimo?".
-- Perguntas sobre retirada pessoal, entrega em excursao no Bras, motoboy, frete, envio ou endereco sao knowledge_question/store_info, nao general_message.
+- Perguntas sobre pedido minimo ou quantidade minima de compra sao knowledge_question, nao product_search. Ex: "posso comprar menos que o minimo?", "qual e a compra minima?", "quantas unidades precisa comprar?".
+- Perguntas sobre retirada, entrega, ponto de encontro, motoboy, frete, envio ou endereco sao knowledge_question/store_info, nao general_message.
 - Confirmacoes curtas como "sim quero", "quero", "sim", "pode", "manda" so podem virar acao se houver contexto pendente; sem contexto, use clarification.
 - Se há produtos no contexto recente e o cliente pergunta sobre tamanho/estoque sem especificar qual produto, needs_clarification=true.
-- search_query deve conter o substantivo de produto E os modificadores importantes: tema, personagem, marca, estampa. NUNCA remova tema/personagem/marca do search_query. Exemplos corretos: "camiseta princesas", "camisa princesa Disney", "camisa personagens", "moletom frozen". Exemplos ERRADOS (perdem o modificador): "camiseta", "camisa", "moletom".
-- Se a mensagem pede tema/personagem de forma ampla ("tem algo de princesa?", "nao tem nada com tema disney?"), é product_search com search_query apenas dos tokens do tema, SEM herdar produto anterior do contexto.
-- semantic_query: descrição semântica do que o cliente quer (tipo de produto + tema/característica). Preencher APENAS para product_search. Ex: "peca de roupa superior infantil com tema de princesa/personagem". Deixar "" para outras intencoes.
-- product_type: tipo/categoria do produto mencionado. Preencher APENAS para product_search. Ex: "camiseta", "vestido", "roupa infantil". Deixar "" se nao aplicavel.
-- theme: tema, estampa ou personagem mencionado. Preencher APENAS para product_search. Ex: "princesa", "frozen", "personagem". Deixar "" se nao aplicavel.
+- search_query deve conter o substantivo de produto E os modificadores importantes: tema, personagem, marca, estampa. NUNCA remova tema/personagem/marca do search_query. Exemplos corretos: "camiseta tema personagem", "camisa marca especifica", "produto com estampa solicitada". Exemplos ERRADOS (perdem o modificador): "camiseta", "camisa", "produto".
+- Se a mensagem pede tema/personagem de forma ampla, é product_search com search_query apenas dos tokens do tema, SEM herdar produto anterior do contexto.
+- semantic_query: descrição semântica do que o cliente quer (tipo de produto + tema/característica). Preencher APENAS para product_search. Ex: "produto da categoria solicitada com tema/personagem informado". Deixar "" para outras intencoes.
+- product_type: tipo/categoria do produto mencionado. Preencher APENAS para product_search. Ex: "camiseta", "vestido", "categoria do produto". Deixar "" se nao aplicavel.
+- theme: tema, estampa ou personagem mencionado. Preencher APENAS para product_search. Ex: "personagem", "marca", "estampa". Deixar "" se nao aplicavel.
 - allow_related_products: true se o cliente parece aberto a sugestoes relacionadas (pedido com tema/personagem/conceito amplo), false se o pedido e muito especifico (cor + tamanho + modelo exato).
 
 ### CAMPOS NOVOS (adicionais — não alteram intent nem search_query):
@@ -3154,7 +3161,7 @@ function classifyCustomerIntentFallback(message, conversationHistory) {
   const hasProductName = productSearchPhrase.length > 0;
   const recentProducts = getReliableRecentProductStockContext(conversationHistory);
   // Guard: mensagem com tema/personagem/marca nunca é stock_followup
-  const hasThemeOrBrand = /\b(princesa|princesas|personagem|personagens|disney|frozen|marvel|barbie|frozem|unicornio|unicornios|nike|adidas|tigor|kyly|brandili|fakini)\b/i.test(normalizeSearchText(message));
+  const hasThemeOrBrand = /\b(tema|personagem|personagens|marca|estampa|licenciado|licenciada)\b/i.test(normalizeSearchText(message));
 
   const stockFollowupIntent = isStockAvailabilityFollowUp(message) && !hasThemeOrBrand
     ? buildStockFollowupIntentFromMessage(message, conversationHistory, hasSize ? 'size_or_quantity' : 'quantity_or_availability')
@@ -4089,12 +4096,12 @@ function buildDeterministicStorePolicyPlannerPlan(message = '') {
   if (!query) return null;
   console.log('[PLANNER SHADOW] deterministic=true reason=store_policy');
   const minimumOrderQuery = getMinimumOrderPolicyQuery(message);
-  const shouldSearchSite = /\b(entrega|entregam|excursao|bras|br[aá]s|retirada|retirar|pessoalmente|endereco|motoboy|frete|envio)\b/i.test(normalizeSearchText(message));
+  const shouldSearchSite = /\b(entrega|entregam|excursao|ponto de encontro|local de retirada|retirada|retirar|pessoalmente|endereco|motoboy|frete|envio)\b/i.test(normalizeSearchText(message));
   const tools = [
     { name: 'get_store_policy', args: { topic: query }, reason: 'pergunta sobre regra da loja' },
     { name: 'search_knowledge_base', args: { query }, reason: 'confirmar a regra nas fontes disponiveis' }
   ];
-  if (shouldSearchSite) {
+  if (shouldSearchSite || query) {
     tools.push({ name: 'search_site_sources', args: { query }, reason: 'confirmar informacao em fontes do site' });
   }
   return {
@@ -4171,10 +4178,11 @@ async function planCustomerRequestShadow(message, conversationState, config, pro
   }
 
   const compactState = buildCompactPlannerState(conversationState);
-  const plannerPrompt = `Planeje atendimento WhatsApp da Cabide Rosa Kids Atacado. Nao responda ao cliente. Retorne somente JSON valido.
+  const storeDisplayName = getStoreDisplayName(config || {});
+  const plannerPrompt = `Planeje atendimento WhatsApp de ${storeDisplayName}. Nao responda ao cliente. Retorne somente JSON valido.
 Schema: {"understanding":"","answer_type":"product_search|product_info|stock|variation|store_policy|order|tracking|pending_confirmation|selection|general|clarification","confidence":"high|medium|low","needs_clarification":false,"clarification_question":"","tools":[{"name":"get_selected_product","args":{},"reason":""}],"expected_answer_strategy":""}
 Ferramentas: get_recent_products,get_selected_product,get_pending_product_selection,use_pending_action,search_products,semantic_search_products,inspect_product,inspect_product_variations,get_product_stock,get_order_status,get_tracking,search_knowledge_base,search_site_sources,search_files,get_store_policy,ask_clarification.
-Regras: "outras cores" => get_selected_product + inspect_product_variations; "tamanho 6" => get_selected_product/get_recent_products + get_product_stock; "2" => get_pending_product_selection; "Pode" => use_pending_action; "CNPJ" => get_store_policy + search_knowledge_base; "Se eu comprar so 4 pecas voces deixam passar?" => store_policy com get_store_policy + search_knowledge_base; "Voces entregam em excursao no Bras?" => store_policy com get_store_policy + search_site_sources; "Consigo retirar ai pessoalmente?" => store_policy com get_store_policy + search_site_sources; "Manda o endereco pra retirar" => store_policy com get_store_policy + search_site_sources; "sim quero" sem estado pendente => clarification + ask_clarification; "Minnie tamanho 4" => semantic_search_products; "pedido 12345 saiu" => get_order_status + get_tracking; se faltar contexto => ask_clarification.
+Regras: "outras cores" => get_selected_product + inspect_product_variations; "tamanho informado" => get_selected_product/get_recent_products + get_product_stock; "numero de opcao" => get_pending_product_selection; confirmacao curta com acao pendente => use_pending_action; perguntas sobre documento/cadastro => get_store_policy + search_knowledge_base; perguntas sobre compra minima => store_policy com get_store_policy + search_knowledge_base; perguntas sobre entrega, retirada, ponto de encontro ou endereco => store_policy com get_store_policy + search_site_sources; confirmacao curta sem estado pendente => clarification + ask_clarification; produto com tema/personagem e tamanho => semantic_search_products; pergunta sobre pedido com numero => get_order_status + get_tracking; se faltar contexto => ask_clarification.
 Estado compacto: ${JSON.stringify(compactState)}`;
 
   const timeoutMs = Number(config?.planner_shadow_timeout_ms || 4000);
@@ -4424,7 +4432,6 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     if (name === 'get_store_policy') {
       const topic = String(tool.args?.topic || query || conversationState.message || '').trim();
       if (topic) {
-        evidenceBundle.facts.push('store_policy_topic=' + topic);
         evidenceBundle.tools_executed.push({ name, reason: 'topic_identified' });
         console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
       } else {
@@ -4443,9 +4450,24 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
         evidenceBundle.tools_executed.push({ name, reason: 'knowledge_context_loaded' });
         console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
       } else {
-        evidenceBundle.missing_data.push('knowledge_base');
-        evidenceBundle.tools_skipped.push({ name, reason: 'no_knowledge_context' });
-        console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+        const sources = buildKnowledgeSourcesForConfig(context.effectiveConfig || context.config || {});
+        if (sources.length > 0) {
+          const siteContext = await fetchSiteInfoContext(query || conversationState.message, sources);
+          if (siteContext.contextText) {
+            evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + buildSiteContextText(siteContext).slice(0, 12000);
+            evidenceBundle.facts.push('knowledge_site_sources_available=true');
+            evidenceBundle.tools_executed.push({ name, reason: 'site_context_loaded_for_knowledge_search' });
+            console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
+          } else {
+            evidenceBundle.missing_data.push('knowledge_base');
+            evidenceBundle.tools_skipped.push({ name, reason: 'no_knowledge_or_site_context' });
+            console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+          }
+        } else {
+          evidenceBundle.missing_data.push('knowledge_base');
+          evidenceBundle.tools_skipped.push({ name, reason: 'no_knowledge_context' });
+          console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+        }
       }
       continue;
     }
@@ -4477,8 +4499,8 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
   }
 
   console.log('[PLANNER ACTIVE EVIDENCE] facts=' + evidenceBundle.facts.length + ' missing=' + evidenceBundle.missing_data.length);
-  if (!evidenceBundle.contextText && evidenceBundle.facts.length === 0) {
-    console.log('[PLANNER ACTIVE FALLBACK] reason=no_evidence');
+  if (!evidenceBundle.contextText) {
+    console.log('[PLANNER ACTIVE FALLBACK] reason=no_relevant_evidence');
     return null;
   }
 
@@ -4496,7 +4518,8 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     console.log('[PLANNER ACTIVE FALLBACK] reason=empty_answer');
     return null;
   }
-  console.log('[PLANNER ACTIVE ANSWER] confidence=' + (plan.confidence || ''));
+  answer.model = answer.model || 'planner_store_policy';
+  console.log('[PLANNER ACTIVE ANSWER] confidence=' + (plan.confidence || '') + ' model=' + answer.model);
   return answer;
 }
 
@@ -4507,7 +4530,7 @@ async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundl
       skipped: false,
       response: 'Nao encontrei essa informacao nas fontes configuradas. Pode confirmar com um atendente?',
       provider: 'planner',
-      model: 'planner_store_policy_no_evidence',
+      model: 'planner_store_policy_fallback',
       prompt_tokens: 0,
       completion_tokens: 0,
       total_tokens: 0,
@@ -4521,7 +4544,8 @@ async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundl
 
   const provider = config._plannerProvider || getProviderForModel(config.model);
   const apiKey = config._plannerApiKey;
-  const prompt = `Voce e atendente da Cabide Rosa Kids Atacado.
+  const storeDisplayName = getStoreDisplayName(config || {});
+  const prompt = `Voce e atendente de ${storeDisplayName}.
 Responda a pergunta do cliente usando somente as evidencias abaixo.
 Se a evidencia nao responder claramente, diga que nao encontrou essa informacao nas fontes configuradas e peca confirmacao.
 Nao invente regras, prazos, valores, endereco, excecoes ou politicas.
@@ -5016,32 +5040,21 @@ function getSemanticRequestProfile(customerIntent = {}, semanticQuery = '') {
     customerIntent.product_type || '',
     customerIntent.theme || ''
   ].join(' '));
-  const princessTerms = [
-    'princesa',
-    'princesas',
-    'rapunzel',
-    'elsa',
-    'frozen',
-    'disney',
-    'minnie',
-    'barbie',
-    'ariel',
-    'bela',
-    'jasmine',
-    'aurora',
-    'cinderela',
-    'moana',
-    'mulan',
-    'tiana',
-    'merida',
-    'sofia',
-    'branca de neve'
-  ];
+  const productTypeTokens = getSpecificProductTokens(getSearchTokens(customerIntent.product_type || ''));
+  const explicitThemeTokens = getSpecificProductTokens(getSearchTokens(customerIntent.theme || customerIntent.entities?.theme || ''));
+  const queryThemeTokens = getSpecificProductTokens(getSearchTokens([
+    customerIntent.theme || '',
+    customerIntent.entities?.theme || '',
+    customerIntent.semantic_query || '',
+    customerIntent.search_query || '',
+    semanticQuery || ''
+  ].join(' '))).filter(token => !productTypeTokens.includes(token));
+  const requestedThemeTokens = [...new Set((explicitThemeTokens.length ? explicitThemeTokens : queryThemeTokens).filter(token => token.length >= 3))].slice(0, 8);
   return {
     requestText,
     wantsUpperPiece: hasAnySemanticTerm(requestText, ['camiseta', 'camisa', 'blusa', 't shirt', 'tshirt', 'cropped', 'body', 'moletom']),
-    wantsPrincessTheme: hasAnySemanticTerm(requestText, ['princesa', 'princesas']) || princessTerms.some(term => hasAnySemanticTerm(requestText, [term])),
-    princessTerms,
+    hasRequestedTheme: requestedThemeTokens.length > 0,
+    requestedThemeTokens,
     upperPieceTerms: ['camiseta', 'camisa', 'blusa', 't shirt', 'tshirt', 'cropped', 'body', 'moletom', 'regata', 'top'],
     setTerms: ['conjunto', 'kit'],
     pajamaTerms: ['pijama', 'camisola'],
@@ -5051,25 +5064,25 @@ function getSemanticRequestProfile(customerIntent = {}, semanticQuery = '') {
 
 function evaluateSemanticProductFit(product = {}, requestProfile = {}) {
   const haystack = getSemanticProductHaystack(product);
-  const hasPrincessTheme = hasAnySemanticTerm(haystack, requestProfile.princessTerms || []);
+  const hasRequestedTheme = hasAnySemanticTerm(haystack, requestProfile.requestedThemeTokens || []);
   const isUpperPiece = hasAnySemanticTerm(haystack, requestProfile.upperPieceTerms || []);
   const isSet = hasAnySemanticTerm(haystack, requestProfile.setTerms || []);
   const isPajama = hasAnySemanticTerm(haystack, requestProfile.pajamaTerms || []);
   const isIsolatedBottom = hasAnySemanticTerm(haystack, requestProfile.isolatedBottomTerms || []);
 
-  if (requestProfile.wantsPrincessTheme && !hasPrincessTheme) {
+  if (requestProfile.hasRequestedTheme && !hasRequestedTheme) {
     return { rejectReason: 'weak_theme_match', scoreAdjustment: -20 };
   }
 
   let scoreAdjustment = 0;
   if (requestProfile.wantsUpperPiece) {
     if (isUpperPiece) scoreAdjustment += 12;
-    if (isSet && hasPrincessTheme) scoreAdjustment += 7;
-    if (isPajama && hasPrincessTheme) scoreAdjustment += 4;
-    if (isIsolatedBottom && !hasPrincessTheme) scoreAdjustment -= 12;
-    if (!isUpperPiece && !isSet && !isPajama && !hasPrincessTheme) scoreAdjustment -= 6;
+    if (isSet && hasRequestedTheme) scoreAdjustment += 7;
+    if (isPajama && hasRequestedTheme) scoreAdjustment += 4;
+    if (isIsolatedBottom && !hasRequestedTheme) scoreAdjustment -= 12;
+    if (!isUpperPiece && !isSet && !isPajama && !hasRequestedTheme) scoreAdjustment -= 6;
   }
-  if (requestProfile.wantsPrincessTheme && hasPrincessTheme) scoreAdjustment += 10;
+  if (requestProfile.hasRequestedTheme && hasRequestedTheme) scoreAdjustment += 10;
   return { rejectReason: '', scoreAdjustment };
 }
 
@@ -5157,8 +5170,8 @@ Tema/personagem: "${customerIntent && customerIntent.theme ? customerIntent.them
 INSTRUCAO PRINCIPAL:
 Avalie o SIGNIFICADO do pedido, nao a literalidade.
 Exemplos de equivalencia semantica:
-- "camisa de princesa da Disney" = qualquer peca de roupa (blusa, camiseta, conjunto, body, moletom, pijama, cropped, vestido) com tema de princesa ou personagem Disney.
-- "camisa de personagens" = qualquer roupa infantil com estampa de personagem, independente do tipo de peca.
+- "produto com tema/personagem" = qualquer item da categoria solicitada com o tema, personagem, marca ou estampa informada pelo cliente.
+- "produto relacionado ao pedido" = item com tipo, categoria, variacao, cor, tamanho, modelo ou tema compativel com a mensagem do cliente.
 - "blusa de frio" = moletom, casaco, jaqueta, blusao.
 Se o pedido menciona tema/personagem, priorize produtos com esse tema, mesmo que o tipo de peca seja diferente.
 Se nao houver correspondencia exata de peca mas houver correspondencia de tema, inclua como relacionado com score menor.
@@ -5170,8 +5183,8 @@ Regras de selecao:
 - Prefira produtos com stock maior que zero (campo stock)
 - Se o cliente pediu camiseta, camisa, blusa ou t-shirt, priorize camiseta, camisa, blusa, t-shirt, cropped, body e moletom
 - Conjunto pode entrar se tiver tema/personagem forte; pijama pode entrar com score menor se tiver tema/personagem forte
-- Nao trate estrela sozinha como princesa/personagem
-- Para tema princesa, use apenas produtos com sinais claros como princesa, princesas, Rapunzel, Elsa, Frozen, Disney, Minnie, Barbie ou personagem equivalente
+- Nao trate termos decorativos soltos como tema/personagem forte sem outros sinais do pedido
+- Quando houver tema/personagem/marca/estampa no pedido, use apenas produtos com sinais claros desse mesmo tema/personagem/marca/estampa
 - Se nenhum for compativel semanticamente, retorne matches: []
 - Maximo de ${SEMANTIC_MAX_RESULTS} produtos
 - Ordene por score decrescente (mais compativel primeiro)
@@ -6256,21 +6269,20 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   // ─── 3. Follow-up de produto (mais opções, fotos) ───────────────────────
   if (customerIntent.intent === 'product_followup') {
     const lastProductRequest = getRecentCustomerProductRequest(conversationHistory);
-    // Tokens da mensagem atual — pode ser refinamento ("princesas da disney")
+    // Tokens da mensagem atual — pode ser refinamento de tema, cor, tamanho ou modelo
     const _followupCurrentTokens = getProductSearchPhrase(message);
     const _followupHasOwnTokens = _followupCurrentTokens.length > 0;
     if (lastProductRequest) {
       const _followupBaseQuery = getProductSearchPhrase(lastProductRequest);
       // Se a mensagem atual tem tokens próprios (refinamento/complemento),
       // combinar com a busca anterior para formar query completa.
-      // Ex: lastProductRequest="tem Camisa de princesa" + message="princesas da disney"
-      //   → merged="camisa princesa princesas disney" → deduplicado → "camisa princesa disney"
+      // Ex: combina o pedido anterior com o novo refinamento e deduplica tokens.
       let cleanQuery = _followupBaseQuery;
       if (_followupHasOwnTokens && _followupBaseQuery) {
         // Verificar se a mensagem atual é busca ampla por tema (sem produto específico do contexto)
-        // Exemplos: "nao tem nada com tema princesas?" "tem algo de disney?"
+        // Exemplos: perguntas amplas por tema/personagem sem categoria nova.
         // Nesses casos NÃO herdar o produto anterior — usar só o tema
-        const _broadThemeOnly = /\b(tema|personagem|personagens|disney|frozen|marvel|barbie|unicornio|princesa|princesas)\b/i.test(normalizeSearchText(message))
+        const _broadThemeOnly = /\b(tema|personagem|personagens|marca|estampa|licenciado|licenciada)\b/i.test(normalizeSearchText(message))
           && !/\b(camisa|camiseta|blusa|vestido|saia|conjunto|moletom|body|roupa|pijama|jaqueta|casaco|bermuda|short|calca|cropped)\b/i.test(normalizeSearchText(message));
         if (_broadThemeOnly) {
           cleanQuery = _followupCurrentTokens;

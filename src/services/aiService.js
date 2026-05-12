@@ -151,6 +151,163 @@ function getStoreDisplayName(config = {}) {
   ).trim() || 'a loja atendida';
 }
 
+function getStorePolicyTopicFromText(message = '', plan = {}) {
+  const text = normalizeSearchText([
+    message,
+    plan.understanding || '',
+    ...(Array.isArray(plan.tools) ? plan.tools.map(tool => [tool?.args?.query, tool?.args?.topic, tool?.reason].filter(Boolean).join(' ')) : [])
+  ].join(' '));
+  if (getMinimumOrderPolicyQuery(text) || /\b(pedido minimo|compra minima|quantidade minima|minimo de compra|valor minimo)\b/i.test(text)) return 'minimum_order';
+  if (/\b(cnpj|cpf|documento|cadastro|pessoa fisica|pessoa juridica)\b/i.test(text)) return 'customer_document';
+  if (/\b(frete gratis|frete gratuito|gratis|gratuito)\b/i.test(text) && /\b(frete|entrega|envio)\b/i.test(text)) return 'free_shipping';
+  if (/\b(entrega|entregam|frete|enviar|envio|motoboy|transportadora|excursao)\b/i.test(text)) return 'shipping_delivery';
+  if (/\b(retirada|retirar|pessoalmente|buscar|endereco|localizacao|onde fica|ponto de encontro|local de retirada)\b/i.test(text)) return 'pickup_location';
+  if (/\b(troca|devolucao|devolução|defeito|garantia)\b/i.test(text)) return 'exchange_returns';
+  if (/\b(pagamento|pagar|pix|cartao|cartão|boleto|parcelamento)\b/i.test(text)) return 'payment';
+  if (/\b(prazo|pronto|preparo|separacao|separação|retirar quando|fica pronto)\b/i.test(text)) return 'fulfillment_time';
+  return 'store_policy';
+}
+
+function getStorePolicyTopicQueries(topic = '', message = '') {
+  const normalizedMessage = normalizeSearchText(message);
+  const map = {
+    minimum_order: ['pedido minimo', 'compra minima', 'quantidade minima', 'minimo de compras', 'valor minimo'],
+    customer_document: ['cnpj', 'cpf', 'documento', 'cadastro', 'pessoa fisica', 'pessoa juridica'],
+    free_shipping: ['frete gratis', 'frete gratuito', 'entrega gratis', 'envio gratis'],
+    shipping_delivery: ['entrega', 'frete', 'envio', 'motoboy', 'transportadora', 'excursao'],
+    pickup_location: ['retirada', 'retirar', 'endereco', 'localizacao', 'buscar', 'ponto de encontro', 'local de retirada'],
+    exchange_returns: ['troca', 'devolucao', 'defeito', 'garantia'],
+    payment: ['pagamento', 'pix', 'cartao', 'boleto', 'parcelamento'],
+    fulfillment_time: ['prazo', 'preparo', 'separacao', 'fica pronto']
+  };
+  const queries = map[topic] || [];
+  const messageTokens = getSpecificProductTokens(getSearchTokens(normalizedMessage)).slice(0, 6).join(' ');
+  return [...new Set([...queries, topic === 'store_policy' ? messageTokens : ''].filter(Boolean))];
+}
+
+function collectClientConfigPolicyTexts(config = {}) {
+  const entries = [];
+  const fields = [
+    ['system_prompt', 'Prompt/configuracao do cliente'],
+    ['business_info', 'Configuracao do cliente'],
+    ['store_policy', 'Politicas configuradas do cliente'],
+    ['store_policies', 'Politicas configuradas do cliente'],
+    ['policy_text', 'Politicas configuradas do cliente'],
+    ['knowledge_base', 'Base configurada do cliente'],
+    ['business_rules', 'Regras configuradas do cliente'],
+    ['assistant_instructions', 'Instrucoes configuradas do cliente']
+  ];
+  for (const [field, sourceName] of fields) {
+    const value = config[field];
+    if (typeof value === 'string' && value.trim()) {
+      entries.push({ sourceField: field, sourceName, text: value.trim() });
+    }
+  }
+  return entries;
+}
+
+function splitPolicyEvidenceText(text = '') {
+  return String(text || '')
+    .replace(/\r/g, '\n')
+    .split(/\n+|(?<=[.!?])\s+/)
+    .map(line => line.trim().replace(/^[-*]\s*/, ''))
+    .filter(line => line.length >= 12)
+    .slice(0, 120);
+}
+
+function scorePolicyEvidenceSnippet(snippet = '', queries = []) {
+  const text = normalizeSearchText(snippet);
+  if (!text) return 0;
+  let score = 0;
+  for (const query of queries) {
+    const queryText = normalizeSearchText(query);
+    if (!queryText) continue;
+    if (text.includes(queryText)) {
+      score += 8;
+      continue;
+    }
+    const tokens = getSearchTokens(queryText).filter(token => token.length >= 3);
+    for (const token of tokens) {
+      if (text.includes(token)) score += 2;
+    }
+  }
+  return score;
+}
+
+function extractStorePolicyFactsFromConfig(config = {}, plan = {}, message = '') {
+  const topic = getStorePolicyTopicFromText(message, plan);
+  const queries = getStorePolicyTopicQueries(topic, message);
+  const facts = [];
+  for (const entry of collectClientConfigPolicyTexts(config)) {
+    const snippets = splitPolicyEvidenceText(entry.text)
+      .map(snippet => ({ snippet, score: scorePolicyEvidenceSnippet(snippet, queries) }))
+      .filter(item => item.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 5);
+    for (const item of snippets) {
+      facts.push({
+        type: topic,
+        text: item.snippet,
+        sourceType: entry.sourceField === 'system_prompt' ? 'system_prompt' : 'client_config',
+        sourceName: entry.sourceName,
+        confidence: item.score >= 8 ? 'high' : 'medium'
+      });
+    }
+  }
+  return {
+    topic,
+    queries,
+    facts: facts.slice(0, 8)
+  };
+}
+
+function extractStorePolicyFactsFromText(text = '', sourceType = 'source', sourceName = 'Fonte configurada', topic = 'store_policy', queries = []) {
+  return splitPolicyEvidenceText(text)
+    .map(snippet => ({ snippet, score: scorePolicyEvidenceSnippet(snippet, queries) }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8)
+    .map(item => ({
+      type: topic,
+      text: item.snippet,
+      sourceType,
+      sourceName,
+      confidence: item.score >= 8 ? 'high' : 'medium'
+    }));
+}
+
+function formatEvidenceFactsForPrompt(label, facts = []) {
+  if (!Array.isArray(facts) || facts.length === 0) return '';
+  return `${label}:\n` + facts.map((fact, index) => {
+    const source = fact.sourceName || fact.sourceType || 'fonte configurada';
+    return `${index + 1}. [${fact.type || 'store_policy'} | ${source}] ${fact.text}`;
+  }).join('\n');
+}
+
+function hasDirectStorePolicyEvidence(evidenceBundle = {}) {
+  return Boolean(
+    (Array.isArray(evidenceBundle.configFacts) && evidenceBundle.configFacts.length > 0)
+    || (Array.isArray(evidenceBundle.sourceFacts) && evidenceBundle.sourceFacts.length > 0)
+  );
+}
+
+function buildStorePolicyFactsSummaryResponse(message = '', evidenceBundle = {}) {
+  const directFacts = [
+    ...(Array.isArray(evidenceBundle.configFacts) ? evidenceBundle.configFacts : []),
+    ...(Array.isArray(evidenceBundle.sourceFacts) ? evidenceBundle.sourceFacts : [])
+  ].filter(fact => fact && fact.text);
+  if (directFacts.length === 0) {
+    return 'Nao encontrei essa informacao com seguranca aqui. Posso chamar um atendente para confirmar?';
+  }
+  const mainFact = directFacts[0];
+  const text = String(mainFact.text || '').trim().replace(/\s+/g, ' ');
+  const normalizedMessage = normalizeSearchText(message);
+  if (mainFact.type === 'minimum_order' && /\bso\s+\d+|\bmenos de\s+\d+|\bcomprar\s+\d+/i.test(normalizedMessage)) {
+    return `${text} Com essa quantidade, confira se fecha o minimo informado pela loja.`;
+  }
+  return text;
+}
+
 function suppressRepeatedGreeting(text, greetingMessage, conversation) {
   const totalMessages = Number(conversation?.total_messages || 0);
   const canGreet = conversation?.conversation_created === true || totalMessages <= 1;
@@ -4409,8 +4566,12 @@ function shouldUsePlannerForStorePolicy(plan = {}) {
 async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, context = {}) {
   const conv = conversationState.conversationId || getConversationMemoryKey(context.conversation || {});
   console.log('[PLANNER ACTIVE] type=store_policy conv=' + conv);
+  const config = context.effectiveConfig || context.config || {};
   const evidenceBundle = {
     facts: [],
+    policyFacts: [],
+    configFacts: [],
+    sourceFacts: [],
     products: [],
     product_cards_preview: [],
     missing_data: [],
@@ -4426,12 +4587,31 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     || conversationState.message
     || ''
   ).trim();
+  const configPolicy = extractStorePolicyFactsFromConfig(config, plan, conversationState.message || context.message || query);
+  evidenceBundle.policyTopic = configPolicy.topic;
+  evidenceBundle.policyQueries = configPolicy.queries;
+  if (configPolicy.facts.length > 0) {
+    evidenceBundle.configFacts.push(...configPolicy.facts);
+    evidenceBundle.contextText += formatEvidenceFactsForPrompt('Fatos extraidos da configuracao do cliente', configPolicy.facts);
+    for (const fact of configPolicy.facts.slice(0, 5)) {
+      console.log('[PLANNER EVIDENCE FACT] type=' + (fact.type || '')
+        + ' source=' + (fact.sourceType || '')
+        + ' text="' + escapeLogValue(String(fact.text || '').slice(0, 180)) + '"');
+    }
+  }
 
   for (const tool of tools) {
     const name = tool.name;
     if (name === 'get_store_policy') {
       const topic = String(tool.args?.topic || query || conversationState.message || '').trim();
       if (topic) {
+        evidenceBundle.policyFacts.push({
+          type: configPolicy.topic,
+          text: 'Topico de politica identificado: ' + topic,
+          sourceType: 'planner_tool',
+          sourceName: 'get_store_policy',
+          confidence: 'low'
+        });
         evidenceBundle.tools_executed.push({ name, reason: 'topic_identified' });
         console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
       } else {
@@ -4443,19 +4623,32 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     }
 
     if (name === 'search_knowledge_base' || name === 'search_files') {
-      const knowledgeContext = buildKnowledgeContextForConfig(context.effectiveConfig || context.config || {});
+      const knowledgeContext = buildKnowledgeContextForConfig(config);
       if (knowledgeContext) {
         evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + knowledgeContext.slice(0, 12000);
-        evidenceBundle.facts.push('knowledge_base_available=true');
+        evidenceBundle.sourceFacts.push(...extractStorePolicyFactsFromText(
+          knowledgeContext,
+          name === 'search_files' ? 'files' : 'knowledge_base',
+          name === 'search_files' ? 'Arquivos do cliente' : 'Base de conhecimento do cliente',
+          configPolicy.topic,
+          configPolicy.queries
+        ));
         evidenceBundle.tools_executed.push({ name, reason: 'knowledge_context_loaded' });
         console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
       } else {
-        const sources = buildKnowledgeSourcesForConfig(context.effectiveConfig || context.config || {});
+        const sources = buildKnowledgeSourcesForConfig(config);
         if (sources.length > 0) {
           const siteContext = await fetchSiteInfoContext(query || conversationState.message, sources);
           if (siteContext.contextText) {
-            evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + buildSiteContextText(siteContext).slice(0, 12000);
-            evidenceBundle.facts.push('knowledge_site_sources_available=true');
+            const siteEvidenceText = buildSiteContextText(siteContext).slice(0, 12000);
+            evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + siteEvidenceText;
+            evidenceBundle.sourceFacts.push(...extractStorePolicyFactsFromText(
+              siteContext.contextText,
+              'site_urls',
+              'URLs configuradas do cliente',
+              configPolicy.topic,
+              configPolicy.queries
+            ));
             evidenceBundle.tools_executed.push({ name, reason: 'site_context_loaded_for_knowledge_search' });
             console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
           } else {
@@ -4473,12 +4666,19 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     }
 
     if (name === 'search_site_sources') {
-      const sources = buildKnowledgeSourcesForConfig(context.effectiveConfig || context.config || {});
+      const sources = buildKnowledgeSourcesForConfig(config);
       if (sources.length > 0) {
         const siteContext = await fetchSiteInfoContext(query || conversationState.message, sources);
         if (siteContext.contextText) {
-          evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + buildSiteContextText(siteContext).slice(0, 12000);
-          evidenceBundle.facts.push('site_sources_available=true');
+          const siteEvidenceText = buildSiteContextText(siteContext).slice(0, 12000);
+          evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + siteEvidenceText;
+          evidenceBundle.sourceFacts.push(...extractStorePolicyFactsFromText(
+            siteContext.contextText,
+            'site_urls',
+            'URLs configuradas do cliente',
+            configPolicy.topic,
+            configPolicy.queries
+          ));
           evidenceBundle.tools_executed.push({ name, reason: 'site_context_loaded' });
           console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
         } else {
@@ -4498,8 +4698,22 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
   }
 
-  console.log('[PLANNER ACTIVE EVIDENCE] facts=' + evidenceBundle.facts.length + ' missing=' + evidenceBundle.missing_data.length);
-  if (!evidenceBundle.contextText) {
+  evidenceBundle.facts = [
+    ...evidenceBundle.policyFacts,
+    ...evidenceBundle.configFacts,
+    ...evidenceBundle.sourceFacts
+  ];
+  for (const fact of evidenceBundle.sourceFacts.slice(0, 5)) {
+    console.log('[PLANNER EVIDENCE FACT] type=' + (fact.type || '')
+      + ' source=' + (fact.sourceType || '')
+      + ' text="' + escapeLogValue(String(fact.text || '').slice(0, 180)) + '"');
+  }
+  console.log('[PLANNER ACTIVE EVIDENCE] policyFacts=' + evidenceBundle.policyFacts.length
+    + ' configFacts=' + evidenceBundle.configFacts.length
+    + ' sourceFacts=' + evidenceBundle.sourceFacts.length
+    + ' missing=' + evidenceBundle.missing_data.length
+    + ' warnings=' + evidenceBundle.warnings.length);
+  if (!hasDirectStorePolicyEvidence(evidenceBundle) && !evidenceBundle.contextText) {
     console.log('[PLANNER ACTIVE FALLBACK] reason=no_relevant_evidence');
     return null;
   }
@@ -4518,17 +4732,23 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     console.log('[PLANNER ACTIVE FALLBACK] reason=empty_answer');
     return null;
   }
-  answer.model = answer.model || 'planner_store_policy';
-  console.log('[PLANNER ACTIVE ANSWER] confidence=' + (plan.confidence || '') + ' model=' + answer.model);
+  const directFacts = [...evidenceBundle.configFacts, ...evidenceBundle.sourceFacts];
+  const activeConfidence = directFacts.some(fact => fact.confidence === 'high')
+    ? 'high'
+    : (directFacts.length > 0 ? 'medium' : 'low');
+  answer.model = directFacts.length > 0 ? 'planner_store_policy' : 'planner_store_policy_fallback';
+  answer.confidence = activeConfidence;
+  console.log('[PLANNER ACTIVE ANSWER] confidence=' + activeConfidence + ' model=' + answer.model);
   return answer;
 }
 
 async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundle = {}, config = {}) {
   const evidenceText = String(evidenceBundle.contextText || '').trim();
-  if (!evidenceText) {
+  const directEvidence = hasDirectStorePolicyEvidence(evidenceBundle);
+  if (!evidenceText && !directEvidence) {
     return {
       skipped: false,
-      response: 'Nao encontrei essa informacao nas fontes configuradas. Pode confirmar com um atendente?',
+      response: 'Nao encontrei essa informacao com seguranca aqui. Posso chamar um atendente para confirmar?',
       provider: 'planner',
       model: 'planner_store_policy_fallback',
       prompt_tokens: 0,
@@ -4545,9 +4765,17 @@ async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundl
   const provider = config._plannerProvider || getProviderForModel(config.model);
   const apiKey = config._plannerApiKey;
   const storeDisplayName = getStoreDisplayName(config || {});
+  const configFactsText = formatEvidenceFactsForPrompt('Fatos diretos da configuracao do cliente', evidenceBundle.configFacts || []);
+  const sourceFactsText = formatEvidenceFactsForPrompt('Fatos diretos de fontes do cliente', evidenceBundle.sourceFacts || []);
+  const policyFactsText = formatEvidenceFactsForPrompt('Topicos planejados, sem valor de politica', evidenceBundle.policyFacts || []);
   const prompt = `Voce e atendente de ${storeDisplayName}.
 Responda a pergunta do cliente usando somente as evidencias abaixo.
-Se a evidencia nao responder claramente, diga que nao encontrou essa informacao nas fontes configuradas e peca confirmacao.
+Priorize os fatos diretos da configuracao e das fontes do cliente.
+Os topicos planejados ajudam a entender a intencao, mas nao sao valor de politica.
+Se existir fato direto relacionado, responda com ele; nao diga que nao encontrou.
+Se a evidencia nao responder claramente, diga: "Nao encontrei essa informacao com seguranca aqui. Posso chamar um atendente para confirmar?"
+Para pergunta sobre CNPJ/CPF, se nao houver evidencia explicita sobre documento obrigatorio, nao afirme certeza; diga que nao encontrou exigencia nas informacoes consultadas e ofereca confirmacao com atendente.
+Para frete gratis, responda somente se houver evidencia direta; se nao houver, use a frase segura acima.
 Nao invente regras, prazos, valores, endereco, excecoes ou politicas.
 Seja curto e humano.
 
@@ -4555,12 +4783,18 @@ Pergunta do cliente: "${String(message || '').replace(/"/g, '\\"')}"
 Entendimento do planner: "${String(plan.understanding || '').replace(/"/g, '\\"')}"
 
 Evidencias:
+${configFactsText}
+
+${sourceFactsText}
+
+${policyFactsText}
+
 ${evidenceText.slice(0, 16000)}`;
 
   if (!isUsableProviderApiKey(provider, apiKey)) {
     return {
       skipped: false,
-      response: buildSiteContextSummaryResponse({ contextText: evidenceText }),
+      response: buildStorePolicyFactsSummaryResponse(message, evidenceBundle),
       provider: 'planner',
       model: 'planner_store_policy_summary',
       prompt_tokens: 0,
@@ -4595,6 +4829,22 @@ ${evidenceText.slice(0, 16000)}`;
     const data = await res.json().catch(() => null);
     const text = String(data?.content?.[0]?.text || '').trim();
     if (!text) return null;
+    if (directEvidence && normalizeSearchText(text).includes('nao encontrei')) {
+      return {
+        skipped: false,
+        response: buildStorePolicyFactsSummaryResponse(message, evidenceBundle),
+        provider: 'planner',
+        model: 'planner_store_policy',
+        prompt_tokens: data?.usage?.input_tokens || 0,
+        completion_tokens: data?.usage?.output_tokens || 0,
+        total_tokens: (data?.usage?.input_tokens || 0) + (data?.usage?.output_tokens || 0),
+        processing_time_ms: Date.now() - startedAt,
+        product_images: [],
+        product_cards: [],
+        product_lookup_attempted: false,
+        product_search_text: ''
+      };
+    }
     return {
       skipped: false,
       response: text,
@@ -4626,6 +4876,22 @@ ${evidenceText.slice(0, 16000)}`;
   const data = await res.json().catch(() => null);
   const text = String(getOpenAIText(data) || '').trim();
   if (!text) return null;
+  if (directEvidence && normalizeSearchText(text).includes('nao encontrei')) {
+    return {
+      skipped: false,
+      response: buildStorePolicyFactsSummaryResponse(message, evidenceBundle),
+      provider: 'planner',
+      model: 'planner_store_policy',
+      prompt_tokens: data?.usage?.input_tokens || data?.usage?.prompt_tokens || 0,
+      completion_tokens: data?.usage?.output_tokens || data?.usage?.completion_tokens || 0,
+      total_tokens: data?.usage?.total_tokens || 0,
+      processing_time_ms: Date.now() - startedAt,
+      product_images: [],
+      product_cards: [],
+      product_lookup_attempted: false,
+      product_search_text: ''
+    };
+  }
   return {
     skipped: false,
     response: text,

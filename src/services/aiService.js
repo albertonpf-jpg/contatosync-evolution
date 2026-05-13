@@ -4429,7 +4429,7 @@ function normalizeRecentProductDataList(value = []) {
         rawProduct: product.rawProduct || null
       };
     })
-    .filter(Boolean);
+    .filter(isReliableProductMemoryItem);
 }
 
 function filtersFromCustomerIntent(customerIntent = {}, message = '') {
@@ -4852,6 +4852,7 @@ function buildRecentProductStockAnswer(customerIntent = {}, message = '', conver
 function isOrderLikeRecentProductLine(value = '') {
   const text = normalizeSearchText(value);
   if (!text) return true;
+  if (/\b(certo me diga|me diga o que voce quer consultar|como posso ajudar|claro de qual produto|voce quer saber de qual opcao)\b/i.test(text)) return true;
   return /\b(pedido|codigo interno|codigo|cliente|total|entrega|status|pagamento|rastreio|integracao|transportadora|sedex|pac|forma entrega|forma_entrega|despachado|separacao|separado|entregue)\b/i.test(text)
     || /\b(desse modelo encontrei|nao encontrei|não encontrei|no momento|quer que eu|posso procurar|posso buscar|de qual produto|qual opcao|atendente|pode me mandar|o endereco|esse produto aparece)\b/i.test(text)
     || /^\s*tenho\s+\d+\s+peca/i.test(text)
@@ -4874,6 +4875,31 @@ function hasProductLineSignal(value = '') {
   const hasCardSignal = /🛍|produto\/\d+|#produto\d+|preco:|pre[cç]o:|tamanho:|cor:|estoque:|detalhes:/i.test(raw);
   const hasProductSummary = /^encontrei\s+.+\s+na loja/i.test(raw) && !/\b(pedido|integracao)\b/i.test(text);
   return hasCardSignal || hasProductSummary || (hasProductWord && /\b(preco|tamanho|cor|estoque|detalhes)\b/i.test(text));
+}
+
+function isReliableProductMemoryItem(product = {}) {
+  const title = String(product?.title || '').trim();
+  if (!title || isOrderLikeRecentProductLine(title) || isBotStockResponseLine(title)) return false;
+  const evidenceText = [
+    title,
+    product.price,
+    product.url,
+    product.stock,
+    ...(Array.isArray(product.sizes) ? product.sizes : []),
+    ...(Array.isArray(product.availableSizes) ? product.availableSizes : []),
+    ...(Array.isArray(product.variations) ? product.variations : [])
+  ].filter(value => value !== null && value !== undefined && String(value).trim()).join(' ');
+  const hasStructuredProductData = Boolean(
+    product.id
+    || product.url
+    || product.rawProduct
+    || product.price
+    || product.stock !== null && product.stock !== undefined
+    || (Array.isArray(product.sizes) && product.sizes.length > 0)
+    || (Array.isArray(product.availableSizes) && product.availableSizes.length > 0)
+    || (Array.isArray(product.variations) && product.variations.length > 0)
+  );
+  return hasProductLineSignal(evidenceText) || hasStructuredProductData;
 }
 
 function cleanRecentProductTitleLine(value = '') {
@@ -4928,6 +4954,10 @@ function getPendingStockFilters(conversation = {}) {
 function saveSelectedProductMemory(conversation = {}, product = {}, selectedProductIndex = null, filters = {}) {
   const key = getConversationMemoryKey(conversation);
   if (!key || !product?.title) return;
+  if (!isReliableProductMemoryItem(product)) {
+    console.log('[SELECTED PRODUCT REJECT] reason=unreliable_product title="' + String(product.title || '').replace(/"/g, '\\"') + '"');
+    return;
+  }
   selectedProductByConversation.set(key, {
     product,
     selectedProductIndex,
@@ -4951,6 +4981,11 @@ function getSelectedProductMemory(conversation = {}) {
     selectedProductByConversation.delete(key);
     return null;
   }
+  if (!isReliableProductMemoryItem(entry.product)) {
+    selectedProductByConversation.delete(key);
+    console.log('[SELECTED PRODUCT CLEAR] reason=unreliable_product');
+    return null;
+  }
   if (entry.product?.title) {
     console.log('[SELECTED PRODUCT SOURCE] source=selected_cache title="' + String(entry.product.title || '').replace(/"/g, '\\"') + '"');
     return entry;
@@ -4959,10 +4994,13 @@ function getSelectedProductMemory(conversation = {}) {
 }
 
 function buildPendingProductSelectionOptions(products = [], limit = 5) {
-  return (Array.isArray(products) ? products : []).slice(0, limit).map((product, index) => ({
-    ...product,
-    displayIndex: index + 1
-  }));
+  return (Array.isArray(products) ? products : [])
+    .filter(isReliableProductMemoryItem)
+    .slice(0, limit)
+    .map((product, index) => ({
+      ...product,
+      displayIndex: index + 1
+    }));
 }
 
 function savePendingProductSelectionMemory(conversation = {}, products = [], pendingFilters = {}, limit = 5) {
@@ -4987,6 +5025,12 @@ function getPendingProductSelectionMemory(conversation = {}) {
   if (!entry) return null;
   if (Date.now() - Number(entry.createdAt || 0) > Number(entry.ttlMs || RECENT_PRODUCTS_MEMORY_TTL_MS)) {
     pendingProductSelectionByConversation.delete(key);
+    return null;
+  }
+  entry.options = (entry.options || []).filter(isReliableProductMemoryItem).map((product, index) => ({ ...product, displayIndex: index + 1 }));
+  if (entry.options.length === 0) {
+    pendingProductSelectionByConversation.delete(key);
+    console.log('[PENDING PRODUCT SELECTION CLEAR] reason=no_reliable_options');
     return null;
   }
   return entry;
@@ -6039,7 +6083,7 @@ function getRecentProductStockContext(conversationHistory = []) {
 function dedupeRecentProductContext(products = []) {
   const seen = new Set();
   return products
-    .filter(product => product && product.title && !isOrderLikeRecentProductLine(product.title))
+    .filter(isReliableProductMemoryItem)
     .filter(product => {
       const key = normalizeSearchText(`${product.id || ''}|${product.title || ''}`);
       if (!key || seen.has(key)) return false;

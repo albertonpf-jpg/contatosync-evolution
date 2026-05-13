@@ -1207,11 +1207,30 @@ async function executeAgenticRagTools(plan = {}, state = {}, context = {}) {
       console.log('[AGENT EVIDENCE] tool=' + name + ' direct=' + evidence.directFacts.length + ' context=' + evidence.contextFacts.length + ' noise=' + evidence.noiseFacts.length);
       continue;
     }
+    if (name === 'search_config_knowledge') {
+      const configFacts = extractStorePolicyFactsFromConfig(config, plan, tool.args?.query || query).facts || [];
+      for (const fact of configFacts) {
+        if (fact.relevance === 'direct') bundle.configFacts.push(fact);
+        else if (fact.relevance === 'context') bundle.contextFacts.push(fact);
+        else bundle.noise.push(fact);
+      }
+      bundle.directFacts.push(...configFacts.filter(fact => fact.relevance === 'direct'));
+      bundle.tools_used.push({ tool: name, status: 'executed', reason: 'config_scanned' });
+      console.log('[AGENT EVIDENCE] tool=' + name + ' direct=' + configFacts.filter(fact => fact.relevance === 'direct').length
+        + ' context=' + configFacts.filter(fact => fact.relevance === 'context').length
+        + ' noise=' + configFacts.filter(fact => fact.relevance === 'noise').length);
+      continue;
+    }
     if (name === 'search_vector_products') {
       const result = await searchVectorProducts(clientId, tool.args?.query || query, tool.args || {}, context);
       const hydrated = await hydrateProductsFromApiOrCache(clientId, result.results || [], config, context);
       bundle.products.push(...hydrated);
       bundle.tools_used.push({ tool: name, status: result.skipped ? 'skipped' : 'executed', reason: result.reason || '' });
+      continue;
+    }
+    if (name === 'hydrate_products_from_api' || name === 'search_product_api' || name === 'filter_products_by_size') {
+      bundle.tools_used.push({ tool: name, status: 'skipped', reason: 'product_rag_active_flow_disabled_by_default' });
+      console.log('[AGENT TOOL] name=' + name + ' status=skipped reason=product_rag_active_flow_disabled_by_default');
       continue;
     }
     bundle.tools_used.push({ tool: name, status: 'skipped', reason: 'not_implemented_in_universal_router_yet' });
@@ -5112,6 +5131,12 @@ function sanitizePlannerTool(tool = {}) {
     'get_selected_product',
     'get_pending_product_selection',
     'use_pending_action',
+    'search_vector_knowledge',
+    'search_config_knowledge',
+    'search_vector_products',
+    'search_product_api',
+    'hydrate_products_from_api',
+    'filter_products_by_size',
     'search_products',
     'semantic_search_products',
     'inspect_product',
@@ -5168,6 +5193,8 @@ function buildDeterministicStorePolicyPlannerPlan(message = '') {
   const minimumOrderQuery = getMinimumOrderPolicyQuery(message);
   const shouldSearchSite = /\b(entrega|entregam|excursao|ponto de encontro|local de retirada|retirada|retirar|pessoalmente|endereco|motoboy|frete|envio)\b/i.test(normalizeSearchText(message));
   const tools = [
+    { name: 'search_vector_knowledge', args: { query, entity_type: 'store_policy' }, reason: 'recuperar evidencias semanticas do cliente atual' },
+    { name: 'search_config_knowledge', args: { query }, reason: 'consultar configuracao e prompt do cliente atual' },
     { name: 'get_store_policy', args: { topic: query }, reason: 'pergunta sobre regra da loja' },
     { name: 'search_knowledge_base', args: { query }, reason: 'confirmar a regra nas fontes disponiveis' }
   ];
@@ -5251,8 +5278,8 @@ async function planCustomerRequestShadow(message, conversationState, config, pro
   const storeDisplayName = getStoreDisplayName(config || {});
   const plannerPrompt = `Planeje atendimento WhatsApp de ${storeDisplayName}. Nao responda ao cliente. Retorne somente JSON valido.
 Schema: {"understanding":"","answer_type":"product_search|product_info|stock|variation|store_policy|order|tracking|pending_confirmation|selection|general|clarification","confidence":"high|medium|low","needs_clarification":false,"clarification_question":"","tools":[{"name":"get_selected_product","args":{},"reason":""}],"expected_answer_strategy":""}
-Ferramentas: get_recent_products,get_selected_product,get_pending_product_selection,use_pending_action,search_products,semantic_search_products,inspect_product,inspect_product_variations,get_product_stock,get_order_status,get_tracking,search_knowledge_base,search_site_sources,search_files,get_store_policy,ask_clarification.
-Regras: "outras cores" => get_selected_product + inspect_product_variations; "tamanho informado" => get_selected_product/get_recent_products + get_product_stock; "numero de opcao" => get_pending_product_selection; confirmacao curta com acao pendente => use_pending_action; perguntas sobre documento/cadastro => get_store_policy + search_knowledge_base; perguntas sobre compra minima => store_policy com get_store_policy + search_knowledge_base; perguntas sobre entrega, retirada, ponto de encontro ou endereco => store_policy com get_store_policy + search_site_sources; confirmacao curta sem estado pendente => clarification + ask_clarification; produto com tema/personagem e tamanho => semantic_search_products; pergunta sobre pedido com numero => get_order_status + get_tracking; se faltar contexto => ask_clarification.
+Ferramentas: get_recent_products,get_selected_product,get_pending_product_selection,use_pending_action,search_vector_knowledge,search_config_knowledge,search_vector_products,search_product_api,hydrate_products_from_api,filter_products_by_size,search_products,semantic_search_products,inspect_product,inspect_product_variations,get_product_stock,get_order_status,get_tracking,search_knowledge_base,search_site_sources,search_files,get_store_policy,ask_clarification.
+Regras: "outras cores" => get_selected_product + inspect_product_variations; "tamanho informado" => get_selected_product/get_recent_products + get_product_stock; "numero de opcao" => get_pending_product_selection; confirmacao curta com acao pendente => use_pending_action; politicas/FAQ/conhecimento => search_vector_knowledge + search_config_knowledge + search_knowledge_base/search_site_sources; produto com tema/personagem/tamanho => search_vector_products + hydrate_products_from_api + filter_products_by_size, ou semantic_search_products se vetor de produto nao estiver ativo; preco/estoque/url/imagem de produto sempre precisam de search_product_api/hydrate_products_from_api ou memoria estruturada, nunca apenas vetor; pergunta sobre pedido com numero => get_order_status + get_tracking; confirmacao curta sem estado pendente => clarification + ask_clarification; se faltar contexto => ask_clarification.
 Estado compacto: ${JSON.stringify(compactState)}`;
 
   const timeoutMs = Number(config?.planner_shadow_timeout_ms || 4000);
@@ -5422,6 +5449,12 @@ function executePlannerToolsShadow(plan = {}, conversationState = {}, context = 
       continue;
     }
 
+    if (['search_vector_knowledge', 'search_config_knowledge', 'search_vector_products', 'search_product_api', 'hydrate_products_from_api', 'filter_products_by_size'].includes(name)) {
+      evidenceBundle.warnings.push(name + '_not_executed_in_shadow_mode');
+      addPlannerToolStatus(evidenceBundle, name, 'skipped', 'agentic_rag_shadow_only');
+      continue;
+    }
+
     if (['search_products', 'semantic_search_products', 'get_order_status', 'get_tracking'].includes(name)) {
       evidenceBundle.warnings.push(name + '_not_executed_in_shadow_mode');
       addPlannerToolStatus(evidenceBundle, name, 'skipped', 'side_effect_or_heavy_lookup_skipped');
@@ -5464,6 +5497,14 @@ async function answerPlannerShadowMode(context = {}) {
   );
   if (!plan) return null;
   const evidenceBundle = executePlannerToolsShadow(plan, conversationState, context);
+  const config = context.effectiveConfig || context.config || {};
+  if (getRagFlag(config, 'rag_agent_shadow_enabled', 'RAG_AGENT_SHADOW_ENABLED', false) && shouldUseAgenticRag(plan, config)) {
+    try {
+      await executeAgenticRagTools(plan, conversationState, context);
+    } catch (error) {
+      console.warn('[AGENT TOOL] status=shadow_error message=' + String(error?.message || error).slice(0, 180));
+    }
+  }
   logPlannerShadowResult(plan, evidenceBundle, { ms: Date.now() - startedAt });
   return { plan, evidenceBundle, conversationState };
 }
@@ -5473,7 +5514,7 @@ function shouldUsePlannerForStorePolicy(plan = {}) {
   if (plan.confidence !== 'high') return false;
   if (plan.needs_clarification === true) return false;
   const toolNames = Array.isArray(plan.tools) ? plan.tools.map(tool => tool.name).filter(Boolean) : [];
-  return toolNames.some(name => ['get_store_policy', 'search_knowledge_base', 'search_site_sources'].includes(name));
+  return toolNames.some(name => ['get_store_policy', 'search_vector_knowledge', 'search_config_knowledge', 'search_knowledge_base', 'search_site_sources'].includes(name));
 }
 
 async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, context = {}) {

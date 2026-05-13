@@ -259,6 +259,41 @@ function classifyEvidenceRelevance(text = '', policyType = '') {
     return { relevance: 'noise', reason: 'assistant_instruction' };
   }
 
+  const paymentDeliveryNoisePatterns = [
+    /\bformas? de entrega\b/i,
+    /\bentrega\b/i,
+    /\benvio\b/i,
+    /\bmotoboy\b/i,
+    /\bexcursao\b/i,
+    /\bbras\b/i,
+    /\bcep\b/i,
+    /\bretirada\b/i,
+    /\btransportadora\b/i,
+    /\bcorreios\b/i
+  ];
+  if (policyType === 'payment' && paymentDeliveryNoisePatterns.some(pattern => pattern.test(normalized))) {
+    return { relevance: 'noise', reason: 'delivery_text_not_payment' };
+  }
+
+  const concreteDeliveryPatterns = [
+    /\bretirada\b/i,
+    /\bretirar\b/i,
+    /\bendereco\b/i,
+    /\bentrega no\b/i,
+    /\bentrega em\b/i,
+    /\bexcursao\b/i,
+    /\bmotoboy\b/i,
+    /\bcep\b/i,
+    /\benvio para todo\b/i,
+    /\btransportadora\b/i,
+    /\bcorreios\b/i
+  ];
+  if (policyType === 'shipping_delivery'
+    && /\bentrega do pedido\b/i.test(normalized)
+    && !concreteDeliveryPatterns.some(pattern => pattern.test(normalized))) {
+    return { relevance: 'context', reason: 'generic_delivery_reference' };
+  }
+
   const directPatterns = {
     payment: [
       /\bpix\b/i,
@@ -271,8 +306,11 @@ function classifyEvidenceRelevance(text = '', policyType = '') {
       /\bcomo pagar\b/i,
       /\bpagar com\b/i,
       /\bpagamento via\b/i,
-      /\bformas? de pagamento\b/i,
+      /\bforma de pagamento\b/i,
+      /\bformas de pagamento\b/i,
+      /\bparcelamento\b/i,
       /\bgateway\b/i,
+      /\bmaquininha\b/i,
       /\bplataforma de pagamento\b/i
     ],
     free_shipping: [
@@ -284,14 +322,15 @@ function classifyEvidenceRelevance(text = '', policyType = '') {
       /\bentrega gratis\b/i
     ],
     shipping_delivery: [
-      /\bentrega\b/i,
       /\bretirada\b/i,
       /\bmotoboy\b/i,
       /\bexcursao\b/i,
-      /\benvio\b/i,
       /\bendereco\b/i,
       /\bretirar\b/i,
       /\bcep\b/i,
+      /\bentrega no\b/i,
+      /\bentrega em\b/i,
+      /\benvio para todo\b/i,
       /\btransportadora\b/i,
       /\bcorreios\b/i,
       /\bprazo de entrega\b/i

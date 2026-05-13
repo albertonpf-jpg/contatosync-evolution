@@ -526,6 +526,51 @@ function normalizeRagDocumentContent(value = '') {
   return String(value || '').replace(/\r/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+function getConfigOrEnv(config = {}, key = '', envKey = '') {
+  const value = config[key];
+  if (value !== undefined && value !== null && value !== '') return value;
+  return process.env[envKey || String(key).toUpperCase()];
+}
+
+function getRagFlag(config = {}, key = '', envKey = '', defaultValue = false) {
+  const value = getConfigOrEnv(config, key, envKey);
+  if (value === undefined || value === null || value === '') return defaultValue;
+  if (typeof value === 'boolean') return value;
+  return /^(1|true|yes|sim|on)$/i.test(String(value).trim());
+}
+
+function getRagNumber(config = {}, key = '', envKey = '', defaultValue = 0) {
+  const value = Number(getConfigOrEnv(config, key, envKey));
+  return Number.isFinite(value) && value > 0 ? value : defaultValue;
+}
+
+function getRagEmbeddingModel(config = {}) {
+  return String(getConfigOrEnv(config, 'rag_embedding_model', 'RAG_EMBEDDING_MODEL') || 'text-embedding-3-small').trim();
+}
+
+function getRagEmbeddingDimensions(config = {}) {
+  return getRagNumber(config, 'rag_embedding_dimensions', 'RAG_EMBEDDING_DIMENSIONS', 1536);
+}
+
+function getRagTables(config = {}) {
+  return {
+    sourcesTable: String(getConfigOrEnv(config, 'rag_sources_table', 'RAG_SOURCES_TABLE') || 'rag_sources').trim(),
+    chunksTable: String(getConfigOrEnv(config, 'rag_chunks_table', 'RAG_CHUNKS_TABLE') || 'rag_chunks').trim(),
+    matchFunction: String(getConfigOrEnv(config, 'rag_match_function', 'RAG_MATCH_FUNCTION') || 'match_rag_chunks').trim()
+  };
+}
+
+function getRagApiKey(context = {}, config = {}) {
+  return String(
+    context.openaiApiKey
+    || context.apiKey
+    || config.openai_api_key
+    || config.rag_embedding_api_key
+    || process.env.OPENAI_API_KEY
+    || ''
+  ).trim();
+}
+
 function buildRagSourceDocumentsForConfig(config = {}, clientId = '') {
   const scopedClientId = String(clientId || config.client_id || config.clientId || '').trim();
   const documents = [];
@@ -538,13 +583,15 @@ function buildRagSourceDocumentsForConfig(config = {}, clientId = '') {
       source_type: source.source_type || 'client_config',
       source_name: source.source_name || 'Fonte do cliente',
       source_url: sourceUrl,
+      external_id: String(source.external_id || '').trim(),
       content,
       content_hash: buildContentHash([source.source_type, source.source_name, sourceUrl, content].join('\n')),
       entity_type: source.entity_type || 'store_policy',
+      entity_id: String(source.entity_id || source.external_id || '').trim(),
       topic: source.topic || 'knowledge',
       metadata: {
         ...(source.metadata || {}),
-        rag_phase: 'phase_1_interface'
+        rag_phase: 'universal_agentic_rag'
       }
     });
   };
@@ -577,6 +624,7 @@ function buildRagSourceDocumentsForConfig(config = {}, clientId = '') {
       source_type: 'knowledge_file',
       source_name: sourceName,
       source_url: file.path || '',
+      external_id: file.id || file.path || sourceName,
       content,
       topic: 'knowledge',
       metadata: {
@@ -593,6 +641,7 @@ function buildRagSourceDocumentsForConfig(config = {}, clientId = '') {
       source_type: 'site_url',
       source_name: source.name || 'URL configurada',
       source_url: sourceUrl,
+      external_id: sourceUrl,
       content: '',
       topic: 'knowledge',
       metadata: { pending_fetch: true }
@@ -637,77 +686,267 @@ function chunkRagDocument(document = {}) {
 
   const chunks = rawChunks.map((chunkContent, index) => ({
     client_id: document.client_id,
+    source_id: document.source_id || null,
     source_type: document.source_type,
     source_name: document.source_name,
     source_url: document.source_url,
     entity_type: document.entity_type || 'store_policy',
+    entity_id: document.entity_id || document.external_id || '',
     topic: document.topic || 'knowledge',
-    content_hash: document.content_hash,
+    content_hash: buildContentHash([document.content_hash, index, chunkContent].join('\n')),
+    source_content_hash: document.content_hash,
     chunk_index: index,
     content: chunkContent,
+    token_count: Math.ceil(chunkContent.length / 4),
     metadata: {
       ...(document.metadata || {}),
+      external_id: document.external_id || '',
       source_content_hash: document.content_hash
     }
   }));
   return chunks;
 }
 
-async function embedRagChunks(chunks = [], config = {}) {
+async function generateEmbedding(text = '', context = {}) {
+  const config = context.effectiveConfig || context.config || {};
+  const apiKey = getRagApiKey(context, config);
+  const model = getRagEmbeddingModel(config);
+  const dimensions = getRagEmbeddingDimensions(config);
+  const input = String(text || '').slice(0, Number(config.rag_embedding_max_chars || 8000));
+  if (!input.trim()) return { skipped: true, reason: 'empty_text', embedding: null };
+  if (!isUsableProviderApiKey('openai', apiKey)) return { skipped: true, reason: 'no_openai_api_key', embedding: null };
+
+  const startedAt = Date.now();
+  const body = { model, input };
+  if (dimensions) body.dimensions = dimensions;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const response = await fetch('https://api.openai.com/v1/embeddings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(Number(config.rag_embedding_timeout_ms || 8000))
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok) {
+        if ((response.status === 429 || response.status >= 500) && attempt === 1) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+          continue;
+        }
+        throw new Error(data?.error?.message || 'embedding_http_' + response.status);
+      }
+      const embedding = data?.data?.[0]?.embedding;
+      if (!Array.isArray(embedding)) throw new Error('embedding_empty');
+      return {
+        skipped: false,
+        embedding,
+        model: data?.model || model,
+        dimensions: embedding.length,
+        ms: Date.now() - startedAt
+      };
+    } catch (error) {
+      if (attempt >= 2) {
+        console.warn('[RAG EMBED ERROR] message=' + String(error?.message || error).slice(0, 180));
+        return { skipped: true, reason: 'embedding_error', embedding: null, error: String(error?.message || error) };
+      }
+    }
+  }
+  return { skipped: true, reason: 'embedding_error', embedding: null };
+}
+
+async function embedRagChunks(chunks = [], config = {}, context = {}) {
   if (!Array.isArray(chunks) || chunks.length === 0) {
     return { skipped: true, reason: 'empty_chunks', chunks: [] };
   }
-  if (config.rag_embeddings_enabled !== true || !config.rag_embedding_model) {
+  if (!getRagFlag(config, 'rag_embeddings_enabled', 'RAG_EMBEDDINGS_ENABLED', false)) {
     return { skipped: true, reason: 'not_configured', chunks };
   }
-  return { skipped: true, reason: 'embedding_provider_not_implemented_phase_1', chunks };
+  const model = getRagEmbeddingModel(config);
+  console.log('[RAG EMBEDDING] chunks=' + chunks.length + ' model=' + model);
+  const embeddedChunks = [];
+  const batchLimit = Math.min(Number(config.rag_embedding_chunk_limit || 80), chunks.length);
+  for (const chunk of chunks.slice(0, batchLimit)) {
+    const result = await generateEmbedding(chunk.content, { ...context, config });
+    if (result.skipped) {
+      return { skipped: true, reason: result.reason || 'embedding_failed', chunks: embeddedChunks };
+    }
+    embeddedChunks.push({
+      ...chunk,
+      embedding: result.embedding,
+      embedding_model: result.model || model
+    });
+  }
+  return { skipped: false, reason: '', chunks: embeddedChunks };
 }
 
 async function upsertRagChunks(clientId = '', chunks = [], context = {}) {
   const config = context.effectiveConfig || context.config || {};
+  const { sourcesTable, chunksTable } = getRagTables(config);
   if (!clientId || !Array.isArray(chunks) || chunks.length === 0) {
     console.log('[RAG UPSERT] skipped reason=empty_chunks');
     return { skipped: true, reason: 'empty_chunks', count: 0 };
   }
-  if (config.rag_vector_enabled !== true || config.rag_upsert_enabled !== true || !context.supabase) {
+  if (!getRagFlag(config, 'rag_vector_enabled', 'RAG_VECTOR_ENABLED', false)
+    || !getRagFlag(config, 'rag_upsert_enabled', 'RAG_UPSERT_ENABLED', false)
+    || !context.supabase) {
     console.log('[RAG UPSERT] skipped reason=not_configured');
     return { skipped: true, reason: 'not_configured', count: 0 };
   }
-  console.log('[RAG UPSERT] skipped reason=storage_not_implemented_phase_1');
-  return { skipped: true, reason: 'storage_not_implemented_phase_1', count: chunks.length };
+
+  const sourceGroups = new Map();
+  for (const chunk of chunks) {
+    const key = [
+      chunk.client_id,
+      chunk.source_type,
+      chunk.source_url || '',
+      chunk.metadata?.external_id || '',
+      chunk.source_content_hash || chunk.content_hash
+    ].join('|');
+    if (!sourceGroups.has(key)) sourceGroups.set(key, []);
+    sourceGroups.get(key).push(chunk);
+  }
+
+  let upsertedChunks = 0;
+  try {
+    for (const groupChunks of sourceGroups.values()) {
+      const first = groupChunks[0];
+      const sourcePayload = {
+        client_id: clientId,
+        source_type: first.source_type || 'client_config',
+        source_name: first.source_name || 'Fonte do cliente',
+        source_url: first.source_url || null,
+        external_id: first.metadata?.external_id || first.entity_id || null,
+        content_hash: first.source_content_hash || first.content_hash,
+        status: 'active',
+        last_indexed_at: new Date().toISOString(),
+        metadata: {
+          source_name: first.source_name || '',
+          entity_type: first.entity_type || '',
+          topic: first.topic || ''
+        }
+      };
+      const { data: sourceRows, error: sourceError } = await context.supabase
+        .from(sourcesTable)
+        .upsert(sourcePayload, { onConflict: 'client_id,source_type,source_url,external_id,content_hash' })
+        .select('id')
+        .limit(1);
+      if (sourceError) throw sourceError;
+      const sourceId = sourceRows?.[0]?.id;
+      if (!sourceId) throw new Error('rag_source_upsert_missing_id');
+
+      const rows = groupChunks.map(chunk => ({
+        client_id: clientId,
+        source_id: sourceId,
+        source_type: chunk.source_type || 'client_config',
+        entity_type: chunk.entity_type || 'knowledge',
+        entity_id: chunk.entity_id || null,
+        topic: chunk.topic || null,
+        content: chunk.content,
+        content_hash: chunk.content_hash,
+        chunk_index: chunk.chunk_index || 0,
+        metadata: chunk.metadata || {},
+        embedding: chunk.embedding || null,
+        embedding_model: chunk.embedding_model || null,
+        token_count: chunk.token_count || null
+      }));
+      const { error: chunksError } = await context.supabase
+        .from(chunksTable)
+        .upsert(rows, { onConflict: 'client_id,source_id,content_hash,chunk_index' });
+      if (chunksError) throw chunksError;
+      upsertedChunks += rows.length;
+      console.log('[RAG UPSERT] source=' + (first.source_type || '') + ' chunks=' + rows.length);
+    }
+    console.log('[RAG UPSERT] client=' + clientId + ' sources=' + sourceGroups.size + ' chunks=' + upsertedChunks);
+    return { skipped: false, reason: '', count: upsertedChunks };
+  } catch (error) {
+    console.warn('[RAG UPSERT ERROR] message=' + String(error?.message || error).slice(0, 180));
+    return { skipped: true, reason: 'upsert_error', count: upsertedChunks, error: String(error?.message || error) };
+  }
 }
 
 function shouldUseRagForStorePolicy(plan = {}, config = {}) {
   if (!plan || plan.answer_type !== 'store_policy') return false;
-  if (['product_search', 'product_info', 'stock', 'order', 'tracking'].includes(plan.answer_type)) return false;
   if (config.rag_disabled === true) return false;
+  return true;
+}
+
+function shouldUseAgenticRag(plan = {}, config = {}) {
+  if (!plan || config.rag_disabled === true) return false;
+  if (['order', 'tracking'].includes(plan.answer_type)) return false;
   return true;
 }
 
 async function searchRagKnowledge(clientId = '', query = '', options = {}, context = {}) {
   const config = context.effectiveConfig || context.config || {};
   const topK = Math.max(1, Math.min(Number(options.topK || config.rag_top_k || 5), 20));
+  const minScore = Number(options.minScore || getConfigOrEnv(config, 'rag_score_threshold', 'RAG_SCORE_THRESHOLD') || 0.72);
+  const { matchFunction } = getRagTables(config);
   console.log('[RAG VECTOR] search client=' + clientId + ' query="' + escapeLogValue(String(query || '').slice(0, 160)) + '" topK=' + topK);
   const documents = buildRagSourceDocumentsForConfig(config, clientId);
   const chunks = documents.flatMap(document => chunkRagDocument(document));
   console.log('[RAG CHUNKS] client=' + clientId + ' count=' + chunks.length);
 
-  if (!clientId || config.rag_vector_enabled !== true || !context.supabase || !config.rag_chunks_table) {
+  if (!clientId || !getRagFlag(config, 'rag_vector_enabled', 'RAG_VECTOR_ENABLED', false) || !context.supabase) {
     console.log('[RAG VECTOR] skipped reason=not_configured');
     console.log('[RAG VECTOR] results=0');
     return { results: [], skipped: true, reason: 'not_configured', documents, chunks };
   }
 
-  const embedded = await embedRagChunks(chunks, config);
-  if (embedded.skipped) {
-    console.log('[RAG VECTOR] skipped reason=' + embedded.reason);
-    console.log('[RAG VECTOR] results=0');
-    return { results: [], skipped: true, reason: embedded.reason, documents, chunks };
+  if (getRagFlag(config, 'rag_index_on_demand', 'RAG_INDEX_ON_DEMAND', false) && chunks.length > 0) {
+    const embeddedChunks = await embedRagChunks(chunks, config, context);
+    if (!embeddedChunks.skipped) {
+      await upsertRagChunks(clientId, embeddedChunks.chunks, context);
+    } else {
+      console.log('[RAG INDEX] skipped reason=' + embeddedChunks.reason);
+    }
   }
 
-  console.log('[RAG VECTOR] skipped reason=vector_search_not_implemented_phase_1');
-  console.log('[RAG VECTOR] results=0');
-  return { results: [], skipped: true, reason: 'vector_search_not_implemented_phase_1', documents, chunks };
+  const queryEmbedding = await generateEmbedding(query, context);
+  if (queryEmbedding.skipped || !Array.isArray(queryEmbedding.embedding)) {
+    console.log('[RAG VECTOR] skipped reason=' + (queryEmbedding.reason || 'embedding_failed'));
+    console.log('[RAG VECTOR] results=0');
+    return { results: [], skipped: true, reason: queryEmbedding.reason || 'embedding_failed', documents, chunks };
+  }
+
+  const startedAt = Date.now();
+  try {
+    const { data, error } = await context.supabase.rpc(matchFunction, {
+      query_embedding: queryEmbedding.embedding,
+      match_client_id: clientId,
+      match_count: topK,
+      match_threshold: minScore,
+      filter_entity_type: options.entity_type || options.entityType || null,
+      filter_source_type: options.source_type || options.sourceType || null
+    });
+    if (error) throw error;
+    const results = (Array.isArray(data) ? data : []).map(row => ({
+      id: row.id,
+      client_id: row.client_id || clientId,
+      source_id: row.source_id,
+      score: Number(row.similarity || row.score || 0),
+      source_type: row.source_type,
+      source_name: row.source_name,
+      source_url: row.source_url,
+      content: row.content,
+      metadata: row.metadata || {},
+      topic: row.topic,
+      entity_type: row.entity_type,
+      entity_id: row.entity_id
+    }));
+    console.log('[RAG VECTOR] results=' + results.length);
+    for (const result of results.slice(0, 5)) {
+      console.log('[RAG VECTOR RESULT] entity=' + (result.entity_type || '')
+        + ' source=' + (result.source_type || '')
+        + ' score=' + Number(result.score || 0).toFixed(3)
+        + ' text="' + escapeLogValue(String(result.content || '').slice(0, 140)) + '"');
+    }
+    console.log('[RAG LATENCY] embeddingMs=' + Number(queryEmbedding.ms || 0) + ' searchMs=' + (Date.now() - startedAt) + ' totalMs=' + (Date.now() - startedAt + Number(queryEmbedding.ms || 0)));
+    return { results, skipped: false, reason: '', documents, chunks };
+  } catch (error) {
+    console.warn('[RAG VECTOR ERROR] message=' + String(error?.message || error).slice(0, 180));
+    console.log('[RAG VECTOR] results=0');
+    return { results: [], skipped: true, reason: 'vector_error', documents, chunks, error: String(error?.message || error) };
+  }
 }
 
 function buildRagEvidenceBundle(results = [], options = {}) {
@@ -745,6 +984,241 @@ function buildRagEvidenceBundle(results = [], options = {}) {
     contextFacts: facts.filter(fact => fact.relevance === 'context'),
     noiseFacts: facts.filter(fact => fact.relevance === 'noise')
   };
+}
+
+function normalizeProductForRag(product = {}, sourceInfo = {}) {
+  const rawProduct = product.rawProduct || product.raw || product;
+  const sizes = [
+    ...(Array.isArray(product._sizes) ? product._sizes : []),
+    ...getAvailableProductSizes(product),
+    ...(Array.isArray(product.sizes) ? product.sizes : [])
+  ].map(String).filter(Boolean);
+  const colors = [
+    ...(Array.isArray(product.colors) ? product.colors : []),
+    ...getColorTokens(getSearchTokens([product.title, product.description, product.variations?.join(' ')].filter(Boolean).join(' ')))
+  ].map(String).filter(Boolean);
+  return {
+    id: String(product.id || product.product_id || product.codigo || product.sku || product.url || '').trim(),
+    title: String(product.title || product.nome || product.name || '').trim(),
+    description: String(product.description || product.descricao || '').trim(),
+    category: String(product.category || product.categoria || product.tipo || '').trim(),
+    tags: [
+      ...(Array.isArray(product.tags) ? product.tags : []),
+      product.theme,
+      product.brand,
+      product.marca
+    ].filter(Boolean).map(String),
+    price: product.price || product.preco || '',
+    stock: getProductAvailableStock(product),
+    sizes: [...new Set(sizes)],
+    colors: [...new Set(colors)],
+    variations: Array.isArray(product.variations) ? product.variations : [],
+    images: Array.isArray(product.images) ? product.images : [],
+    url: String(product.url || product.link || '').trim(),
+    source_type: sourceInfo.source_type || product.sourceType || 'product_api',
+    source_name: sourceInfo.source_name || product.sourceName || 'API de produtos',
+    rawProduct
+  };
+}
+
+function buildRagProductDocuments(products = [], clientId = '', sourceInfo = {}) {
+  const scopedClientId = String(clientId || '').trim();
+  if (!scopedClientId || !Array.isArray(products)) return [];
+  return products
+    .map(product => normalizeProductForRag(product, sourceInfo))
+    .filter(product => product.title || product.id)
+    .map(product => {
+      const content = [
+        product.title ? `Produto: ${product.title}` : '',
+        product.description ? `Descricao: ${product.description}` : '',
+        product.category ? `Categoria: ${product.category}` : '',
+        product.tags.length ? `Tags/Tema/Marca: ${product.tags.join(', ')}` : '',
+        product.colors.length ? `Cores: ${product.colors.join(', ')}` : '',
+        product.sizes.length ? `Tamanhos: ${product.sizes.join(', ')}` : '',
+        product.variations.length ? `Variacoes: ${product.variations.join(', ')}` : ''
+      ].filter(Boolean).join('\n');
+      return {
+        client_id: scopedClientId,
+        source_type: product.source_type || 'product_api',
+        source_name: product.source_name || 'API de produtos',
+        source_url: product.url || sourceInfo.source_url || '',
+        external_id: product.id || product.url || '',
+        entity_type: 'product',
+        entity_id: product.id || product.url || '',
+        topic: 'product_catalog',
+        content,
+        content_hash: buildContentHash(content),
+        metadata: {
+          product_id: product.id,
+          title: product.title,
+          normalized_title: normalizeSearchText(product.title),
+          price: product.price,
+          stock: product.stock,
+          sizes: product.sizes,
+          colors: product.colors,
+          url: product.url,
+          imageUrl: product.images[0] || '',
+          images: product.images,
+          source_api: product.source_type,
+          raw_ref: product.id || product.url,
+          last_synced_at: new Date().toISOString()
+        }
+      };
+    });
+}
+
+async function indexProductCatalogForClient(clientId = '', config = {}, context = {}) {
+  if (!getRagFlag(config, 'rag_products_enabled', 'RAG_PRODUCTS_ENABLED', false)
+    || !getRagFlag(config, 'rag_index_products_enabled', 'RAG_INDEX_PRODUCTS_ENABLED', false)) {
+    console.log('[RAG PRODUCT INDEX] skipped reason=not_configured');
+    return { skipped: true, reason: 'not_configured', documents: [], chunks: [] };
+  }
+  const query = String(config.rag_product_index_query || config.rag_catalog_index_query || 'produto').trim();
+  const productContext = await fetchProductContext(query, buildProductSourcesForConfig(config), {});
+  const products = productContext.allProductsCollected || productContext.product_context_products || [];
+  const documents = buildRagProductDocuments(products, clientId, { source_type: 'product_api', source_name: 'API de produtos' });
+  const chunks = documents.flatMap(document => chunkRagDocument(document));
+  console.log('[RAG PRODUCT INDEX] client=' + clientId + ' products=' + products.length + ' chunks=' + chunks.length);
+  const embedded = await embedRagChunks(chunks, config, context);
+  if (embedded.skipped) return { skipped: true, reason: embedded.reason, documents, chunks };
+  const upserted = await upsertRagChunks(clientId, embedded.chunks, context);
+  return { skipped: upserted.skipped, reason: upserted.reason, documents, chunks: embedded.chunks };
+}
+
+async function searchVectorProducts(clientId = '', query = '', filters = {}, context = {}) {
+  const config = context.effectiveConfig || context.config || {};
+  if (!getRagFlag(config, 'rag_products_enabled', 'RAG_PRODUCTS_ENABLED', false)
+    || !getRagFlag(config, 'rag_product_search_enabled', 'RAG_PRODUCT_SEARCH_ENABLED', false)) {
+    console.log('[RAG PRODUCT SEARCH] skipped reason=not_configured');
+    return { results: [], skipped: true, reason: 'not_configured' };
+  }
+  console.log('[RAG PRODUCT SEARCH] client=' + clientId + ' query="' + escapeLogValue(String(query || '').slice(0, 160)) + '"');
+  return searchRagKnowledge(clientId, query, {
+    topK: filters.topK || config.rag_product_top_k || 8,
+    entity_type: 'product',
+    source_type: filters.source_type || null,
+    minScore: filters.minScore || config.rag_product_score_threshold
+  }, context);
+}
+
+async function hydrateProductsFromApiOrCache(clientId = '', vectorResults = [], config = {}, context = {}) {
+  if (!Array.isArray(vectorResults) || vectorResults.length === 0) return [];
+  const hydrated = [];
+  for (const result of vectorResults.slice(0, 12)) {
+    const metadata = result.metadata || {};
+    if (metadata.title || metadata.product_id || metadata.url) {
+      hydrated.push(normalizeProductForRag({
+        id: metadata.product_id || result.entity_id,
+        title: metadata.title || '',
+        price: metadata.price || '',
+        stock: metadata.stock,
+        sizes: metadata.sizes || [],
+        colors: metadata.colors || [],
+        images: metadata.images || (metadata.imageUrl ? [metadata.imageUrl] : []),
+        url: metadata.url || result.source_url || '',
+        sourceType: result.source_type,
+        sourceName: result.source_name
+      }, { source_type: result.source_type, source_name: result.source_name }));
+    }
+  }
+  console.log('[RAG PRODUCT HYDRATE] client=' + clientId + ' candidates=' + vectorResults.length + ' hydrated=' + hydrated.length);
+  return hydrated;
+}
+
+async function indexRagSourcesForClient(clientId = '', config = {}, context = {}, options = {}) {
+  const startedAt = Date.now();
+  if (!clientId) {
+    console.log('[RAG INDEX] skipped reason=no_client_id');
+    return { skipped: true, reason: 'no_client_id', indexed: 0, chunks: 0 };
+  }
+  if (!getRagFlag(config, 'rag_vector_enabled', 'RAG_VECTOR_ENABLED', false)) {
+    console.log('[RAG INDEX] skipped reason=not_configured');
+    return { skipped: true, reason: 'not_configured', indexed: 0, chunks: 0 };
+  }
+
+  let documents = [];
+  if (getRagFlag(config, 'rag_knowledge_enabled', 'RAG_KNOWLEDGE_ENABLED', true)) {
+    documents.push(...buildRagSourceDocumentsForConfig(config, clientId));
+  }
+  if (options.includeProducts === true || getRagFlag(config, 'rag_index_products_enabled', 'RAG_INDEX_PRODUCTS_ENABLED', false)) {
+    const productIndex = await indexProductCatalogForClient(clientId, config, context);
+    if (!productIndex.skipped) {
+      console.log('[RAG INDEX DONE] client=' + clientId + ' indexed=' + productIndex.documents.length + ' skipped=0 failed=0 ms=' + (Date.now() - startedAt));
+      return productIndex;
+    }
+  }
+
+  const chunks = documents.flatMap(document => {
+    const chunked = chunkRagDocument(document);
+    console.log('[RAG CHUNKS] source=' + document.source_type + ':' + (document.source_name || '') + ' count=' + chunked.length);
+    return chunked;
+  });
+  console.log('[RAG INDEX] client=' + clientId + ' sources=' + documents.length);
+  const embedded = await embedRagChunks(chunks, config, context);
+  if (embedded.skipped) {
+    console.log('[RAG INDEX DONE] client=' + clientId + ' indexed=0 skipped=' + chunks.length + ' failed=0 ms=' + (Date.now() - startedAt));
+    return { skipped: true, reason: embedded.reason, indexed: 0, chunks: chunks.length };
+  }
+  const upserted = await upsertRagChunks(clientId, embedded.chunks, context);
+  console.log('[RAG INDEX DONE] client=' + clientId + ' indexed=' + (upserted.count || 0) + ' skipped=0 failed=' + (upserted.skipped ? 1 : 0) + ' ms=' + (Date.now() - startedAt));
+  return { skipped: upserted.skipped, reason: upserted.reason, indexed: upserted.count || 0, chunks: embedded.chunks.length };
+}
+
+function buildUniversalEvidenceBundle(answerType = '', query = '') {
+  return {
+    answer_type: answerType,
+    query,
+    facts: [],
+    vectorFacts: [],
+    configFacts: [],
+    sourceFacts: [],
+    productFacts: [],
+    orderFacts: [],
+    selectedProductFacts: [],
+    directFacts: [],
+    contextFacts: [],
+    noise: [],
+    products: [],
+    product_cards: [],
+    missing: [],
+    warnings: [],
+    tools_used: [],
+    confidence: 'low'
+  };
+}
+
+async function executeAgenticRagTools(plan = {}, state = {}, context = {}) {
+  const config = context.effectiveConfig || context.config || {};
+  const clientId = getRagClientId(context, config);
+  const query = String(state.message || context.message || plan.understanding || '').trim();
+  const bundle = buildUniversalEvidenceBundle(plan.answer_type || '', query);
+  const tools = Array.isArray(plan.tools) ? plan.tools : [];
+  for (const tool of tools) {
+    const name = tool.name;
+    console.log('[AGENT TOOL] name=' + name + ' status=started');
+    if (name === 'search_vector_knowledge') {
+      const result = await searchRagKnowledge(clientId, tool.args?.query || query, { entity_type: tool.args?.entity_type || null }, context);
+      const evidence = buildRagEvidenceBundle(result.results || [], { topic: tool.args?.topic || 'store_policy' });
+      bundle.vectorFacts.push(...evidence.facts);
+      bundle.directFacts.push(...evidence.directFacts);
+      bundle.contextFacts.push(...evidence.contextFacts);
+      bundle.noise.push(...evidence.noiseFacts);
+      bundle.tools_used.push({ tool: name, status: result.skipped ? 'skipped' : 'executed', reason: result.reason || '' });
+      console.log('[AGENT EVIDENCE] tool=' + name + ' direct=' + evidence.directFacts.length + ' context=' + evidence.contextFacts.length + ' noise=' + evidence.noiseFacts.length);
+      continue;
+    }
+    if (name === 'search_vector_products') {
+      const result = await searchVectorProducts(clientId, tool.args?.query || query, tool.args || {}, context);
+      const hydrated = await hydrateProductsFromApiOrCache(clientId, result.results || [], config, context);
+      bundle.products.push(...hydrated);
+      bundle.tools_used.push({ tool: name, status: result.skipped ? 'skipped' : 'executed', reason: result.reason || '' });
+      continue;
+    }
+    bundle.tools_used.push({ tool: name, status: 'skipped', reason: 'not_implemented_in_universal_router_yet' });
+    console.log('[AGENT TOOL] name=' + name + ' status=skipped reason=not_implemented_in_universal_router_yet');
+  }
+  bundle.confidence = bundle.directFacts.length > 0 ? 'high' : (bundle.contextFacts.length > 0 ? 'medium' : 'low');
+  return bundle;
 }
 
 function suppressRepeatedGreeting(text, greetingMessage, conversation) {
@@ -6648,7 +7122,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           effectiveConfig,
           config,
           provider,
-          apiKey: apiKeyForClassify
+          apiKey: apiKeyForClassify,
+          openaiApiKey: client?.openai_api_key
         }
       );
       if (plannerActiveResult) return plannerActiveResult;

@@ -2319,7 +2319,7 @@ function getStorePolicyKnowledgeQuery(message = '') {
   if (/precisa ter loja|tem que ter loja|loja para comprar/i.test(text)) return 'loja para comprar';
   if (/pedido minimo|minimo de pecas|mínimo de peças|valor minimo|compra minima/i.test(text)) return 'pedido minimo';
   if (/como comprar|comprar com voces|comprar com vocês/i.test(text)) return 'como comprar';
-  if (/\bpagamento\b|\bpagar\b|\bpix\b|\bcartao\b|\bcartão\b|\bboleto\b/i.test(text)) return 'pagamento';
+  if (/\bpagamento\b|\bpagar\b|\bpago\b|\bpix\b|\bcartao\b|\bcartão\b|\bboleto\b|formas? de pagamento|como pago/i.test(text)) return 'pagamento';
   if (/\b(excursao|ponto de encontro|local de retirada)\b/i.test(text) && /\b(entrega|entregam|enviar|envio|retirada|retirar|buscar)\b/i.test(text)) return 'entrega retirada localizacao';
   if (/\bentrega\b|\bentregam\b|\bfrete\b|\benviar\b|\benvio\b|\bmotoboy\b/i.test(text)) return 'entrega frete';
   if (/\bendereco\b|\bendereço\b|onde fica|localizacao|localização/i.test(text)) return 'endereco';
@@ -4463,6 +4463,15 @@ function isSelectedProductFollowUp(message = '') {
   return /\b(outros tamanhos|outro tamanho|demais tamanhos|cada tamanho|por tamanho|todos tamanhos|todos os tamanhos|outras cores|outra cor|cores|desse|dessa|desse modelo|dessa opcao)\b/i.test(text);
 }
 
+function isExplicitNewProductRequest(message = '') {
+  const text = normalizeSearchText(message);
+  if (!text) return false;
+  const hasProductNoun = /\b(produto|produtos|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|camisa|camisas|tshirt|cropped|moletom|moletons|moleton|pijama|pijamas|regata|regatas|jaqueta|jaquetas|casaco|casacos)\b/i.test(text);
+  const hasSearchVerb = /\b(tem|vende|vendem|quero|queria|procuro|busco|preciso|gostaria)\b/i.test(text);
+  const hasSpecificModifier = getSpecificProductTokens(getSearchTokens(message)).length >= 2;
+  return hasProductNoun && (hasSearchVerb || hasSpecificModifier);
+}
+
 function buildStockFollowupIntentFromMessage(message = '', conversationHistory = [], reason = 'stock_followup', conversation = {}) {
   const recentProducts = getReliableRecentProductStockContext(conversationHistory, conversation);
   const selectedMemory = getSelectedProductMemory(conversation);
@@ -4510,6 +4519,10 @@ function buildStockFollowupIntentFromMessage(message = '', conversationHistory =
 
 function coerceStockFollowupIntent(customerIntent = {}, message = '', conversationHistory = [], conversation = {}) {
   if (!isStockAvailabilityFollowUp(message)) return customerIntent;
+  if (isExplicitNewProductRequest(message)) {
+    console.log('[STOCK FOLLOWUP COERCE SKIP] reason=explicit_new_product_request');
+    return customerIntent;
+  }
   const recentProducts = getReliableRecentProductStockContext(conversationHistory, conversation);
   if (recentProducts.length === 0) return customerIntent;
   if (customerIntent.intent === 'product_stock_followup' || customerIntent.question_type === 'stock_by_size_color') {
@@ -7239,7 +7252,11 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   const hasSelectedProductMemory = Boolean(selectedProductMemory);
   const hasPendingProductSelection = Boolean(pendingProductSelectionMemory);
   const hasPendingActionMemory = Boolean(pendingActionMemory);
-  const earlyStockFollowupIntent = (isStockAvailabilityFollowUp(message) || (hasSelectedProductMemory && isSelectedProductFollowUp(message)) || (extractProductIndexReference(message) && (getRecentProductsMemory(conversation).length > 0 || hasPendingProductSelection)))
+  const explicitNewProductRequest = isExplicitNewProductRequest(message);
+  if (explicitNewProductRequest) {
+    console.log('[STOCK FOLLOWUP SKIP] reason=explicit_new_product_request');
+  }
+  const earlyStockFollowupIntent = (!explicitNewProductRequest && (isStockAvailabilityFollowUp(message) || (hasSelectedProductMemory && isSelectedProductFollowUp(message)) || (extractProductIndexReference(message) && (getRecentProductsMemory(conversation).length > 0 || hasPendingProductSelection))))
     ? buildStockFollowupIntentFromMessage(message, conversationHistory, 'early_before_product_lookup', conversation)
     : null;
   if (earlyStockFollowupIntent) {
@@ -8102,7 +8119,6 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     };
   }
 }
-
 module.exports = {
   generateAIResponse
 };

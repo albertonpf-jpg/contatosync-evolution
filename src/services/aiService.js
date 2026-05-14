@@ -397,6 +397,11 @@ function classifyEvidenceRelevance(text = '', policyType = '') {
     return { relevance: 'direct', reason: reasonByType[policyType] || 'contains_policy_terms' };
   }
 
+  if (policyType === 'free_shipping'
+    && /\b(frete|entrega|envio|motoboy|excursao|retirada|transportadora|correios)\b/i.test(normalized)) {
+    return { relevance: 'noise', reason: 'delivery_text_without_free_shipping_policy' };
+  }
+
   return { relevance: 'context', reason: 'related_terms_without_direct_policy' };
 }
 
@@ -1007,6 +1012,7 @@ async function searchRagKnowledge(clientId = '', query = '', options = {}, conte
 function buildRagEvidenceBundle(results = [], options = {}) {
   const topic = options.topic || 'store_policy';
   const queries = getStorePolicyTopicQueries(topic, options.query || '');
+  const directOnlyTopics = new Set(['cnpj', 'free_shipping']);
   const facts = [];
   for (const result of (Array.isArray(results) ? results : [])) {
     if (!result || !result.content) continue;
@@ -1021,14 +1027,18 @@ function buildRagEvidenceBundle(results = [], options = {}) {
           score: scorePolicyEvidenceSnippet(snippet, queries)
         };
       })
-      .filter(item => item.snippet && (item.relevance.relevance !== 'noise' || item.score > 0));
+      .filter(item => item.snippet && (
+        item.relevance.relevance === 'direct'
+        || (item.relevance.relevance === 'context' && item.score > 0 && !directOnlyTopics.has(topic))
+        || (item.relevance.relevance === 'noise' && item.score > 0)
+      ));
     const selectedSnippets = scoredSnippets.length > 0
       ? scoredSnippets
-      : [{
+      : (directOnlyTopics.has(topic) ? [] : [{
         snippet: String(result.content || '').trim(),
         relevance: classifyEvidenceRelevance(result.content, topic),
         score: 0
-      }];
+      }]);
     for (const item of selectedSnippets.slice(0, 6)) {
       facts.push({
         text: item.snippet,
@@ -5835,7 +5845,7 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
   const directFacts = [...evidenceBundle.configFacts, ...evidenceBundle.sourceFacts];
   const activeConfidence = directFacts.some(fact => fact.confidence === 'high')
     ? 'high'
-    : (directFacts.length > 0 ? 'medium' : (evidenceBundle.contextFacts.length > 0 ? 'medium' : 'low'));
+    : (directFacts.length > 0 ? 'medium' : 'low');
   answer.model = directFacts.length > 0 ? 'planner_store_policy' : 'planner_store_policy_fallback';
   answer.confidence = activeConfidence;
   console.log('[PLANNER ACTIVE ANSWER] confidence=' + activeConfidence + ' model=' + answer.model);

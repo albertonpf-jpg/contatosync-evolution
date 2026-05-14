@@ -6932,7 +6932,7 @@ async function executePendingActionForConversation(action = {}, confirmation = '
 
 // ─── FIM BUSCA SEMÂNTICA ──────────────────────────────────────────────────────
 
-async function buildProductContextForConfig(message, config, conversationHistory = []) {
+async function buildProductContextForConfig(message, config, conversationHistory = [], options = {}) {
   const searchText = buildProductSearchText(message, conversationHistory);
   const configuredSources = buildProductSourcesForConfig(config);
   if (config?.product_search_enabled === false && configuredSources.length === 0) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
@@ -6943,7 +6943,8 @@ async function buildProductContextForConfig(message, config, conversationHistory
   const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : [], { excludeTitles });
   if (shouldSearch) {
     queueRagProductIndexFromContext(productContext, config);
-    observeRagProductSearchFromContext(searchText, { ...productContext, searchText }, config);
+    const ragObservationQuery = String(options.ragObservationQuery || message || searchText || '').trim();
+    observeRagProductSearchFromContext(ragObservationQuery, { ...productContext, searchText: ragObservationQuery || searchText }, config);
   }
   return { ...productContext, lookupAttempted: shouldSearch, searchText };
 }
@@ -7952,7 +7953,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     const cleanQuery = customerIntent.search_query || getProductSearchPhrase(message);
     console.log('[PRODUCT CLEAN QUERY] "' + cleanQuery + '"');
     if (cleanQuery) {
-      const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory);
+      const ragObservationQuery = [message, cleanQuery].filter(Boolean).join(' ');
+      const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory, { ragObservationQuery });
       saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
       if (productContext.lookupAttempted) {
         const productCards = productContext.productCards || [];

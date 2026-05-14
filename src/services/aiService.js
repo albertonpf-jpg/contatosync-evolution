@@ -5824,6 +5824,20 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
 async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundle = {}, config = {}) {
   const evidenceText = String(evidenceBundle.contextText || '').trim();
   const directEvidence = hasDirectStorePolicyEvidence(evidenceBundle);
+  const buildSummaryAnswer = (model = 'planner_store_policy_summary', processingTimeMs = 0) => ({
+    skipped: false,
+    response: buildStorePolicyFactsSummaryResponse(message, evidenceBundle),
+    provider: 'planner',
+    model,
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    processing_time_ms: processingTimeMs,
+    product_images: [],
+    product_cards: [],
+    product_lookup_attempted: false,
+    product_search_text: ''
+  });
   if (!directEvidence) {
     return {
       skipped: false,
@@ -5871,42 +5885,77 @@ ${policyFactsText}
 ${evidenceText.slice(0, 16000)}`;
 
   if (!isUsableProviderApiKey(provider, apiKey)) {
-    return {
-      skipped: false,
-      response: buildStorePolicyFactsSummaryResponse(message, evidenceBundle),
-      provider: 'planner',
-      model: 'planner_store_policy_summary',
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      processing_time_ms: 0,
-      product_images: [],
-      product_cards: [],
-      product_lookup_attempted: false,
-      product_search_text: ''
-    };
+    return buildSummaryAnswer('planner_store_policy_summary', 0);
   }
 
   const startedAt = Date.now();
-  if (provider === 'claude') {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+  try {
+    if (provider === 'claude') {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: config.planner_final_model || config.planner_shadow_model || 'claude-3-haiku-20240307',
+          max_tokens: 450,
+          temperature: 0,
+          messages: [{ role: 'user', content: prompt }]
+        }),
+        signal: AbortSignal.timeout(Number(config.planner_active_timeout_ms || 7000))
+      });
+      if (!res.ok) throw new Error('planner_final_http_' + res.status);
+      const data = await res.json().catch(() => null);
+      const text = String(data?.content?.[0]?.text || '').trim();
+      if (!text) return null;
+      if (directEvidence && normalizeSearchText(text).includes('nao encontrei')) {
+        return {
+          skipped: false,
+          response: buildStorePolicyFactsSummaryResponse(message, evidenceBundle),
+          provider: 'planner',
+          model: 'planner_store_policy',
+          prompt_tokens: data?.usage?.input_tokens || 0,
+          completion_tokens: data?.usage?.output_tokens || 0,
+          total_tokens: (data?.usage?.input_tokens || 0) + (data?.usage?.output_tokens || 0),
+          processing_time_ms: Date.now() - startedAt,
+          product_images: [],
+          product_cards: [],
+          product_lookup_attempted: false,
+          product_search_text: ''
+        };
+      }
+      return {
+        skipped: false,
+        response: text,
+        provider: 'planner',
+        model: data?.model || config.planner_final_model || config.planner_shadow_model || 'claude-3-haiku-20240307',
+        prompt_tokens: data?.usage?.input_tokens || 0,
+        completion_tokens: data?.usage?.output_tokens || 0,
+        total_tokens: (data?.usage?.input_tokens || 0) + (data?.usage?.output_tokens || 0),
+        processing_time_ms: Date.now() - startedAt,
+        product_images: [],
+        product_cards: [],
+        product_lookup_attempted: false,
+        product_search_text: ''
+      };
+    }
+
+    const res = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
-        model: config.planner_final_model || config.planner_shadow_model || 'claude-3-haiku-20240307',
-        max_tokens: 450,
+        model: config.planner_final_model || config.planner_shadow_model || 'gpt-4o-mini',
         temperature: 0,
-        messages: [{ role: 'user', content: prompt }]
+        max_output_tokens: 450,
+        input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }]
       }),
       signal: AbortSignal.timeout(Number(config.planner_active_timeout_ms || 7000))
     });
     if (!res.ok) throw new Error('planner_final_http_' + res.status);
     const data = await res.json().catch(() => null);
-    const text = String(data?.content?.[0]?.text || '').trim();
+    const text = String(getOpenAIText(data) || '').trim();
     if (!text) return null;
     if (directEvidence && normalizeSearchText(text).includes('nao encontrei')) {
       return {
@@ -5914,9 +5963,9 @@ ${evidenceText.slice(0, 16000)}`;
         response: buildStorePolicyFactsSummaryResponse(message, evidenceBundle),
         provider: 'planner',
         model: 'planner_store_policy',
-        prompt_tokens: data?.usage?.input_tokens || 0,
-        completion_tokens: data?.usage?.output_tokens || 0,
-        total_tokens: (data?.usage?.input_tokens || 0) + (data?.usage?.output_tokens || 0),
+        prompt_tokens: data?.usage?.input_tokens || data?.usage?.prompt_tokens || 0,
+        completion_tokens: data?.usage?.output_tokens || data?.usage?.completion_tokens || 0,
+        total_tokens: data?.usage?.total_tokens || 0,
         processing_time_ms: Date.now() - startedAt,
         product_images: [],
         product_cards: [],
@@ -5928,39 +5977,7 @@ ${evidenceText.slice(0, 16000)}`;
       skipped: false,
       response: text,
       provider: 'planner',
-      model: data?.model || config.planner_final_model || config.planner_shadow_model || 'claude-3-haiku-20240307',
-      prompt_tokens: data?.usage?.input_tokens || 0,
-      completion_tokens: data?.usage?.output_tokens || 0,
-      total_tokens: (data?.usage?.input_tokens || 0) + (data?.usage?.output_tokens || 0),
-      processing_time_ms: Date.now() - startedAt,
-      product_images: [],
-      product_cards: [],
-      product_lookup_attempted: false,
-      product_search_text: ''
-    };
-  }
-
-  const res = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: config.planner_final_model || config.planner_shadow_model || 'gpt-4o-mini',
-      temperature: 0,
-      max_output_tokens: 450,
-      input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }]
-    }),
-    signal: AbortSignal.timeout(Number(config.planner_active_timeout_ms || 7000))
-  });
-  if (!res.ok) throw new Error('planner_final_http_' + res.status);
-  const data = await res.json().catch(() => null);
-  const text = String(getOpenAIText(data) || '').trim();
-  if (!text) return null;
-  if (directEvidence && normalizeSearchText(text).includes('nao encontrei')) {
-    return {
-      skipped: false,
-      response: buildStorePolicyFactsSummaryResponse(message, evidenceBundle),
-      provider: 'planner',
-      model: 'planner_store_policy',
+      model: data?.model || config.planner_final_model || config.planner_shadow_model || 'gpt-4o-mini',
       prompt_tokens: data?.usage?.input_tokens || data?.usage?.prompt_tokens || 0,
       completion_tokens: data?.usage?.output_tokens || data?.usage?.completion_tokens || 0,
       total_tokens: data?.usage?.total_tokens || 0,
@@ -5970,21 +5987,10 @@ ${evidenceText.slice(0, 16000)}`;
       product_lookup_attempted: false,
       product_search_text: ''
     };
+  } catch (error) {
+    console.warn('[PLANNER ACTIVE ANSWER FALLBACK] reason=provider_error_with_direct_evidence message=' + String(error?.message || error || '').slice(0, 160));
+    return buildSummaryAnswer('planner_store_policy_summary', Date.now() - startedAt);
   }
-  return {
-    skipped: false,
-    response: text,
-    provider: 'planner',
-    model: data?.model || config.planner_final_model || config.planner_shadow_model || 'gpt-4o-mini',
-    prompt_tokens: data?.usage?.input_tokens || data?.usage?.prompt_tokens || 0,
-    completion_tokens: data?.usage?.output_tokens || data?.usage?.completion_tokens || 0,
-    total_tokens: data?.usage?.total_tokens || 0,
-    processing_time_ms: Date.now() - startedAt,
-    product_images: [],
-    product_cards: [],
-    product_lookup_attempted: false,
-    product_search_text: ''
-  };
 }
 
 function savePendingActionMemory(conversation = {}, action = {}) {

@@ -14,7 +14,9 @@ const pendingStockFiltersByConversation = new Map();
 const selectedProductByConversation = new Map();
 const pendingProductSelectionByConversation = new Map();
 const pendingActionByConversation = new Map();
+const ragOnDemandIndexByClient = new Map();
 const PENDING_ACTION_TTL_MS = 10 * 60 * 1000;
+const RAG_ON_DEMAND_INDEX_TTL_MS = 15 * 60 * 1000;
 
 const DEFAULT_INTEGRATION_CONFIG = {
   facilzap: {
@@ -539,6 +541,45 @@ function getRagFlag(config = {}, key = '', envKey = '', defaultValue = false) {
   return /^(1|true|yes|sim|on)$/i.test(String(value).trim());
 }
 
+function isRagVectorEnabled(config = {}, context = {}) {
+  return Boolean(context.supabase) && getRagFlag(config, 'rag_vector_enabled', 'RAG_VECTOR_ENABLED', false);
+}
+
+function isRagKnowledgeEnabled(config = {}) {
+  return getRagFlag(config, 'rag_knowledge_enabled', 'RAG_KNOWLEDGE_ENABLED', true);
+}
+
+function isRagIndexOnDemandEnabled(config = {}) {
+  return getRagFlag(config, 'rag_index_on_demand', 'RAG_INDEX_ON_DEMAND', true);
+}
+
+function isRagEmbeddingEnabled(config = {}) {
+  if (getRagFlag(config, 'rag_vector_enabled', 'RAG_VECTOR_ENABLED', false) && isRagKnowledgeEnabled(config)) return true;
+  return getRagFlag(config, 'rag_embeddings_enabled', 'RAG_EMBEDDINGS_ENABLED', false);
+}
+
+function isRagUpsertEnabled(config = {}) {
+  if (getRagFlag(config, 'rag_vector_enabled', 'RAG_VECTOR_ENABLED', false) && isRagIndexOnDemandEnabled(config)) return true;
+  return getRagFlag(config, 'rag_upsert_enabled', 'RAG_UPSERT_ENABLED', false);
+}
+
+function getRagOnDemandIndexTtlMs(config = {}) {
+  return getRagNumber(config, 'rag_index_cache_ttl_ms', 'RAG_INDEX_CACHE_TTL_MS', RAG_ON_DEMAND_INDEX_TTL_MS);
+}
+
+function shouldRunRagOnDemandIndex(clientId = '', chunks = [], config = {}) {
+  if (!clientId || !Array.isArray(chunks) || chunks.length === 0 || !isRagIndexOnDemandEnabled(config)) return false;
+  const hash = buildContentHash(chunks.map(chunk => chunk.content_hash || chunk.content || '').join('|'));
+  const key = `${clientId}|${hash}`;
+  const previous = ragOnDemandIndexByClient.get(key);
+  if (previous && Date.now() - Number(previous.indexedAt || 0) < getRagOnDemandIndexTtlMs(config)) {
+    console.log('[RAG INDEX] skipped reason=cache_hit client=' + clientId);
+    return false;
+  }
+  ragOnDemandIndexByClient.set(key, { indexedAt: Date.now() });
+  return true;
+}
+
 function getRagNumber(config = {}, key = '', envKey = '', defaultValue = 0) {
   const value = Number(getConfigOrEnv(config, key, envKey));
   return Number.isFinite(value) && value > 0 ? value : defaultValue;
@@ -758,7 +799,7 @@ async function embedRagChunks(chunks = [], config = {}, context = {}) {
   if (!Array.isArray(chunks) || chunks.length === 0) {
     return { skipped: true, reason: 'empty_chunks', chunks: [] };
   }
-  if (!getRagFlag(config, 'rag_embeddings_enabled', 'RAG_EMBEDDINGS_ENABLED', false)) {
+  if (!isRagEmbeddingEnabled(config)) {
     return { skipped: true, reason: 'not_configured', chunks };
   }
   const model = getRagEmbeddingModel(config);
@@ -787,7 +828,7 @@ async function upsertRagChunks(clientId = '', chunks = [], context = {}) {
     return { skipped: true, reason: 'empty_chunks', count: 0 };
   }
   if (!getRagFlag(config, 'rag_vector_enabled', 'RAG_VECTOR_ENABLED', false)
-    || !getRagFlag(config, 'rag_upsert_enabled', 'RAG_UPSERT_ENABLED', false)
+    || !isRagUpsertEnabled(config)
     || !context.supabase) {
     console.log('[RAG UPSERT] skipped reason=not_configured');
     return { skipped: true, reason: 'not_configured', count: 0 };
@@ -814,8 +855,8 @@ async function upsertRagChunks(clientId = '', chunks = [], context = {}) {
         client_id: clientId,
         source_type: first.source_type || 'client_config',
         source_name: first.source_name || 'Fonte do cliente',
-        source_url: first.source_url || null,
-        external_id: first.metadata?.external_id || first.entity_id || null,
+        source_url: first.source_url || '',
+        external_id: first.metadata?.external_id || first.entity_id || '',
         content_hash: first.source_content_hash || first.content_hash,
         status: 'active',
         last_indexed_at: new Date().toISOString(),
@@ -886,13 +927,13 @@ async function searchRagKnowledge(clientId = '', query = '', options = {}, conte
   const chunks = documents.flatMap(document => chunkRagDocument(document));
   console.log('[RAG CHUNKS] client=' + clientId + ' count=' + chunks.length);
 
-  if (!clientId || !getRagFlag(config, 'rag_vector_enabled', 'RAG_VECTOR_ENABLED', false) || !context.supabase) {
+  if (!clientId || !isRagVectorEnabled(config, context)) {
     console.log('[RAG VECTOR] skipped reason=not_configured');
     console.log('[RAG VECTOR] results=0');
     return { results: [], skipped: true, reason: 'not_configured', documents, chunks };
   }
 
-  if (getRagFlag(config, 'rag_index_on_demand', 'RAG_INDEX_ON_DEMAND', false) && chunks.length > 0) {
+  if (shouldRunRagOnDemandIndex(clientId, chunks, config)) {
     const embeddedChunks = await embedRagChunks(chunks, config, context);
     if (!embeddedChunks.skipped) {
       await upsertRagChunks(clientId, embeddedChunks.chunks, context);
@@ -954,7 +995,7 @@ function buildRagEvidenceBundle(results = [], options = {}) {
   const facts = (Array.isArray(results) ? results : [])
     .filter(result => result && result.content)
     .map(result => {
-      const relevance = classifyEvidenceRelevance(result.content, result.topic || topic);
+      const relevance = classifyEvidenceRelevance(result.content, topic);
       return {
         text: result.content,
         source_type: result.source_type || result.sourceType || 'rag_chunk',
@@ -1131,13 +1172,13 @@ async function indexRagSourcesForClient(clientId = '', config = {}, context = {}
     console.log('[RAG INDEX] skipped reason=no_client_id');
     return { skipped: true, reason: 'no_client_id', indexed: 0, chunks: 0 };
   }
-  if (!getRagFlag(config, 'rag_vector_enabled', 'RAG_VECTOR_ENABLED', false)) {
+  if (!isRagVectorEnabled(config, context)) {
     console.log('[RAG INDEX] skipped reason=not_configured');
     return { skipped: true, reason: 'not_configured', indexed: 0, chunks: 0 };
   }
 
   let documents = [];
-  if (getRagFlag(config, 'rag_knowledge_enabled', 'RAG_KNOWLEDGE_ENABLED', true)) {
+  if (isRagKnowledgeEnabled(config)) {
     documents.push(...buildRagSourceDocumentsForConfig(config, clientId));
   }
   if (options.includeProducts === true || getRagFlag(config, 'rag_index_products_enabled', 'RAG_INDEX_PRODUCTS_ENABLED', false)) {

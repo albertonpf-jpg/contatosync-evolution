@@ -579,8 +579,13 @@ function shouldRunRagOnDemandIndex(clientId = '', chunks = [], config = {}) {
     console.log('[RAG INDEX] skipped reason=cache_hit client=' + clientId);
     return false;
   }
-  ragOnDemandIndexByClient.set(key, { indexedAt: Date.now() });
   return true;
+}
+
+function markRagOnDemandIndexComplete(clientId = '', chunks = []) {
+  if (!clientId || !Array.isArray(chunks) || chunks.length === 0) return;
+  const hash = buildContentHash(chunks.map(chunk => chunk.content_hash || chunk.content || '').join('|'));
+  ragOnDemandIndexByClient.set(`${clientId}|${hash}`, { indexedAt: Date.now() });
 }
 
 function getRagNumber(config = {}, key = '', envKey = '', defaultValue = 0) {
@@ -942,7 +947,10 @@ async function searchRagKnowledge(clientId = '', query = '', options = {}, conte
   if (shouldRunRagOnDemandIndex(clientId, chunks, config)) {
     const embeddedChunks = await embedRagChunks(chunks, config, context);
     if (!embeddedChunks.skipped) {
-      await upsertRagChunks(clientId, embeddedChunks.chunks, context);
+      const upsertResult = await upsertRagChunks(clientId, embeddedChunks.chunks, context);
+      if (!upsertResult.skipped) {
+        markRagOnDemandIndexComplete(clientId, chunks);
+      }
     } else {
       console.log('[RAG INDEX] skipped reason=' + embeddedChunks.reason);
     }

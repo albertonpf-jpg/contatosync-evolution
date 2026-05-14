@@ -1147,6 +1147,7 @@ function buildRagProductDocuments(products = [], clientId = '', sourceInfo = {})
           stock: product.stock,
           sizes: product.sizes,
           colors: product.colors,
+          variations: product.variations,
           url: product.url,
           imageUrl: product.images[0] || '',
           images: product.images,
@@ -1197,10 +1198,9 @@ function filterHydratedVectorProductsForQuery(products = [], query = '') {
   for (const product of Array.isArray(products) ? products : []) {
     const text = buildRagProductFilterText(product);
     const matchedSpecific = specificTokens.filter(token => includesToken(text, token));
-    const sizeOk = productMatchesRequestedSize({
-      ...product,
-      _sizes: Array.isArray(product.sizes) ? product.sizes : []
-    }, requestedSizes);
+    const productForSize = { ...product };
+    if (Array.isArray(product.sizes) && product.sizes.length > 0) productForSize._sizes = product.sizes;
+    const sizeOk = productMatchesRequestedSize(productForSize, requestedSizes);
     const specificOk = specificTokens.length === 0 || matchedSpecific.length > 0;
     if (specificOk && sizeOk) {
       filtered.push({
@@ -1327,14 +1327,25 @@ async function hydrateProductsFromApiOrCache(clientId = '', vectorResults = [], 
   const hydrated = [];
   for (const result of vectorResults.slice(0, 12)) {
     const metadata = result.metadata || {};
+    const contentText = String(result.content || '').trim();
+    const contentSignals = {
+      title: contentText,
+      description: contentText,
+      variations: contentText ? [contentText] : []
+    };
+    const parsedSizes = extractProductSizes(contentSignals);
+    const metadataSizes = Array.isArray(metadata.sizes) ? metadata.sizes : [];
+    const metadataVariations = Array.isArray(metadata.variations) ? metadata.variations : [];
     if (metadata.title || metadata.product_id || metadata.url) {
       hydrated.push(normalizeProductForRag({
         id: metadata.product_id || result.entity_id,
         title: metadata.title || '',
         price: metadata.price || '',
         stock: metadata.stock,
-        sizes: metadata.sizes || [],
+        description: contentText,
+        sizes: metadataSizes.length > 0 ? metadataSizes : parsedSizes,
         colors: metadata.colors || [],
+        variations: metadataVariations.length > 0 ? metadataVariations : (contentText ? [contentText] : []),
         images: metadata.images || (metadata.imageUrl ? [metadata.imageUrl] : []),
         url: metadata.url || result.source_url || '',
         sourceType: result.source_type,

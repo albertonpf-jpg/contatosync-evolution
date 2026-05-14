@@ -1006,12 +1006,32 @@ async function searchRagKnowledge(clientId = '', query = '', options = {}, conte
 
 function buildRagEvidenceBundle(results = [], options = {}) {
   const topic = options.topic || 'store_policy';
-  const facts = (Array.isArray(results) ? results : [])
-    .filter(result => result && result.content)
-    .map(result => {
-      const relevance = classifyEvidenceRelevance(result.content, topic);
-      return {
-        text: result.content,
+  const queries = getStorePolicyTopicQueries(topic, options.query || '');
+  const facts = [];
+  for (const result of (Array.isArray(results) ? results : [])) {
+    if (!result || !result.content) continue;
+    const snippets = splitPolicyEvidenceText(result.content);
+    const candidateSnippets = snippets.length > 0 ? snippets : [String(result.content || '').trim()];
+    const scoredSnippets = candidateSnippets
+      .map(snippet => {
+        const relevance = classifyEvidenceRelevance(snippet, topic);
+        return {
+          snippet,
+          relevance,
+          score: scorePolicyEvidenceSnippet(snippet, queries)
+        };
+      })
+      .filter(item => item.snippet && (item.relevance.relevance !== 'noise' || item.score > 0));
+    const selectedSnippets = scoredSnippets.length > 0
+      ? scoredSnippets
+      : [{
+        snippet: String(result.content || '').trim(),
+        relevance: classifyEvidenceRelevance(result.content, topic),
+        score: 0
+      }];
+    for (const item of selectedSnippets.slice(0, 6)) {
+      facts.push({
+        text: item.snippet,
         source_type: result.source_type || result.sourceType || 'rag_chunk',
         source_name: result.source_name || result.sourceName || 'RAG',
         source_url: result.source_url || result.sourceUrl || '',
@@ -1019,16 +1039,17 @@ function buildRagEvidenceBundle(results = [], options = {}) {
         sourceType: result.source_type || result.sourceType || 'rag_chunk',
         sourceName: result.source_name || result.sourceName || 'RAG',
         sourceUrl: result.source_url || result.sourceUrl || '',
-        relevance: relevance.relevance,
-        reason: relevance.reason,
+        relevance: item.relevance.relevance,
+        reason: item.relevance.reason,
         score: Number(result.score || result.similarity || 0),
-        confidence: relevance.relevance === 'direct' ? 'high' : (relevance.relevance === 'context' ? 'medium' : 'low'),
-        topic: result.topic || topic,
-        type: result.topic || topic,
+        confidence: item.relevance.relevance === 'direct' ? 'high' : (item.relevance.relevance === 'context' ? 'medium' : 'low'),
+        topic,
+        type: topic,
         entity_type: result.entity_type || result.entityType || 'store_policy',
         metadata: result.metadata || {}
-      };
-    });
+      });
+    }
+  }
   const direct = facts.filter(fact => fact.relevance === 'direct').length;
   const contextCount = facts.filter(fact => fact.relevance === 'context').length;
   const noise = facts.filter(fact => fact.relevance === 'noise').length;

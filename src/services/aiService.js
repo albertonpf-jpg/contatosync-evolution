@@ -1176,6 +1176,52 @@ async function indexProductCatalogForClient(clientId = '', config = {}, context 
   return { skipped: upserted.skipped, reason: upserted.reason, documents, chunks: embedded.chunks };
 }
 
+function buildRagProductFilterText(product = {}) {
+  return normalizeSearchText([
+    product.title,
+    product.description,
+    product.category,
+    ...(Array.isArray(product.tags) ? product.tags : []),
+    ...(Array.isArray(product.colors) ? product.colors : []),
+    ...(Array.isArray(product.sizes) ? product.sizes : []),
+    ...(Array.isArray(product.variations) ? product.variations : [])
+  ].filter(Boolean).join(' '));
+}
+
+function filterHydratedVectorProductsForQuery(products = [], query = '') {
+  const requestedSizes = extractRequestedSizes(query);
+  const queryTokens = getSearchTokens(query);
+  const specificTokens = getSpecificProductTokens(queryTokens).filter(token => !PRODUCT_COLOR_TOKENS.includes(token));
+  const filtered = [];
+  const rejected = [];
+  for (const product of Array.isArray(products) ? products : []) {
+    const text = buildRagProductFilterText(product);
+    const matchedSpecific = specificTokens.filter(token => includesToken(text, token));
+    const sizeOk = productMatchesRequestedSize({
+      ...product,
+      _sizes: Array.isArray(product.sizes) ? product.sizes : []
+    }, requestedSizes);
+    const specificOk = specificTokens.length === 0 || matchedSpecific.length > 0;
+    if (specificOk && sizeOk) {
+      filtered.push({
+        ...product,
+        _ragFilter: {
+          matchedSpecific,
+          requestedSizes,
+          reason: 'accepted'
+        }
+      });
+    } else {
+      rejected.push({
+        title: product.title || product.id || '',
+        reason: !sizeOk ? 'missing_requested_size' : 'missing_specific_token',
+        matchedSpecific
+      });
+    }
+  }
+  return { filtered, rejected, requestedSizes, specificTokens };
+}
+
 async function observeRagProductSearchFromContext(message = '', productContext = {}, config = {}) {
   if (!getRagFlag(config, 'rag_product_search_enabled', 'RAG_PRODUCT_SEARCH_ENABLED', false)) return;
   const runtimeContext = config._ragRuntimeContext || {};
@@ -1194,11 +1240,18 @@ async function observeRagProductSearchFromContext(message = '', productContext =
       config,
       effectiveConfig: config
     });
+    const filtered = filterHydratedVectorProductsForQuery(hydrated, query);
+    const topTitles = filtered.filtered.slice(0, 5).map(product => product.title).filter(Boolean).join(' | ');
     console.log('[RAG PRODUCT OBSERVE] client=' + clientId
       + ' results=' + ((result.results || []).length)
       + ' hydrated=' + hydrated.length
+      + ' filtered=' + filtered.filtered.length
+      + ' rejected=' + filtered.rejected.length
+      + ' sizes=' + filtered.requestedSizes.join(',')
+      + ' tokens=' + filtered.specificTokens.join(',')
       + ' skipped=' + (result.skipped ? 'true' : 'false')
       + ' reason=' + (result.reason || ''));
+    if (topTitles) console.log('[RAG PRODUCT FILTER] accepted="' + escapeLogValue(topTitles.slice(0, 220)) + '"');
   } catch (error) {
     console.warn('[RAG PRODUCT OBSERVE ERROR] message=' + String(error?.message || error).slice(0, 180));
   }

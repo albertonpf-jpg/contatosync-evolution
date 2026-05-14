@@ -864,6 +864,7 @@ async function upsertRagChunks(clientId = '', chunks = [], context = {}) {
   }
 
   let upsertedChunks = 0;
+  let quietSourceLogs = 0;
   try {
     for (const groupChunks of sourceGroups.values()) {
       const first = groupChunks[0];
@@ -911,9 +912,13 @@ async function upsertRagChunks(clientId = '', chunks = [], context = {}) {
         .upsert(rows, { onConflict: 'client_id,source_id,content_hash,chunk_index' });
       if (chunksError) throw chunksError;
       upsertedChunks += rows.length;
-      console.log('[RAG UPSERT] source=' + (first.source_type || '') + ' chunks=' + rows.length);
+      if (context.quietProductUpsertLogs === true && first.source_type === 'product_api') {
+        quietSourceLogs += 1;
+      } else {
+        console.log('[RAG UPSERT] source=' + (first.source_type || '') + ' chunks=' + rows.length);
+      }
     }
-    console.log('[RAG UPSERT] client=' + clientId + ' sources=' + sourceGroups.size + ' chunks=' + upsertedChunks);
+    console.log('[RAG UPSERT] client=' + clientId + ' sources=' + sourceGroups.size + ' chunks=' + upsertedChunks + (quietSourceLogs ? ' quietSources=' + quietSourceLogs : ''));
     return { skipped: false, reason: '', count: upsertedChunks };
   } catch (error) {
     console.warn('[RAG UPSERT ERROR] message=' + String(error?.message || error).slice(0, 180));
@@ -1171,6 +1176,34 @@ async function indexProductCatalogForClient(clientId = '', config = {}, context 
   return { skipped: upserted.skipped, reason: upserted.reason, documents, chunks: embedded.chunks };
 }
 
+async function observeRagProductSearchFromContext(message = '', productContext = {}, config = {}) {
+  if (!getRagFlag(config, 'rag_product_search_enabled', 'RAG_PRODUCT_SEARCH_ENABLED', false)) return;
+  const runtimeContext = config._ragRuntimeContext || {};
+  const clientId = getRagClientId(runtimeContext, config);
+  if (!clientId || !runtimeContext.supabase) return;
+  const query = String(productContext.searchText || message || '').trim();
+  if (!query) return;
+  try {
+    const result = await searchVectorProducts(clientId, query, { topK: config.rag_product_top_k || 8 }, {
+      ...runtimeContext,
+      config,
+      effectiveConfig: config
+    });
+    const hydrated = await hydrateProductsFromApiOrCache(clientId, result.results || [], config, {
+      ...runtimeContext,
+      config,
+      effectiveConfig: config
+    });
+    console.log('[RAG PRODUCT OBSERVE] client=' + clientId
+      + ' results=' + ((result.results || []).length)
+      + ' hydrated=' + hydrated.length
+      + ' skipped=' + (result.skipped ? 'true' : 'false')
+      + ' reason=' + (result.reason || ''));
+  } catch (error) {
+    console.warn('[RAG PRODUCT OBSERVE ERROR] message=' + String(error?.message || error).slice(0, 180));
+  }
+}
+
 async function indexRagProductsFromCollectedCatalog(clientId = '', products = [], config = {}, context = {}) {
   if (!clientId || !Array.isArray(products) || products.length === 0) {
     return { skipped: true, reason: 'empty_products', documents: [], chunks: [] };
@@ -1213,7 +1246,8 @@ function queueRagProductIndexFromContext(productContext = {}, config = {}) {
   indexRagProductsFromCollectedCatalog(clientId, products, config, {
     ...runtimeContext,
     config,
-    effectiveConfig: config
+    effectiveConfig: config,
+    quietProductUpsertLogs: true
   }).catch(error => {
     console.warn('[RAG PRODUCT INDEX ERROR] message=' + String(error?.message || error).slice(0, 180));
   });
@@ -6854,7 +6888,10 @@ async function buildProductContextForConfig(message, config, conversationHistory
     ? extractPreviouslyMentionedProductTitles(conversationHistory)
     : [];
   const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : [], { excludeTitles });
-  if (shouldSearch) queueRagProductIndexFromContext(productContext, config);
+  if (shouldSearch) {
+    queueRagProductIndexFromContext(productContext, config);
+    observeRagProductSearchFromContext(searchText, { ...productContext, searchText }, config);
+  }
   return { ...productContext, lookupAttempted: shouldSearch, searchText };
 }
 

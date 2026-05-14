@@ -1171,6 +1171,54 @@ async function indexProductCatalogForClient(clientId = '', config = {}, context 
   return { skipped: upserted.skipped, reason: upserted.reason, documents, chunks: embedded.chunks };
 }
 
+async function indexRagProductsFromCollectedCatalog(clientId = '', products = [], config = {}, context = {}) {
+  if (!clientId || !Array.isArray(products) || products.length === 0) {
+    return { skipped: true, reason: 'empty_products', documents: [], chunks: [] };
+  }
+  if (!isRagVectorEnabled(config, context)
+    || !getRagFlag(config, 'rag_products_enabled', 'RAG_PRODUCTS_ENABLED', false)
+    || !getRagFlag(config, 'rag_index_products_enabled', 'RAG_INDEX_PRODUCTS_ENABLED', false)) {
+    console.log('[RAG PRODUCT INDEX] skipped reason=not_configured');
+    return { skipped: true, reason: 'not_configured', documents: [], chunks: [] };
+  }
+  const maxProducts = Math.max(1, Math.min(getRagNumber(config, 'rag_product_index_max_items', 'RAG_PRODUCT_INDEX_MAX_ITEMS', 250), 1000));
+  const uniqueProducts = dedupeProducts(products).slice(0, maxProducts);
+  const documents = buildRagProductDocuments(uniqueProducts, clientId, {
+    source_type: 'product_api',
+    source_name: 'Catalogo/API de produtos'
+  });
+  const chunks = documents.flatMap(document => chunkRagDocument(document));
+  console.log('[RAG PRODUCT INDEX] client=' + clientId + ' products=' + uniqueProducts.length + ' chunks=' + chunks.length + ' mode=passive');
+  if (chunks.length === 0) return { skipped: true, reason: 'empty_chunks', documents, chunks };
+  if (!shouldRunRagOnDemandIndex(clientId, chunks, config)) {
+    return { skipped: true, reason: 'cache_hit', documents, chunks };
+  }
+  const embedded = await embedRagChunks(chunks, config, context);
+  if (embedded.skipped) {
+    console.log('[RAG PRODUCT INDEX] skipped reason=' + (embedded.reason || 'embedding_failed'));
+    return { skipped: true, reason: embedded.reason || 'embedding_failed', documents, chunks };
+  }
+  const upserted = await upsertRagChunks(clientId, embedded.chunks, context);
+  if (!upserted.skipped) markRagOnDemandIndexComplete(clientId, chunks);
+  console.log('[RAG PRODUCT INDEX DONE] client=' + clientId + ' indexed=' + documents.length + ' chunks=' + (upserted.count || 0) + ' skipped=' + (upserted.skipped ? 1 : 0));
+  return { skipped: upserted.skipped, reason: upserted.reason, documents, chunks: embedded.chunks };
+}
+
+function queueRagProductIndexFromContext(productContext = {}, config = {}) {
+  const runtimeContext = config._ragRuntimeContext || {};
+  const clientId = getRagClientId(runtimeContext, config);
+  if (!clientId || !runtimeContext.supabase) return;
+  const products = productContext.allProductsCollected || productContext.product_context_products || productContext.recent_products_data || [];
+  if (!Array.isArray(products) || products.length === 0) return;
+  indexRagProductsFromCollectedCatalog(clientId, products, config, {
+    ...runtimeContext,
+    config,
+    effectiveConfig: config
+  }).catch(error => {
+    console.warn('[RAG PRODUCT INDEX ERROR] message=' + String(error?.message || error).slice(0, 180));
+  });
+}
+
 async function searchVectorProducts(clientId = '', query = '', filters = {}, context = {}) {
   const config = context.effectiveConfig || context.config || {};
   if (!getRagFlag(config, 'rag_products_enabled', 'RAG_PRODUCTS_ENABLED', false)
@@ -6806,6 +6854,7 @@ async function buildProductContextForConfig(message, config, conversationHistory
     ? extractPreviouslyMentionedProductTitles(conversationHistory)
     : [];
   const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : [], { excludeTitles });
+  if (shouldSearch) queueRagProductIndexFromContext(productContext, config);
   return { ...productContext, lookupAttempted: shouldSearch, searchText };
 }
 
@@ -7280,6 +7329,15 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   const systemPrompt = buildSystemPrompt(effectiveConfig, contact, conversation);
   const conversationHistory = await getConversationMessagesFromStart(supabase, clientId, conversation?.id);
   const apiKeyForClassify = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
+  effectiveConfig._ragRuntimeContext = {
+    clientId,
+    client_id: clientId,
+    supabase,
+    conversation,
+    contact,
+    openaiApiKey: client?.openai_api_key,
+    apiKey: client?.openai_api_key
+  };
 
   let plannerShadowResult = null;
   try {

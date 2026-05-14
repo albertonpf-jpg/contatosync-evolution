@@ -535,7 +535,10 @@ function getConfigOrEnv(config = {}, key = '', envKey = '') {
 }
 
 function getRagFlag(config = {}, key = '', envKey = '', defaultValue = false) {
-  const value = getConfigOrEnv(config, key, envKey);
+  const envValue = process.env[envKey || String(key).toUpperCase()];
+  const value = envValue !== undefined && envValue !== null && envValue !== ''
+    ? envValue
+    : getConfigOrEnv(config, key, envKey);
   if (value === undefined || value === null || value === '') return defaultValue;
   if (typeof value === 'boolean') return value;
   return /^(1|true|yes|sim|on)$/i.test(String(value).trim());
@@ -581,7 +584,10 @@ function shouldRunRagOnDemandIndex(clientId = '', chunks = [], config = {}) {
 }
 
 function getRagNumber(config = {}, key = '', envKey = '', defaultValue = 0) {
-  const value = Number(getConfigOrEnv(config, key, envKey));
+  const envValue = process.env[envKey || String(key).toUpperCase()];
+  const value = Number(envValue !== undefined && envValue !== null && envValue !== ''
+    ? envValue
+    : getConfigOrEnv(config, key, envKey));
   return Number.isFinite(value) && value > 0 ? value : defaultValue;
 }
 

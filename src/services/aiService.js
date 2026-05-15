@@ -4763,6 +4763,13 @@ function isSelectedProductFollowUp(message = '') {
   return /\b(outros tamanhos|outro tamanho|demais tamanhos|cada tamanho|por tamanho|todos tamanhos|todos os tamanhos|outras cores|outra cor|cores|desse|dessa|desse modelo|dessa opcao)\b/i.test(text);
 }
 
+function isSelectedProductPurchaseIntent(message = '') {
+  const text = normalizeSearchText(message);
+  if (!text) return false;
+  return /^(quero|quero esse|quero essa|quero esse produto|quero essa peca|quero comprar|vou querer|fico com esse|fico com essa|pode separar|separa pra mim|reserva|reservar|fechar|fechar pedido|comprar|como faco pra comprar|como faço pra comprar)$/i.test(text)
+    || /\b(quero esse|quero essa|vou querer esse|vou querer essa|fico com esse|fico com essa|pode separar|separa pra mim|reservar esse|reservar essa|fechar pedido|comprar esse|comprar essa|como faco pra comprar|como faço pra comprar)\b/i.test(text);
+}
+
 function isExplicitNewProductRequest(message = '') {
   const text = normalizeSearchText(message);
   if (!text) return false;
@@ -5102,6 +5109,20 @@ function answerSelectedProductQuestion(message = '', selectedProduct = {}, filte
     confidence: stockResult.confidence,
     stockResult
   };
+}
+
+function buildSelectedProductPurchaseResponse(selectedProduct = {}, filters = {}) {
+  const title = String(selectedProduct.title || 'esse produto').trim();
+  const sizeText = filters?.size ? ` tamanho ${filters.size}` : '';
+  const colorText = filters?.color ? ` cor ${filters.color}` : '';
+  const detailText = [sizeText, colorText].filter(Boolean).join(' e');
+  const url = String(selectedProduct.url || selectedProduct.link || selectedProduct.publicUrl || '').trim();
+  const lines = [
+    `Perfeito, deixei anotado: ${title}${detailText}.`,
+    url ? `Para comprar, toque no botao Ver produto ou acesse: ${url}` : 'Para comprar, toque no botao Ver produto do card ou me diga a quantidade que deseja.',
+    'Se quiser, posso verificar outro tamanho ou outra opcao antes de fechar.'
+  ];
+  return lines.join('\n');
 }
 
 function buildRecentProductStockAnswer(customerIntent = {}, message = '', conversationHistory = [], conversation = {}) {
@@ -7662,6 +7683,27 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         response: earlyStockAnswer.response,
         provider: 'system',
         model: earlyStockAnswer.model,
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: [],
+        product_lookup_attempted: false,
+        product_search_text: ''
+      };
+    }
+  }
+
+  if (!explicitNewProductRequest && hasSelectedProductMemory && isSelectedProductPurchaseIntent(message)) {
+    const selectedMemory = getSelectedProductMemory(conversation);
+    if (selectedMemory?.product) {
+      console.log('[PURCHASE FOLLOWUP] selected_product="' + String(selectedMemory.product.title || '').replace(/"/g, '\\"') + '"');
+      return {
+        skipped: false,
+        response: buildSelectedProductPurchaseResponse(selectedMemory.product, selectedMemory.lastFilters || {}),
+        provider: 'system',
+        model: 'selected_product_purchase',
         prompt_tokens: 0,
         completion_tokens: 0,
         total_tokens: 0,

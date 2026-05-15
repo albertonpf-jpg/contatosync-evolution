@@ -1287,7 +1287,11 @@ async function getRagProductPrefilterHints(query = '', config = {}) {
         titleKey: normalizeSearchText(product.title || ''),
         productId: product.id || product.product_id || ''
       }))
-      .filter(hint => hint.titleKey);
+      .filter(hint => hint.titleKey)
+      .filter((hint, index, list) => {
+        const key = hint.productId ? 'id:' + hint.productId : 'title:' + hint.titleKey;
+        return list.findIndex(item => (item.productId ? 'id:' + item.productId : 'title:' + item.titleKey) === key) === index;
+      });
     console.log('[RAG PRODUCT PREFILTER] client=' + clientId
       + ' results=' + result.results.length
       + ' hydrated=' + hydrated.length
@@ -7046,13 +7050,18 @@ async function buildProductContextForConfig(message, config, conversationHistory
     ? extractPreviouslyMentionedProductTitles(conversationHistory)
     : [];
   const ragObservationQuery = String(options.ragObservationQuery || message || searchText || '').trim();
-  const vectorProductHints = shouldSearch
+  const productPrefilterEnabled = shouldSearch && getRagFlag(config, 'rag_product_prefilter_enabled', 'RAG_PRODUCT_PREFILTER_ENABLED', false);
+  const vectorProductHints = productPrefilterEnabled
     ? await getRagProductPrefilterHints(ragObservationQuery || searchText, config)
     : [];
   const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : [], { excludeTitles, vectorProductHints });
   if (shouldSearch) {
     queueRagProductIndexFromContext(productContext, config);
-    observeRagProductSearchFromContext(ragObservationQuery, { ...productContext, searchText: ragObservationQuery || searchText }, config);
+    if (productPrefilterEnabled) {
+      console.log('[RAG PRODUCT OBSERVE] skipped reason=prefilter_already_executed');
+    } else {
+      observeRagProductSearchFromContext(ragObservationQuery, { ...productContext, searchText: ragObservationQuery || searchText }, config);
+    }
   }
   return { ...productContext, lookupAttempted: shouldSearch, searchText };
 }

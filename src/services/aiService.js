@@ -8160,6 +8160,22 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
               }
             }
           }
+          console.log('[FOLLOWUP LOOKUP EMPTY] query="' + cleanQuery.replace(/"/g, '\\"') + '"');
+          clearPendingActionMemory(conversation, 'product_followup_lookup_empty');
+          return {
+            skipped: false,
+            response: buildProductLookupEmptyResponse(cleanQuery),
+            provider: 'catalog',
+            model: 'product_followup_lookup_empty',
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            processing_time_ms: 0,
+            product_images: [],
+            product_cards: [],
+            product_lookup_attempted: true,
+            product_search_text: productContext.searchText || cleanQuery
+          };
         }
       }
     }

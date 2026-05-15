@@ -1261,6 +1261,45 @@ async function observeRagProductSearchFromContext(message = '', productContext =
   }
 }
 
+async function getRagProductPrefilterHints(query = '', config = {}) {
+  if (!getRagFlag(config, 'rag_product_prefilter_enabled', 'RAG_PRODUCT_PREFILTER_ENABLED', false)) return [];
+  const runtimeContext = config._ragRuntimeContext || {};
+  const clientId = getRagClientId(runtimeContext, config);
+  if (!clientId || !runtimeContext.supabase) return [];
+  const searchText = String(query || '').trim();
+  if (!searchText) return [];
+  try {
+    const result = await searchVectorProducts(clientId, searchText, { topK: config.rag_product_top_k || 8 }, {
+      ...runtimeContext,
+      config,
+      effectiveConfig: config
+    });
+    if (result.skipped || !Array.isArray(result.results) || result.results.length === 0) return [];
+    const hydrated = await hydrateProductsFromApiOrCache(clientId, result.results, config, {
+      ...runtimeContext,
+      config,
+      effectiveConfig: config
+    });
+    const filtered = filterHydratedVectorProductsForQuery(hydrated, searchText);
+    const hints = filtered.filtered
+      .map(product => ({
+        title: product.title || '',
+        titleKey: normalizeSearchText(product.title || ''),
+        productId: product.id || product.product_id || ''
+      }))
+      .filter(hint => hint.titleKey);
+    console.log('[RAG PRODUCT PREFILTER] client=' + clientId
+      + ' results=' + result.results.length
+      + ' hydrated=' + hydrated.length
+      + ' filtered=' + filtered.filtered.length
+      + ' hints=' + hints.length);
+    return hints;
+  } catch (error) {
+    console.warn('[RAG PRODUCT PREFILTER ERROR] message=' + String(error?.message || error).slice(0, 180));
+    return [];
+  }
+}
+
 async function indexRagProductsFromCollectedCatalog(clientId = '', products = [], config = {}, context = {}) {
   if (!clientId || !Array.isArray(products) || products.length === 0) {
     return { skipped: true, reason: 'empty_products', documents: [], chunks: [] };
@@ -3323,6 +3362,9 @@ function getRelevantProducts(products, message, options = {}) {
   const excludedTitleKeys = Array.isArray(options.excludeTitles)
     ? options.excludeTitles.map(normalizeSearchText).filter(Boolean)
     : [];
+  const ragHintTitleKeys = Array.isArray(options.vectorProductHints)
+    ? options.vectorProductHints.map(hint => normalizeSearchText(hint?.title || hint?.titleKey || '')).filter(Boolean)
+    : [];
   const uniqueProducts = dedupeProducts(products)
     .map(product => {
       const title = normalizeSearchText(product.title || '');
@@ -3356,6 +3398,7 @@ function getRelevantProducts(products, message, options = {}) {
         _hasStock: hasStock,
         _hasRequestedSizeInStock: hasRequestedSizeInStock,
         _wasPreviouslyShown: isPreviouslyShownProduct(product, excludedTitleKeys),
+        _ragHintMatched: ragHintTitleKeys.includes(title),
         _titleMatches: countTokenMatches(title, messageTokens),
         _specificMatches: countTokenMatches(haystack, specificTokens),
         _colorMatches: countTokenMatches(titleAndVariations, colorTokens),
@@ -3363,9 +3406,16 @@ function getRelevantProducts(products, message, options = {}) {
       };
     })
     .sort((a, b) => b.score - a.score);
+  const hintedProducts = ragHintTitleKeys.length > 0
+    ? uniqueProducts.filter(product => product._ragHintMatched).map(product => ({ ...product, score: product.score + 12 }))
+    : [];
+  const candidateProducts = hintedProducts.length > 0 ? hintedProducts : uniqueProducts;
+  if (hintedProducts.length > 0) {
+    console.log('[RAG PRODUCT PREFILTER APPLY] hints=' + ragHintTitleKeys.length + ' matched=' + hintedProducts.length);
+  }
 
   if (requestedSizes.length > 0) {
-    const sizeMatched = uniqueProducts
+    const sizeMatched = candidateProducts
       .filter(product => productMatchesRequestedSize(product, requestedSizes))
       .map(product => ({ ...product, score: product.score + 8 }));
     if (sizeMatched.length === 0) return [];
@@ -3381,13 +3431,13 @@ function getRelevantProducts(products, message, options = {}) {
   }
 
   if (messageTokens.length === 0) {
-    const inStockProducts = uniqueProducts.filter(product => product._hasStock);
-    return preferNotPreviouslyShown(inStockProducts.length > 0 ? inStockProducts : uniqueProducts, excludedTitleKeys).slice(0, 6);
+    const inStockProducts = candidateProducts.filter(product => product._hasStock);
+    return preferNotPreviouslyShown(inStockProducts.length > 0 ? inStockProducts : candidateProducts, excludedTitleKeys).slice(0, 6);
   }
 
   const minSpecificMatches = specificTokens.length >= 2 ? specificTokens.length : specificTokens.length;
-  const bestScore = uniqueProducts[0]?.score || 0;
-  const matched = uniqueProducts.filter(product => {
+  const bestScore = candidateProducts[0]?.score || 0;
+  const matched = candidateProducts.filter(product => {
     if (product.score <= 0) return false;
     if (specificTokens.length > 0 && hasNegativeProductMatch(product, specificTokens)) return false;
     if (requestedSizes.length > 0 && !productMatchesRequestedSize(product, requestedSizes)) return false;
@@ -6956,10 +7006,13 @@ async function buildProductContextForConfig(message, config, conversationHistory
   const excludeTitles = isCatalogFollowUpRequest(message)
     ? extractPreviouslyMentionedProductTitles(conversationHistory)
     : [];
-  const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : [], { excludeTitles });
+  const ragObservationQuery = String(options.ragObservationQuery || message || searchText || '').trim();
+  const vectorProductHints = shouldSearch
+    ? await getRagProductPrefilterHints(ragObservationQuery || searchText, config)
+    : [];
+  const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : [], { excludeTitles, vectorProductHints });
   if (shouldSearch) {
     queueRagProductIndexFromContext(productContext, config);
-    const ragObservationQuery = String(options.ragObservationQuery || message || searchText || '').trim();
     observeRagProductSearchFromContext(ragObservationQuery, { ...productContext, searchText: ragObservationQuery || searchText }, config);
   }
   return { ...productContext, lookupAttempted: shouldSearch, searchText };

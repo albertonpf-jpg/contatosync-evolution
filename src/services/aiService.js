@@ -3413,9 +3413,15 @@ function getRelevantProducts(products, message, options = {}) {
   const hintedProducts = ragHintTitleKeys.length > 0
     ? uniqueProducts.filter(product => product._ragHintMatched).map(product => ({ ...product, score: product.score + 12 }))
     : [];
-  const candidateProducts = hintedProducts.length > 0 ? hintedProducts : uniqueProducts;
+  const freshHintedProducts = hintedProducts.filter(product => !product._wasPreviouslyShown);
+  const candidateProducts = hintedProducts.length > 0
+    ? (freshHintedProducts.length > 0 ? freshHintedProducts : uniqueProducts)
+    : uniqueProducts;
   if (hintedProducts.length > 0) {
-    console.log('[RAG PRODUCT PREFILTER APPLY] hints=' + ragHintTitleKeys.length + ' matched=' + hintedProducts.length);
+    console.log('[RAG PRODUCT PREFILTER APPLY] hints=' + ragHintTitleKeys.length
+      + ' matched=' + hintedProducts.length
+      + ' fresh=' + freshHintedProducts.length
+      + ' scope=' + (freshHintedProducts.length > 0 ? 'fresh_hints' : 'full_catalog'));
   }
 
   if (requestedSizes.length > 0) {

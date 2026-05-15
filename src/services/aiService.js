@@ -1198,8 +1198,12 @@ function filterHydratedVectorProductsForQuery(products = [], query = '') {
   for (const product of Array.isArray(products) ? products : []) {
     const text = buildRagProductFilterText(product);
     const matchedSpecific = specificTokens.filter(token => includesToken(text, token));
+    const combinedSizes = [
+      ...(Array.isArray(product.sizes) ? product.sizes : []),
+      ...extractProductSizes(product)
+    ].map(normalizeSizeToken).filter(Boolean);
     const productForSize = { ...product };
-    if (Array.isArray(product.sizes) && product.sizes.length > 0) productForSize._sizes = product.sizes;
+    if (combinedSizes.length > 0) productForSize._sizes = [...new Set(combinedSizes)];
     const sizeOk = productMatchesRequestedSize(productForSize, requestedSizes);
     const specificOk = specificTokens.length === 0 || matchedSpecific.length > 0;
     if (specificOk && sizeOk) {
@@ -1335,6 +1339,7 @@ async function hydrateProductsFromApiOrCache(clientId = '', vectorResults = [], 
     };
     const parsedSizes = extractProductSizes(contentSignals);
     const metadataSizes = Array.isArray(metadata.sizes) ? metadata.sizes : [];
+    const combinedSizes = [...new Set([...metadataSizes, ...parsedSizes].map(normalizeSizeToken).filter(Boolean))];
     const metadataVariations = Array.isArray(metadata.variations) ? metadata.variations : [];
     if (metadata.title || metadata.product_id || metadata.url) {
       hydrated.push(normalizeProductForRag({
@@ -1343,7 +1348,7 @@ async function hydrateProductsFromApiOrCache(clientId = '', vectorResults = [], 
         price: metadata.price || '',
         stock: metadata.stock,
         description: contentText,
-        sizes: metadataSizes.length > 0 ? metadataSizes : parsedSizes,
+        sizes: combinedSizes,
         colors: metadata.colors || [],
         variations: metadataVariations.length > 0 ? metadataVariations : (contentText ? [contentText] : []),
         images: metadata.images || (metadata.imageUrl ? [metadata.imageUrl] : []),

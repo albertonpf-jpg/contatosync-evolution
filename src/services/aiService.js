@@ -14,6 +14,7 @@ const pendingStockFiltersByConversation = new Map();
 const selectedProductByConversation = new Map();
 const pendingProductSelectionByConversation = new Map();
 const pendingActionByConversation = new Map();
+const lastProductSearchRequestByConversation = new Map();
 const ragOnDemandIndexByClient = new Map();
 const PENDING_ACTION_TTL_MS = 10 * 60 * 1000;
 const RAG_ON_DEMAND_INDEX_TTL_MS = 15 * 60 * 1000;
@@ -4136,7 +4137,9 @@ function formatConversationHistory(messages = []) {
   ].join('\n');
 }
 
-function getRecentCustomerProductRequest(conversationHistory = []) {
+function getRecentCustomerProductRequest(conversationHistory = [], conversation = {}) {
+  const memoryRequest = getLastProductSearchRequestMemory(conversation);
+  if (memoryRequest) return memoryRequest;
   const recentCustomerMessages = Array.isArray(conversationHistory)
     ? conversationHistory
       .filter(item => item && item.direction !== 'out' && !item.is_from_ai)
@@ -4173,11 +4176,11 @@ function extractPreviouslyMentionedProductTitles(conversationHistory = []) {
     });
 }
 
-function buildProductSearchText(message, conversationHistory = []) {
+function buildProductSearchText(message, conversationHistory = [], options = {}) {
   const current = String(message || '').trim();
   const normalizedCurrent = normalizeSearchText(current);
   const currentIsFollowUp = isCatalogFollowUpRequest(normalizedCurrent) || isMoreProductOptionsRequest(current);
-  const lastProductRequest = getRecentCustomerProductRequest(conversationHistory);
+  const lastProductRequest = String(options.baseProductRequest || '').trim() || getRecentCustomerProductRequest(conversationHistory, options.conversation);
   const currentForIntent = currentIsFollowUp && lastProductRequest ? `${lastProductRequest}\n${current}` : current;
   const currentShouldSearch = shouldUseConfiguredProductSources(currentForIntent);
   if (!currentShouldSearch) return currentForIntent;
@@ -6306,6 +6309,33 @@ function clearPendingActionMemory(conversation = {}, reason = 'clear') {
   }
 }
 
+function saveLastProductSearchRequestMemory(conversation = {}, requestText = '', searchQuery = '') {
+  const key = getConversationMemoryKey(conversation);
+  const request = String(requestText || '').trim();
+  if (!key || !request || isCatalogFollowUpRequest(request)) return;
+  const query = String(searchQuery || getProductSearchPhrase(request) || '').trim();
+  if (!query) return;
+  lastProductSearchRequestByConversation.set(key, {
+    request,
+    query,
+    createdAt: Date.now(),
+    ttlMs: RECENT_PRODUCTS_MEMORY_TTL_MS
+  });
+  console.log('[LAST PRODUCT REQUEST SAVE] conv=' + key + ' query="' + query.replace(/"/g, '\\"') + '"');
+}
+
+function getLastProductSearchRequestMemory(conversation = {}) {
+  const key = getConversationMemoryKey(conversation);
+  if (!key) return '';
+  const entry = lastProductSearchRequestByConversation.get(key);
+  if (!entry) return '';
+  if (Date.now() - Number(entry.createdAt || 0) > Number(entry.ttlMs || RECENT_PRODUCTS_MEMORY_TTL_MS)) {
+    lastProductSearchRequestByConversation.delete(key);
+    return '';
+  }
+  return String(entry.request || '').trim();
+}
+
 function saveRecentProductsMemory(conversation = {}, products = []) {
   const key = getConversationMemoryKey(conversation);
   if (!key) return;
@@ -7048,7 +7078,7 @@ async function executePendingActionForConversation(action = {}, confirmation = '
 // ─── FIM BUSCA SEMÂNTICA ──────────────────────────────────────────────────────
 
 async function buildProductContextForConfig(message, config, conversationHistory = [], options = {}) {
-  const searchText = buildProductSearchText(message, conversationHistory);
+  const searchText = buildProductSearchText(message, conversationHistory, options);
   const configuredSources = buildProductSourcesForConfig(config);
   if (config?.product_search_enabled === false && configuredSources.length === 0) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
   const shouldSearch = shouldUseConfiguredProductSources(searchText);
@@ -7771,8 +7801,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   customerIntent = coerceStockFollowupIntent(customerIntent, message, conversationHistory, conversation);
   if ((customerIntent.intent === 'knowledge_question' || customerIntent.intent === 'general_message' || customerIntent.intent === 'clarification')
     && isCatalogFollowUpRequest(message)
-    && getRecentCustomerProductRequest(conversationHistory)) {
-    const followUpQuery = getProductSearchPhrase(getRecentCustomerProductRequest(conversationHistory));
+    && getRecentCustomerProductRequest(conversationHistory, conversation)) {
+    const followUpQuery = getProductSearchPhrase(getRecentCustomerProductRequest(conversationHistory, conversation));
     console.log('[CLASSIFY COERCE PRODUCT FOLLOWUP] from=' + customerIntent.intent + ' query="' + followUpQuery + '"');
     customerIntent = {
       ...customerIntent,
@@ -7951,7 +7981,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
 
   // ─── 3. Follow-up de produto (mais opções, fotos) ───────────────────────
   if (customerIntent.intent === 'product_followup') {
-    const lastProductRequest = getRecentCustomerProductRequest(conversationHistory);
+    const lastProductRequest = getRecentCustomerProductRequest(conversationHistory, conversation);
     // Tokens da mensagem atual — pode ser refinamento de tema, cor, tamanho ou modelo
     const _followupCurrentTokens = getProductSearchPhrase(message);
     const _followupHasOwnTokens = _followupCurrentTokens.length > 0;
@@ -7991,7 +8021,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       if (cleanQuery) {
         console.log('[PRODUCT CLEAN QUERY] "' + cleanQuery + '" (product_followup)');
         const followupLookupMessage = _followupHasOwnTokens ? cleanQuery : message;
-        const productContext = await buildProductContextForConfig(followupLookupMessage, effectiveConfig, conversationHistory);
+        const productContext = await buildProductContextForConfig(followupLookupMessage, effectiveConfig, conversationHistory, { baseProductRequest: lastProductRequest, conversation });
         saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
         if (productContext.lookupAttempted) {
           const productCards = productContext.productCards || [];
@@ -8100,7 +8130,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     console.log('[PRODUCT CLEAN QUERY] "' + cleanQuery + '"');
     if (cleanQuery) {
       const ragObservationQuery = [message, cleanQuery].filter(Boolean).join(' ');
-      const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory, { ragObservationQuery });
+      saveLastProductSearchRequestMemory(conversation, message, cleanQuery);
+      const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory, { ragObservationQuery, conversation });
       saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
       if (productContext.lookupAttempted) {
         const productCards = productContext.productCards || [];

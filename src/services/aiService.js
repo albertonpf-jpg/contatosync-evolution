@@ -4808,6 +4808,43 @@ function coerceStockFollowupIntent(customerIntent = {}, message = '', conversati
   if (!isStockAvailabilityFollowUp(message)) return customerIntent;
   if (isExplicitNewProductRequest(message)) {
     console.log('[STOCK FOLLOWUP COERCE SKIP] reason=explicit_new_product_request');
+    if (customerIntent.intent === 'product_stock_followup' || customerIntent.question_type === 'stock_by_size_color') {
+      const productSearchPhrase = customerIntent.search_query || getProductSearchPhrase(message);
+      const requestedSizes = extractRequestedSizes(message);
+      const colorTokens = getColorTokens(getSearchTokens(message));
+      const product = customerIntent.entities?.product || productSearchPhrase;
+      const theme = customerIntent.theme || customerIntent.entities?.theme || '';
+      console.log('[STOCK FOLLOWUP COERCE OVERRIDE] reason=explicit_new_product_request query="' + productSearchPhrase + '"');
+      return {
+        ...customerIntent,
+        intent: 'product_search',
+        source: 'product_api',
+        search_query: productSearchPhrase,
+        semantic_query: customerIntent.semantic_query || 'produto da categoria solicitada com tema/personagem informado',
+        product_type: customerIntent.product_type || product,
+        theme,
+        allow_related_products: customerIntent.allow_related_products === true,
+        filters: {
+          size: requestedSizes.join(','),
+          color: colorTokens.join(','),
+          category: customerIntent.filters?.category || ''
+        },
+        question_type: 'product_search',
+        sources_needed: ['product_api'],
+        reference: 'none',
+        selected_product_index: null,
+        needs_clarification: false,
+        clarification_question: '',
+        operation: 'search',
+        entities: {
+          ...(customerIntent.entities || {}),
+          product,
+          size: requestedSizes.join(','),
+          color: colorTokens.join(','),
+          theme
+        }
+      };
+    }
     return customerIntent;
   }
   const recentProducts = getReliableRecentProductStockContext(conversationHistory, conversation);
@@ -4948,6 +4985,8 @@ function extractProductIndexReference(message = '') {
   const text = normalizeSearchText(message);
   const directNumber = text.match(/\b(?:opcao|produto|modelo|item)\s*(\d{1,2})\b/)?.[1];
   if (directNumber) return Number(directNumber);
+  const contextualNumber = text.match(/^(?:e\s+)?(?:o|a|do|da)?\s*(\d{1,2})\b/)?.[1];
+  if (contextualNumber && /\b(e|o|a|do|da)\b/i.test(text)) return Number(contextualNumber);
   const map = { primeiro: 1, primeira: 1, segundo: 2, segunda: 2, terceiro: 3, terceira: 3, quarto: 4, quarta: 4, quinto: 5, quinta: 5 };
   for (const [word, index] of Object.entries(map)) {
     if (new RegExp(`\\b${word}\\b`, 'i').test(text)) return index;

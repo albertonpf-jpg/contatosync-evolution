@@ -7055,7 +7055,7 @@ async function buildProductContextForConfig(message, config, conversationHistory
   const excludeTitles = isCatalogFollowUpRequest(message)
     ? extractPreviouslyMentionedProductTitles(conversationHistory)
     : [];
-  const ragObservationQuery = String(options.ragObservationQuery || message || searchText || '').trim();
+  const ragObservationQuery = String(options.ragObservationQuery || (isCatalogFollowUpRequest(message) ? searchText : message) || searchText || '').trim();
   const productPrefilterEnabled = shouldSearch && getRagFlag(config, 'rag_product_prefilter_enabled', 'RAG_PRODUCT_PREFILTER_ENABLED', false);
   const vectorProductHints = productPrefilterEnabled
     ? await getRagProductPrefilterHints(ragObservationQuery || searchText, config)
@@ -7769,6 +7769,28 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     config: effectiveConfig
   });
   customerIntent = coerceStockFollowupIntent(customerIntent, message, conversationHistory, conversation);
+  if ((customerIntent.intent === 'knowledge_question' || customerIntent.intent === 'general_message' || customerIntent.intent === 'clarification')
+    && isCatalogFollowUpRequest(message)
+    && getRecentCustomerProductRequest(conversationHistory)) {
+    const followUpQuery = getProductSearchPhrase(getRecentCustomerProductRequest(conversationHistory));
+    console.log('[CLASSIFY COERCE PRODUCT FOLLOWUP] from=' + customerIntent.intent + ' query="' + followUpQuery + '"');
+    customerIntent = {
+      ...customerIntent,
+      intent: 'product_followup',
+      source: 'recent_context',
+      search_query: followUpQuery,
+      question_type: 'product_search',
+      sources_needed: ['recent_products', 'product_api'],
+      operation: 'search',
+      reference: 'recent_products',
+      needs_clarification: false,
+      clarification_question: '',
+      entities: {
+        ...(customerIntent.entities || {}),
+        product: followUpQuery
+      }
+    };
+  }
 
   // Log seguro da intenção completa (sem token)
   console.log('[INTENT FULL] intent=' + customerIntent.intent
@@ -7968,7 +7990,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       console.log('[FOLLOWUP DECISION] explicit_product=' + _followupHasOwnTokens + ' reason=product_followup query="' + cleanQuery + '"');
       if (cleanQuery) {
         console.log('[PRODUCT CLEAN QUERY] "' + cleanQuery + '" (product_followup)');
-        const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory);
+        const followupLookupMessage = _followupHasOwnTokens ? cleanQuery : message;
+        const productContext = await buildProductContextForConfig(followupLookupMessage, effectiveConfig, conversationHistory);
         saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
         if (productContext.lookupAttempted) {
           const productCards = productContext.productCards || [];

@@ -16,6 +16,50 @@ function cleanEvidenceText(text = '') {
     .trim();
 }
 
+function normalizeText(value = '') {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function splitEvidenceSentences(text = '') {
+  return String(text || '')
+    .replace(/\r/g, '\n')
+    .split(/\n|(?<=[.!?])\s+/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => !/^(Cliente|IA|Assistente|Atendente)\s*:/i.test(line))
+    .filter(line => !/^(Fonte|Nome da fonte|Titulo da pagina|Produto\/link|Arquivo|Tipo|Conteudo)\b/i.test(line));
+}
+
+function selectRelevantEvidenceText(question = '', content = '') {
+  const q = normalizeText(question);
+  const sentences = splitEvidenceSentences(content);
+  const groups = [
+    ['varejo', 'atacado', 'vendemos', 'vende', 'venda', 'pedido minimo', 'compra minima'],
+    ['pix', 'cartao', 'pagamento', 'pagar', 'aceitamos', 'aceita'],
+    ['frete', 'entrega', 'envio', 'enviamos', 'retirada', 'retirar'],
+    ['cnpj', 'cpf', 'documento', 'cadastro'],
+    ['troca', 'devolucao', 'garantia', 'defeito'],
+    ['horario', 'atendimento', 'funcionamento']
+  ];
+  const wanted = groups.find(group => group.some(term => q.includes(term))) || [];
+  const selected = wanted.length > 0
+    ? sentences.filter(sentence => {
+        const s = normalizeText(sentence);
+        return wanted.some(term => s.includes(term));
+      })
+    : sentences;
+
+  return selected
+    .slice(0, 3)
+    .join(' ')
+    .replace(/^Prompt\/configuracao do cliente:\s*/i, '')
+    .replace(/^Configuracao do cliente:\s*/i, '')
+    .trim();
+}
+
 function getCatalogCards(evidence = []) {
   const cards = [];
   for (const item of evidence) {
@@ -104,7 +148,7 @@ async function compose({ message = {}, route = {}, evidence = {} } = {}) {
     };
   }
 
-  const text = cleanEvidenceText(groundedEvidence.content);
+  const text = selectRelevantEvidenceText(message.text || '', groundedEvidence.content) || cleanEvidenceText(groundedEvidence.content);
   if (!text) {
     return {
       text: '',

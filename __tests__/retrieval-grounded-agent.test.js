@@ -310,6 +310,27 @@ describe('Retrieval-Grounded WhatsApp Agent', () => {
     expect(result.response).not.toMatch(/Confirmando|Cliente:|IA:/i);
   });
 
+  test('politica simples usa evidencia oficial configurada sem pedir esclarecimento', async () => {
+    const officialConfig = 'Prompt/configuracao do cliente:\nVendemos no varejo e no atacado. Nao existe pedido minimo. O pagamento e por Pix ou cartao.';
+    const wholesale = await run('Voces vendem no varejo e atacado?', {
+      rag: async () => [],
+      file: async () => [{ sourceType: 'file', sourceName: 'prompt configurado', content: officialConfig, score: 0.9, metadata: { officialConfig: true } }],
+      site: async () => []
+    });
+    expect(wholesale.result.action).toBe('send');
+    expect(wholesale.result.response).toMatch(/varejo|atacado/i);
+    expect(wholesale.result.response).not.toMatch(/qual situacao|misturar informacoes|uso proprio|quantidade/i);
+
+    const pix = await run('Voce aceita Pix?', {
+      rag: async () => [],
+      file: async () => [{ sourceType: 'file', sourceName: 'prompt configurado', content: officialConfig, score: 0.9, metadata: { officialConfig: true } }],
+      site: async () => []
+    });
+    expect(pix.result.action).toBe('send');
+    expect(pix.result.response).toMatch(/Pix|cartao/i);
+    expect(pix.result.response).not.toMatch(/qual situacao|misturar informacoes/i);
+  });
+
   test('logs nao contem nomes proibidos de planner/handoff automatico', () => {
     const root = path.resolve(__dirname, '..');
     const files = [

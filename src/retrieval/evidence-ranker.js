@@ -41,8 +41,8 @@ function hasPolicyTerm(question = '', content = '') {
   const q = normalize(question);
   const c = normalize(content);
   const policyGroups = [
-    ['varejo', 'atacado', 'pedido minimo', 'compra minima', 'quantidade', 'unidade'],
-    ['pix', 'cartao', 'pagamento', 'pagar', 'pago'],
+    ['varejo', 'atacado', 'pedido minimo', 'compra minima', 'quantidade', 'unidade', 'venda', 'vende', 'vendem', 'vendemos'],
+    ['pix', 'cartao', 'cartao', 'pagamento', 'pagar', 'pago', 'aceita', 'aceitamos'],
     ['frete', 'entrega', 'envio', 'retirada', 'retirar'],
     ['cnpj', 'cpf'],
     ['troca', 'devolucao', 'garantia'],
@@ -58,7 +58,7 @@ function isRelevantForRoute(item = {}, route = {}, question = '') {
   if (route.intent === 'product') return item.sourceType === 'catalog' || item.sourceType === 'rag';
   if (route.intent === 'order_status') return item.sourceType === 'api';
   if (['policy', 'faq', 'billing', 'scheduling', 'support'].includes(route.intent)) {
-    if (item.sourceType === 'catalog' || item.sourceType === 'api') return false;
+    if (/(catalog|api|product)/i.test(item.sourceType)) return false;
     return hasPolicyTerm(question, item.content) || item.metadata?.overlap >= 0.35 || item.score >= 0.7;
   }
   return true;
@@ -86,7 +86,7 @@ async function rank({ message = {}, route = {}, evidenceBundle = {} } = {}) {
     })
     .sort((a, b) => b.score - a.score);
 
-  const conflicts = detectConflicts(ranked);
+  const conflicts = detectConflicts(ranked, question, route);
   return {
     evidence: ranked,
     topEvidence: ranked.slice(0, 8),
@@ -95,7 +95,10 @@ async function rank({ message = {}, route = {}, evidenceBundle = {} } = {}) {
   };
 }
 
-function detectConflicts(evidence = []) {
+function detectConflicts(evidence = [], question = '', route = {}) {
+  if (['policy', 'faq', 'billing', 'scheduling', 'support'].includes(route.intent)) {
+    return detectPolicyConflicts(evidence, question);
+  }
   const content = evidence.map(item => normalize(item.content)).join('\n');
   const hasNo = /\b(nao|sem|indisponivel|nao existe)\b/.test(content);
   const hasYes = /\b(sim|aceita|existe|disponivel|fazemos|temos)\b/.test(content);
@@ -105,11 +108,39 @@ function detectConflicts(evidence = []) {
   return [];
 }
 
+function detectPolicyConflicts(evidence = [], question = '') {
+  const q = normalize(question);
+  const content = evidence.map(item => normalize(item.content)).join('\n');
+  const checks = [];
+  if (/\b(pix|pagamento|pagar|cartao)\b/.test(q)) {
+    checks.push({
+      yes: /\b(aceita|aceitamos|pagamento.*pix|pix|cartao)\b/,
+      no: /\b(nao aceita pix|sem pix|nao trabalhamos com pix|nao.*cartao|sem cartao)\b/
+    });
+  }
+  if (/\b(varejo|atacado|vende|vendem|venda)\b/.test(q)) {
+    checks.push({
+      yes: /\b(varejo|atacado|vendemos|vende|venda)\b/,
+      no: /\b(nao.*varejo|nao.*atacado|somente atacado|apenas atacado|somente varejo|apenas varejo)\b/
+    });
+  }
+  if (/\b(frete|entrega|envio|retirada)\b/.test(q)) {
+    checks.push({
+      yes: /\b(entrega|envio|frete|retirada|enviamos|retirar)\b/,
+      no: /\b(nao.*entrega|nao.*envia|sem entrega|sem frete|nao.*retirada)\b/
+    });
+  }
+  return checks.some(check => check.yes.test(content) && check.no.test(content))
+    ? [{ reason: 'evidencias oficiais podem apontar respostas diferentes para a pergunta', severity: 'medium' }]
+    : [];
+}
+
 module.exports = {
   rank,
   lexicalOverlap,
   detectConflicts,
   isRelevantForRoute,
   isConversationTranscript,
-  hasPolicyTerm
+  hasPolicyTerm,
+  detectPolicyConflicts
 };

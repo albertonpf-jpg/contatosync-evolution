@@ -7883,13 +7883,18 @@ function buildGroundedAgentAdapters({ clientId, effectiveConfig, conversationHis
     },
     async file({ query }) {
       const fileContext = buildKnowledgeContextForConfig(effectiveConfig);
-      if (!fileContext?.contextText) return [];
+      const fileText = typeof fileContext === 'string' ? fileContext : String(fileContext?.contextText || '');
+      const configPolicyText = collectClientConfigPolicyTexts(effectiveConfig)
+        .map(entry => `${entry.sourceName || 'Configuracao do cliente'}:\n${entry.text}`)
+        .join('\n\n---\n\n');
+      const content = [configPolicyText, fileText].filter(text => String(text || '').trim()).join('\n\n---\n\n').trim();
+      if (!content) return [];
       return [{
         sourceType: 'file',
-        sourceName: 'arquivos configurados',
-        content: fileContext.contextText,
-        score: 0.6,
-        metadata: { query },
+        sourceName: 'prompt, configuracoes e arquivos',
+        content,
+        score: 0.9,
+        metadata: { query, officialConfig: true },
         isDynamic: false
       }];
     },

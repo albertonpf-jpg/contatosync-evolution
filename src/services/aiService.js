@@ -5611,15 +5611,210 @@ function sanitizePlannerPlan(plan = {}) {
   ]);
   const validConfidence = new Set(['high', 'medium', 'low']);
   const tools = Array.isArray(plan.tools) ? plan.tools.map(sanitizePlannerTool).filter(Boolean).slice(0, 5) : [];
+  const filters = plan.filters && typeof plan.filters === 'object' && !Array.isArray(plan.filters) ? plan.filters : {};
+  const entities = plan.entities && typeof plan.entities === 'object' && !Array.isArray(plan.entities) ? plan.entities : {};
   return {
     understanding: String(plan.understanding || '').slice(0, 220),
     answer_type: validAnswerTypes.has(plan.answer_type) ? plan.answer_type : 'general',
     confidence: validConfidence.has(plan.confidence) ? plan.confidence : 'low',
+    search_query: String(plan.search_query || '').slice(0, 180),
+    semantic_query: String(plan.semantic_query || '').slice(0, 240),
+    product_type: String(plan.product_type || entities.product_type || '').slice(0, 80),
+    theme: String(plan.theme || entities.theme || '').slice(0, 80),
+    allow_related_products: plan.allow_related_products === true,
+    filters: {
+      size: String(filters.size || entities.size || '').slice(0, 50),
+      color: String(filters.color || entities.color || '').slice(0, 50),
+      category: String(filters.category || entities.category || '').slice(0, 80)
+    },
+    entities: {
+      product: String(entities.product || '').slice(0, 120),
+      product_id: String(entities.product_id || '').slice(0, 80),
+      size: String(entities.size || filters.size || '').slice(0, 50),
+      color: String(entities.color || filters.color || '').slice(0, 50),
+      theme: String(entities.theme || plan.theme || '').slice(0, 80),
+      category: String(entities.category || filters.category || '').slice(0, 80),
+      order_id: String(entities.order_id || plan.order_id || '').slice(0, 80),
+      date: String(entities.date || '').slice(0, 80),
+      location: String(entities.location || '').slice(0, 120)
+    },
+    selected_product_index: Number.isFinite(Number(plan.selected_product_index)) ? Number(plan.selected_product_index) : null,
     needs_clarification: Boolean(plan.needs_clarification),
     clarification_question: String(plan.clarification_question || '').slice(0, 220),
     tools,
     expected_answer_strategy: String(plan.expected_answer_strategy || '').slice(0, 300)
   };
+}
+
+function buildCustomerIntentFromPlannerPlan(plan = {}, message = '') {
+  if (!plan || !['high', 'medium'].includes(plan.confidence)) return null;
+  if (plan.needs_clarification) {
+    return {
+      intent: 'clarification',
+      source: 'semantic_planner',
+      search_query: '',
+      semantic_query: plan.semantic_query || '',
+      product_type: '',
+      theme: '',
+      allow_related_products: false,
+      filters: { size: '', color: '', category: '' },
+      order_id: '',
+      tracking_id: '',
+      reference: 'none',
+      selected_product_index: null,
+      needs_clarification: true,
+      clarification_question: plan.clarification_question || 'Me explica um pouco melhor o que voce quer consultar?',
+      question_type: 'other',
+      sources_needed: ['conversation_history'],
+      entities: plan.entities || {},
+      operation: 'clarify'
+    };
+  }
+
+  const toolNames = Array.isArray(plan.tools) ? plan.tools.map(tool => tool.name).filter(Boolean) : [];
+  const plannerQuery = normalizeSearchText([
+    plan.search_query,
+    plan.entities?.product,
+    plan.product_type,
+    plan.theme || plan.entities?.theme,
+    plan.filters?.category
+  ].filter(Boolean).join(' '));
+  const extractedQuery = getProductSearchPhrase(message);
+  const productQuery = plannerQuery || extractedQuery;
+  const filters = {
+    size: String(plan.filters?.size || plan.entities?.size || extractRequestedSizes(message)[0] || ''),
+    color: String(plan.filters?.color || plan.entities?.color || ''),
+    category: String(plan.filters?.category || plan.entities?.category || '')
+  };
+  const entities = {
+    product: String(plan.entities?.product || plan.product_type || productQuery || ''),
+    product_id: String(plan.entities?.product_id || ''),
+    size: String(plan.entities?.size || filters.size || ''),
+    color: String(plan.entities?.color || filters.color || ''),
+    theme: String(plan.entities?.theme || plan.theme || ''),
+    category: String(plan.entities?.category || filters.category || ''),
+    order_id: String(plan.entities?.order_id || ''),
+    date: String(plan.entities?.date || ''),
+    location: String(plan.entities?.location || '')
+  };
+
+  if (plan.answer_type === 'product_search' && productQuery) {
+    return {
+      intent: 'product_search',
+      source: 'semantic_planner',
+      search_query: productQuery,
+      semantic_query: plan.semantic_query || '',
+      product_type: plan.product_type || entities.product || '',
+      theme: plan.theme || entities.theme || '',
+      allow_related_products: plan.allow_related_products === true,
+      filters,
+      order_id: '',
+      tracking_id: '',
+      reference: 'none',
+      selected_product_index: null,
+      needs_clarification: false,
+      clarification_question: '',
+      question_type: 'product_search',
+      sources_needed: ['product_api'],
+      entities,
+      operation: 'search'
+    };
+  }
+
+  if (plan.answer_type === 'stock') {
+    return {
+      intent: 'product_stock_followup',
+      source: 'semantic_planner',
+      search_query: '',
+      semantic_query: plan.semantic_query || '',
+      product_type: '',
+      theme: '',
+      allow_related_products: false,
+      filters,
+      order_id: '',
+      tracking_id: '',
+      reference: toolNames.includes('get_selected_product') ? 'selected_product' : 'recent_products',
+      selected_product_index: plan.selected_product_index,
+      needs_clarification: false,
+      clarification_question: '',
+      question_type: 'stock_by_size_color',
+      sources_needed: ['recent_products', 'product_api'],
+      entities,
+      operation: 'calculate'
+    };
+  }
+
+  if (['product_info', 'variation', 'selection'].includes(plan.answer_type)) {
+    return {
+      intent: 'product_followup',
+      source: 'semantic_planner',
+      search_query: productQuery,
+      semantic_query: plan.semantic_query || '',
+      product_type: plan.product_type || '',
+      theme: plan.theme || entities.theme || '',
+      allow_related_products: plan.allow_related_products === true,
+      filters,
+      order_id: '',
+      tracking_id: '',
+      reference: toolNames.includes('get_selected_product') ? 'selected_product' : 'recent_products',
+      selected_product_index: plan.selected_product_index,
+      needs_clarification: false,
+      clarification_question: '',
+      question_type: plan.answer_type === 'variation' ? 'availability_check' : 'product_search',
+      sources_needed: ['recent_products', 'product_api'],
+      entities,
+      operation: plan.answer_type === 'variation' ? 'lookup' : 'search'
+    };
+  }
+
+  if (plan.answer_type === 'order' || plan.answer_type === 'tracking') {
+    const isTracking = plan.answer_type === 'tracking';
+    return {
+      intent: isTracking ? 'tracking_lookup' : 'order_lookup',
+      source: 'semantic_planner',
+      search_query: '',
+      semantic_query: plan.semantic_query || '',
+      product_type: '',
+      theme: '',
+      allow_related_products: false,
+      filters: { size: '', color: '', category: '' },
+      order_id: entities.order_id || (String(message || '').match(/\b\d{4,}\b/) || [''])[0],
+      tracking_id: '',
+      reference: 'none',
+      selected_product_index: null,
+      needs_clarification: false,
+      clarification_question: '',
+      question_type: isTracking ? 'tracking_code' : 'order_status',
+      sources_needed: [isTracking ? 'tracking_api' : 'order_api'],
+      entities,
+      operation: 'lookup'
+    };
+  }
+
+  if (plan.answer_type === 'store_policy') {
+    return {
+      intent: 'knowledge_question',
+      source: 'semantic_planner',
+      search_query: plan.search_query || plan.semantic_query || getStorePolicyKnowledgeQuery(message) || normalizeSearchText(message).slice(0, 120),
+      semantic_query: plan.semantic_query || '',
+      product_type: '',
+      theme: '',
+      allow_related_products: false,
+      filters: { size: '', color: '', category: '' },
+      order_id: '',
+      tracking_id: '',
+      reference: 'none',
+      selected_product_index: null,
+      needs_clarification: false,
+      clarification_question: '',
+      question_type: 'store_info',
+      sources_needed: ['knowledge_base', 'site_urls'],
+      entities,
+      operation: 'lookup'
+    };
+  }
+
+  return null;
 }
 
 function buildDeterministicStorePolicyPlannerPlan(message = '') {
@@ -5711,9 +5906,9 @@ async function planCustomerRequestShadow(message, conversationState, config, pro
     const compactState = buildCompactPlannerState(conversationState);
     const storeDisplayName = getStoreDisplayName(config || {});
     const plannerPrompt = `Planeje atendimento WhatsApp de ${storeDisplayName}. Nao responda ao cliente. Retorne somente JSON valido.
-Schema: {"understanding":"","answer_type":"product_search|product_info|stock|variation|store_policy|order|tracking|pending_confirmation|selection|general|clarification","confidence":"high|medium|low","needs_clarification":false,"clarification_question":"","tools":[{"name":"get_selected_product","args":{},"reason":""}],"expected_answer_strategy":""}
+Schema: {"understanding":"","answer_type":"product_search|product_info|stock|variation|store_policy|order|tracking|pending_confirmation|selection|general|clarification","confidence":"high|medium|low","search_query":"","semantic_query":"","product_type":"","theme":"","allow_related_products":false,"filters":{"size":"","color":"","category":""},"entities":{"product":"","product_id":"","size":"","color":"","theme":"","category":"","order_id":"","date":"","location":""},"selected_product_index":null,"needs_clarification":false,"clarification_question":"","tools":[{"name":"get_selected_product","args":{},"reason":""}],"expected_answer_strategy":""}
 Ferramentas: get_recent_products,get_selected_product,get_pending_product_selection,use_pending_action,search_vector_knowledge,search_config_knowledge,search_vector_products,search_product_api,hydrate_products_from_api,filter_products_by_size,search_products,semantic_search_products,inspect_product,inspect_product_variations,get_product_stock,get_order_status,get_tracking,search_knowledge_base,search_site_sources,search_files,get_store_policy,ask_clarification.
-Regras: o planner semantico e a entrada principal. Nao dependa de palavra exata: frases como "manda pra Bahia?", "chega em outro estado?", "entregam no Brasil todo?", "posso comprar com CPF?", "como pago?" e "tem troca?" sao store_policy e devem usar search_vector_knowledge + search_config_knowledge + get_store_policy + search_knowledge_base/search_site_sources. "outras cores" => get_selected_product + inspect_product_variations; "tamanho informado" => get_selected_product/get_recent_products + get_product_stock; "numero de opcao" => get_pending_product_selection; confirmacao curta com acao pendente => use_pending_action; produto com tema/personagem/tamanho => search_vector_products + hydrate_products_from_api + filter_products_by_size, ou semantic_search_products se vetor de produto nao estiver ativo; preco/estoque/url/imagem de produto sempre precisam de search_product_api/hydrate_products_from_api ou memoria estruturada, nunca apenas vetor; pergunta sobre pedido com numero => get_order_status + get_tracking; confirmacao curta sem estado pendente => clarification + ask_clarification; se faltar contexto => ask_clarification.
+Regras: o planner semantico e a entrada principal. Nao dependa de palavra exata: frases como "manda pra Bahia?", "chega em outro estado?", "entregam no Brasil todo?", "posso comprar com CPF?", "como pago?" e "tem troca?" sao store_policy e devem usar search_vector_knowledge + search_config_knowledge + get_store_policy + search_knowledge_base/search_site_sources. "outras cores" => get_selected_product + inspect_product_variations; "tamanho informado" => get_selected_product/get_recent_products + get_product_stock; "numero de opcao" => get_pending_product_selection; confirmacao curta com acao pendente => use_pending_action; produto com tema/personagem/tamanho => search_vector_products + hydrate_products_from_api + filter_products_by_size, ou semantic_search_products se vetor de produto nao estiver ativo; preco/estoque/url/imagem de produto sempre precisam de search_product_api/hydrate_products_from_api ou memoria estruturada, nunca apenas vetor; pergunta sobre pedido com numero => get_order_status + get_tracking; confirmacao curta sem estado pendente => clarification + ask_clarification; se faltar contexto => ask_clarification. Para product_search, preencha search_query com a busca limpa e preserve tema/personagem/marca/tamanho/cor em entities/filters.
 Estado compacto: ${JSON.stringify(compactState)}`;
 
     const timeoutMs = Number(config?.planner_shadow_timeout_ms || 9000);
@@ -7904,13 +8099,21 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   }
 
   // ─── NOVO: Classificação de intenção ────────────────────────────────────────
-  let customerIntent = await classifyCustomerIntent({
-    apiKey: apiKeyForClassify,
-    provider,
-    message,
-    conversationHistory,
-    config: effectiveConfig
-  });
+  let customerIntent = buildCustomerIntentFromPlannerPlan(plannerShadowResult?.plan, message);
+  if (customerIntent) {
+    console.log('[INTENT FROM PLANNER] answer_type=' + plannerShadowResult.plan.answer_type
+      + ' intent=' + customerIntent.intent
+      + ' confidence=' + plannerShadowResult.plan.confidence
+      + ' query="' + (customerIntent.search_query || '') + '"');
+  } else {
+    customerIntent = await classifyCustomerIntent({
+      apiKey: apiKeyForClassify,
+      provider,
+      message,
+      conversationHistory,
+      config: effectiveConfig
+    });
+  }
   customerIntent = coerceStockFollowupIntent(customerIntent, message, conversationHistory, conversation);
   if ((customerIntent.intent === 'knowledge_question' || customerIntent.intent === 'general_message' || customerIntent.intent === 'clarification')
     && isCatalogFollowUpRequest(message)

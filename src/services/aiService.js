@@ -1529,17 +1529,20 @@ async function executeAgenticRagTools(plan = {}, state = {}, context = {}) {
       continue;
     }
     if (name === 'search_config_knowledge') {
-      const configFacts = extractStorePolicyFactsFromConfig(config, plan, tool.args?.query || query).facts || [];
-      for (const fact of configFacts) {
-        if (fact.relevance === 'direct') bundle.configFacts.push(fact);
-        else if (fact.relevance === 'context') bundle.contextFacts.push(fact);
-        else bundle.noise.push(fact);
+      const configTexts = collectClientConfigPolicyTexts(config);
+      if (configTexts.length > 0) {
+        bundle.contextFacts.push(...configTexts.map(entry => ({
+          text: entry.text,
+          source: entry.sourceField || 'client_config',
+          sourceType: entry.sourceField || 'client_config',
+          sourceName: entry.sourceName || 'Configuracao do cliente',
+          relevance: 'context',
+          reason: 'raw_config_context',
+          confidence: 'medium'
+        })));
       }
-      bundle.directFacts.push(...configFacts.filter(fact => fact.relevance === 'direct'));
-      bundle.tools_used.push({ tool: name, status: 'executed', reason: 'config_scanned' });
-      console.log('[AGENT EVIDENCE] tool=' + name + ' direct=' + configFacts.filter(fact => fact.relevance === 'direct').length
-        + ' context=' + configFacts.filter(fact => fact.relevance === 'context').length
-        + ' noise=' + configFacts.filter(fact => fact.relevance === 'noise').length);
+      bundle.tools_used.push({ tool: name, status: 'executed', reason: 'raw_config_context_loaded' });
+      console.log('[AGENT EVIDENCE] tool=' + name + ' rawConfig=' + configTexts.length);
       continue;
     }
     if (name === 'search_vector_products') {
@@ -6272,18 +6275,40 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     || ''
   ).trim();
   const ragClientId = getRagClientId(context, config);
-  const configPolicy = extractStorePolicyFactsFromConfig(config, plan, conversationState.message || context.message || query);
+  const semanticQuestion = String(conversationState.message || context.message || query || '').trim();
+  const configPolicy = {
+    topic: 'semantic_question',
+    queries: [semanticQuestion || query].filter(Boolean),
+    facts: []
+  };
   evidenceBundle.policyTopic = configPolicy.topic;
   evidenceBundle.policyQueries = configPolicy.queries;
 
+  const configuredTexts = collectClientConfigPolicyTexts(config)
+    .map((entry, index) => [
+      `Fonte configurada ${index + 1}: ${entry.sourceName || entry.sourceField || 'configuracao'}`,
+      entry.text
+    ].filter(Boolean).join('\n'))
+    .join('\n\n');
+  if (configuredTexts) {
+    evidenceBundle.contextText += 'Conteudo bruto da configuracao do cliente:\n' + configuredTexts.slice(0, 14000);
+  }
+
   if (shouldUseRagForStorePolicy(plan, config)) {
-    const ragSearch = await searchRagKnowledge(ragClientId, query || conversationState.message || context.message, {
-      topK: config.rag_top_k || 5,
-      topic: configPolicy.topic
+    const ragSearch = await searchRagKnowledge(ragClientId, semanticQuestion || query || conversationState.message || context.message, {
+      topK: config.rag_top_k || 5
     }, context);
     if (Array.isArray(ragSearch.results) && ragSearch.results.length > 0) {
-      const ragEvidence = buildRagEvidenceBundle(ragSearch.results, { topic: configPolicy.topic });
-      addPlannerEvidenceFacts(evidenceBundle, ragEvidence.facts, 'source');
+      const ragText = ragSearch.results
+        .slice(0, 8)
+        .map((result, index) => [
+          `Trecho RAG ${index + 1}: ${result.source_name || result.source_type || 'fonte recuperada'}`,
+          String(result.content || '').trim()
+        ].filter(Boolean).join('\n'))
+        .join('\n\n');
+      if (ragText) {
+        evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + 'Trechos recuperados semanticamente:\n' + ragText.slice(0, 14000);
+      }
     } else {
       console.log('[RAG FALLBACK] using=current_evidence_pipeline reason=' + (ragSearch.reason || 'empty_results'));
     }
@@ -6299,14 +6324,7 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     if (name === 'get_store_policy') {
       const topic = String(tool.args?.topic || query || conversationState.message || '').trim();
       if (topic) {
-        evidenceBundle.policyFacts.push({
-          type: configPolicy.topic,
-          text: 'Topico de politica identificado: ' + topic,
-          sourceType: 'planner_tool',
-          sourceName: 'get_store_policy',
-          confidence: 'low'
-        });
-        evidenceBundle.tools_executed.push({ name, reason: 'topic_identified' });
+        evidenceBundle.tools_executed.push({ name, reason: 'semantic_intent_identified' });
         console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
       } else {
         evidenceBundle.missing_data.push('store_policy_topic');
@@ -6320,13 +6338,6 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
       const knowledgeContext = buildKnowledgeContextForConfig(config);
       if (knowledgeContext) {
         evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + knowledgeContext.slice(0, 12000);
-        addPlannerEvidenceFacts(evidenceBundle, extractStorePolicyFactsFromText(
-          knowledgeContext,
-          name === 'search_files' ? 'files' : 'knowledge_base',
-          name === 'search_files' ? 'Arquivos do cliente' : 'Base de conhecimento do cliente',
-          configPolicy.topic,
-          configPolicy.queries
-        ), 'source');
         evidenceBundle.tools_executed.push({ name, reason: 'knowledge_context_loaded' });
         console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
       } else {
@@ -6336,13 +6347,6 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
           if (siteContext.contextText) {
             const siteEvidenceText = buildSiteContextText(siteContext).slice(0, 12000);
             evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + siteEvidenceText;
-            addPlannerEvidenceFacts(evidenceBundle, extractStorePolicyFactsFromText(
-              siteContext.contextText,
-              'site_urls',
-              'URLs configuradas do cliente',
-              configPolicy.topic,
-              configPolicy.queries
-            ), 'source');
             evidenceBundle.tools_executed.push({ name, reason: 'site_context_loaded_for_knowledge_search' });
             console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
           } else {
@@ -6366,13 +6370,6 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
         if (siteContext.contextText) {
           const siteEvidenceText = buildSiteContextText(siteContext).slice(0, 12000);
           evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + siteEvidenceText;
-          addPlannerEvidenceFacts(evidenceBundle, extractStorePolicyFactsFromText(
-            siteContext.contextText,
-            'site_urls',
-            'URLs configuradas do cliente',
-            configPolicy.topic,
-            configPolicy.queries
-          ), 'source');
           evidenceBundle.tools_executed.push({ name, reason: 'site_context_loaded' });
           console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
         } else {
@@ -6427,11 +6424,8 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     console.log('[PLANNER ACTIVE FALLBACK] reason=empty_answer');
     return null;
   }
-  const directFacts = [...evidenceBundle.configFacts, ...evidenceBundle.sourceFacts];
-  const activeConfidence = directFacts.some(fact => fact.confidence === 'high')
-    ? 'high'
-    : (directFacts.length > 0 ? 'medium' : 'low');
-  answer.model = directFacts.length > 0 ? 'planner_store_policy' : 'planner_store_policy_fallback';
+  const activeConfidence = evidenceBundle.contextText ? 'medium' : 'low';
+  answer.model = evidenceBundle.contextText ? 'planner_semantic_evidence' : 'planner_semantic_evidence_fallback';
   answer.confidence = activeConfidence;
   console.log('[PLANNER ACTIVE ANSWER] confidence=' + activeConfidence + ' model=' + answer.model);
   return answer;
@@ -6439,10 +6433,9 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
 
 async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundle = {}, config = {}) {
   const evidenceText = String(evidenceBundle.contextText || '').trim();
-  const directEvidence = hasDirectStorePolicyEvidence(evidenceBundle);
   const buildSummaryAnswer = (model = 'planner_store_policy_summary', processingTimeMs = 0) => ({
     skipped: false,
-    response: buildStorePolicyFactsSummaryResponse(message, evidenceBundle),
+    response: 'Nao encontrei essa informacao com seguranca aqui. Posso chamar um atendente para confirmar?',
     provider: 'planner',
     model,
     prompt_tokens: 0,
@@ -6454,7 +6447,7 @@ async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundl
     product_lookup_attempted: false,
     product_search_text: ''
   });
-  if (!directEvidence) {
+  if (!evidenceText) {
     return {
       skipped: false,
       response: 'Nao encontrei essa informacao com seguranca aqui. Posso chamar um atendente para confirmar?',
@@ -6474,30 +6467,20 @@ async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundl
   const provider = config._plannerProvider || getProviderForModel(config.model);
   const apiKey = config._plannerApiKey;
   const storeDisplayName = getStoreDisplayName(config || {});
-  const configFactsText = formatEvidenceFactsForPrompt('Fatos diretos da configuracao do cliente', evidenceBundle.configFacts || []);
-  const sourceFactsText = formatEvidenceFactsForPrompt('Fatos diretos de fontes do cliente', evidenceBundle.sourceFacts || []);
-  const policyFactsText = formatEvidenceFactsForPrompt('Topicos planejados, sem valor de politica', evidenceBundle.policyFacts || []);
   const prompt = `Voce e atendente de ${storeDisplayName}.
-Responda a pergunta do cliente usando somente as evidencias abaixo.
-Priorize os fatos diretos da configuracao e das fontes do cliente.
-Os topicos planejados ajudam a entender a intencao, mas nao sao valor de politica.
-Se existir fato direto relacionado, responda com ele; nao diga que nao encontrou.
-Se a evidencia nao responder claramente, diga: "Nao encontrei essa informacao com seguranca aqui. Posso chamar um atendente para confirmar?"
-Para pergunta sobre CNPJ/CPF, se nao houver evidencia explicita sobre documento obrigatorio, nao afirme certeza; diga que nao encontrou exigencia nas informacoes consultadas e ofereca confirmacao com atendente.
-Para frete gratis, responda somente se houver evidencia direta; se nao houver, use a frase segura acima.
+Responda a pergunta do cliente como um atendente humano faria.
+Use somente as evidencias brutas abaixo.
+Nao escolha a resposta por palavra-chave, categoria ou topico fixo. Entenda semanticamente a pergunta inteira, inclusive negacoes e correcoes do cliente.
+Antes de responder, verifique se as evidencias realmente respondem a pergunta exata do cliente.
+Se as evidencias falarem de outro assunto, ignore esse outro assunto.
+Se a evidencia nao responder claramente a pergunta exata, diga: "Nao encontrei essa informacao com seguranca aqui. Posso chamar um atendente para confirmar?"
 Nao invente regras, prazos, valores, endereco, excecoes ou politicas.
 Seja curto e humano.
 
 Pergunta do cliente: "${String(message || '').replace(/"/g, '\\"')}"
 Entendimento do planner: "${String(plan.understanding || '').replace(/"/g, '\\"')}"
 
-Evidencias:
-${configFactsText}
-
-${sourceFactsText}
-
-${policyFactsText}
-
+Evidencias brutas consultadas:
 ${evidenceText.slice(0, 16000)}`;
 
   if (!isUsableProviderApiKey(provider, apiKey)) {
@@ -6526,22 +6509,6 @@ ${evidenceText.slice(0, 16000)}`;
       const data = await res.json().catch(() => null);
       const text = String(data?.content?.[0]?.text || '').trim();
       if (!text) return null;
-      if (directEvidence && normalizeSearchText(text).includes('nao encontrei')) {
-        return {
-          skipped: false,
-          response: buildStorePolicyFactsSummaryResponse(message, evidenceBundle),
-          provider: 'planner',
-          model: 'planner_store_policy',
-          prompt_tokens: data?.usage?.input_tokens || 0,
-          completion_tokens: data?.usage?.output_tokens || 0,
-          total_tokens: (data?.usage?.input_tokens || 0) + (data?.usage?.output_tokens || 0),
-          processing_time_ms: Date.now() - startedAt,
-          product_images: [],
-          product_cards: [],
-          product_lookup_attempted: false,
-          product_search_text: ''
-        };
-      }
       return {
         skipped: false,
         response: text,
@@ -6573,22 +6540,6 @@ ${evidenceText.slice(0, 16000)}`;
     const data = await res.json().catch(() => null);
     const text = String(getOpenAIText(data) || '').trim();
     if (!text) return null;
-    if (directEvidence && normalizeSearchText(text).includes('nao encontrei')) {
-      return {
-        skipped: false,
-        response: buildStorePolicyFactsSummaryResponse(message, evidenceBundle),
-        provider: 'planner',
-        model: 'planner_store_policy',
-        prompt_tokens: data?.usage?.input_tokens || data?.usage?.prompt_tokens || 0,
-        completion_tokens: data?.usage?.output_tokens || data?.usage?.completion_tokens || 0,
-        total_tokens: data?.usage?.total_tokens || 0,
-        processing_time_ms: Date.now() - startedAt,
-        product_images: [],
-        product_cards: [],
-        product_lookup_attempted: false,
-        product_search_text: ''
-      };
-    }
     return {
       skipped: false,
       response: text,

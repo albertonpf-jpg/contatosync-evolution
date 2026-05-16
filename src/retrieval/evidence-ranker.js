@@ -33,6 +33,37 @@ function lexicalOverlap(question = '', content = '') {
   return hits / q.size;
 }
 
+function isConversationTranscript(content = '') {
+  return /(^|\n)\s*(cliente|ia|assistente|atendente)\s*:/i.test(String(content || ''));
+}
+
+function hasPolicyTerm(question = '', content = '') {
+  const q = normalize(question);
+  const c = normalize(content);
+  const policyGroups = [
+    ['varejo', 'atacado', 'pedido minimo', 'compra minima', 'quantidade', 'unidade'],
+    ['pix', 'cartao', 'pagamento', 'pagar', 'pago'],
+    ['frete', 'entrega', 'envio', 'retirada', 'retirar'],
+    ['cnpj', 'cpf'],
+    ['troca', 'devolucao', 'garantia'],
+    ['horario', 'atendimento']
+  ];
+  return policyGroups.some(group => group.some(term => q.includes(term)) && group.some(term => c.includes(term)));
+}
+
+function isRelevantForRoute(item = {}, route = {}, question = '') {
+  if (item.metadata?.error) return true;
+  if (item.sourceType === 'conversation_memory') return false;
+  if (isConversationTranscript(item.content)) return false;
+  if (route.intent === 'product') return item.sourceType === 'catalog' || item.sourceType === 'rag';
+  if (route.intent === 'order_status') return item.sourceType === 'api';
+  if (['policy', 'faq', 'billing', 'scheduling', 'support'].includes(route.intent)) {
+    if (item.sourceType === 'catalog' || item.sourceType === 'api') return false;
+    return hasPolicyTerm(question, item.content) || item.metadata?.overlap >= 0.35 || item.score >= 0.7;
+  }
+  return true;
+}
+
 async function rank({ message = {}, route = {}, evidenceBundle = {} } = {}) {
   const question = message.text || '';
   const seen = new Set();
@@ -47,10 +78,10 @@ async function rank({ message = {}, route = {}, evidenceBundle = {} } = {}) {
       const key = `${item.sourceType}|${normalize(item.sourceName)}|${normalize(item.content).slice(0, 180)}`;
       if (seen.has(key)) return false;
       seen.add(key);
-      if (item.sourceType === 'conversation_memory') return true;
       if (route.intent === 'product' && item.sourceType === 'catalog') return true;
       if (route.intent === 'order_status' && item.sourceType === 'api') return true;
       if (item.metadata?.error) return true;
+      if (!isRelevantForRoute(item, route, question)) return false;
       return item.metadata?.overlap > 0 || item.score >= 0.45;
     })
     .sort((a, b) => b.score - a.score);
@@ -77,5 +108,8 @@ function detectConflicts(evidence = []) {
 module.exports = {
   rank,
   lexicalOverlap,
-  detectConflicts
+  detectConflicts,
+  isRelevantForRoute,
+  isConversationTranscript,
+  hasPolicyTerm
 };

@@ -1,6 +1,6 @@
 function firstUsefulEvidence(evidence = [], preferred = []) {
   const byPreferred = evidence.find(item => preferred.includes(item.sourceType) && String(item.content || '').trim());
-  return byPreferred || evidence.find(item => String(item.content || '').trim());
+  return byPreferred || null;
 }
 
 function cleanEvidenceText(text = '') {
@@ -8,6 +8,7 @@ function cleanEvidenceText(text = '') {
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
+    .filter(line => !/^(Cliente|IA|Assistente|Atendente)\s*:/i.test(line))
     .filter(line => !/^(Fonte|Nome da fonte|Titulo da pagina|Produto\/link)\b/i.test(line))
     .slice(0, 6)
     .join('\n')
@@ -92,7 +93,7 @@ async function compose({ message = {}, route = {}, evidence = {} } = {}) {
     };
   }
 
-  const groundedEvidence = firstUsefulEvidence(ranked, ['rag', 'file', 'site', 'api', 'catalog']);
+  const groundedEvidence = firstUsefulEvidence(ranked, ['rag', 'file', 'site', 'api', 'catalog', 'policy', 'faq']);
   if (!groundedEvidence) {
     return {
       text: '',
@@ -104,10 +105,19 @@ async function compose({ message = {}, route = {}, evidence = {} } = {}) {
   }
 
   const text = cleanEvidenceText(groundedEvidence.content);
+  if (!text) {
+    return {
+      text: '',
+      confidence: 'low',
+      grounded: false,
+      missingInfo: inferMissingInfo(message, route),
+      product_cards: []
+    };
+  }
   return {
-    text: text || 'Encontrei essa informacao nas fontes configuradas.',
+    text,
     confidence: groundedEvidence.score >= 0.65 ? 'high' : 'medium',
-    grounded: Boolean(text),
+    grounded: true,
     product_cards: []
   };
 }

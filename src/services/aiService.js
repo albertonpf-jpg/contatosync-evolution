@@ -4026,10 +4026,9 @@ function getMediaKind(media = {}) {
 }
 
 function isMediaOnlyPlaceholderMessage(message = '', media = {}) {
-  if (!media || (!media.path && !media.url)) return false;
   const text = String(message || '').trim();
-  if (!text) return true;
-  return /^\[(audio|áudio|video|vídeo|imagem|image|foto|documento|arquivo)\]$/i.test(text);
+  if (!text) return Boolean(media && (media.path || media.url));
+  return /^\[(audio|áudio|video|vídeo|imagem|image|foto|documento|arquivo|midia|mídia|media)\]$/i.test(text);
 }
 
 function getMediaDescription(media = {}) {
@@ -7965,7 +7964,7 @@ async function runRetrievalGroundedAgent({ supabase, clientId, message, conversa
   return {
     skipped: false,
     response: result.response,
-    provider: 'retrieval_grounded_agent',
+    provider: 'grounded_agent',
     model: 'retrieval_grounded_whatsapp_agent',
     prompt_tokens: 0,
     completion_tokens: 0,
@@ -8032,9 +8031,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     const transcriptionApiKey = client?.openai_api_key;
     if (!transcriptionApiKey || !media?.path || !['audio', 'video'].includes(mediaKind)) {
       return {
-        skipped: false,
-        response: 'Recebi a midia. Pode me mandar em texto o que voce precisa para eu verificar certinho?',
-        provider: 'retrieval_grounded_agent',
+        skipped: true,
+        reason: 'Midia sem texto transcritivel',
+        provider: 'grounded_agent',
         model: 'media_needs_text_clarification',
         prompt_tokens: 0,
         completion_tokens: 0,
@@ -8052,9 +8051,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       }) || '').trim();
       if (!transcribedText) {
         return {
-          skipped: false,
-          response: 'Recebi a midia, mas nao consegui entender o conteudo. Pode me mandar em texto o que voce precisa?',
-          provider: 'retrieval_grounded_agent',
+          skipped: true,
+          reason: 'Midia sem transcricao util',
+          provider: 'grounded_agent',
           model: 'media_transcription_empty',
           prompt_tokens: 0,
           completion_tokens: 0,
@@ -8086,9 +8085,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         error_message: error.message
       });
       return {
-        skipped: false,
-        response: 'Recebi a midia, mas nao consegui transcrever agora. Pode me mandar em texto o que voce precisa?',
-        provider: 'retrieval_grounded_agent',
+        skipped: true,
+        reason: 'Falha ao transcrever midia',
+        provider: 'grounded_agent',
         model: 'media_transcription_failed',
         prompt_tokens: 0,
         completion_tokens: 0,
@@ -8140,7 +8139,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     return {
       skipped: false,
       response: 'Me passa mais um detalhe para eu conseguir te ajudar melhor?',
-      provider: 'retrieval_grounded_agent',
+      provider: 'grounded_agent',
       model: 'retrieval_grounded_safe_fallback',
       prompt_tokens: 0,
       completion_tokens: 0,

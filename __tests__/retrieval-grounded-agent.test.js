@@ -276,6 +276,38 @@ describe('Retrieval-Grounded WhatsApp Agent', () => {
     const mediaSegment = source.slice(mediaStart, groundedStart);
     expect(mediaSegment).not.toMatch(/callOpenAI\(|callClaude\(/);
     expect(mediaSegment).toMatch(/transcribeOpenAIMedia/);
+    expect(source).toMatch(/midia\|m.dia\|media/);
+    expect(mediaSegment).toMatch(/skipped:\s*true/);
+  });
+
+  test('placeholder de midia sem transcricao nao vira busca nem ecoa historico', async () => {
+    const history = [
+      { direction: 'in', content: '[Audio]' },
+      { direction: 'out', content: 'Ok, vou separar todos os produtos Adidas disponiveis no tamanho 8 para voce.' },
+      { direction: 'in', content: '[Midia]' }
+    ];
+    const { result } = await run('[Midia]', {
+      rag: async () => [],
+      site: async () => [],
+      file: async () => []
+    }, history);
+    expect(result.action).not.toBe('send');
+    expect(result.response).not.toMatch(/Cliente:|IA:|vou separar|Adidas disponiveis/i);
+  });
+
+  test('historico da conversa nao pode ser usado como resposta final', async () => {
+    const history = [
+      { direction: 'in', content: 'Vende no atacado e no varejo?' },
+      { direction: 'out', content: 'Confirmando: vendemos no varejo e atacado, sem pedido minimo.' }
+    ];
+    const { result } = await run('Vende no atacado e no varejo?', {
+      rag: async () => [],
+      site: async () => [],
+      file: async () => []
+    }, history);
+    expect(result.action).not.toBe('send');
+    expect(result.response).toMatch(/uso proprio|quantidade/i);
+    expect(result.response).not.toMatch(/Confirmando|Cliente:|IA:/i);
   });
 
   test('logs nao contem nomes proibidos de planner/handoff automatico', () => {

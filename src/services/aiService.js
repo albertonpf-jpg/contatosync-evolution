@@ -164,7 +164,7 @@ function getStorePolicyTopicFromText(message = '', plan = {}) {
   if (getMinimumOrderPolicyQuery(text) || /\b(pedido minimo|compra minima|quantidade minima|minimo de compra|valor minimo)\b/i.test(text)) return 'minimum_order';
   if (/\b(cnpj|cpf|documento|cadastro|pessoa fisica|pessoa juridica)\b/i.test(text)) return 'cnpj';
   if (/\b(frete gratis|frete gratuito|gratis|gratuito)\b/i.test(text) && /\b(frete|entrega|envio)\b/i.test(text)) return 'free_shipping';
-  if (/\b(entrega|entregam|frete|enviar|envio|motoboy|transportadora|excursao)\b/i.test(text)) return 'shipping_delivery';
+  if (/\b(entrega|entregam|frete|enviar|enviam|enviamos|envio|motoboy|transportadora|excursao|todo brasil|brasil todo)\b/i.test(text)) return 'shipping_delivery';
   if (/\b(retirada|retirar|pessoalmente|buscar|endereco|localizacao|onde fica|ponto de encontro|local de retirada)\b/i.test(text)) return 'pickup_location';
   if (/\b(troca|devolucao|devolução|defeito|garantia)\b/i.test(text)) return 'exchange_returns';
   if (/\b(pagamento|pagar|pix|cartao|cartão|boleto|parcelamento)\b/i.test(text)) return 'payment';
@@ -178,7 +178,7 @@ function getStorePolicyTopicQueries(topic = '', message = '') {
     minimum_order: ['pedido minimo', 'compra minima', 'quantidade minima', 'minimo de compras', 'valor minimo'],
     cnpj: ['cnpj', 'cpf', 'documento', 'cadastro', 'pessoa fisica', 'pessoa juridica'],
     free_shipping: ['frete gratis', 'frete gratuito', 'entrega gratis', 'envio gratis'],
-    shipping_delivery: ['entrega', 'frete', 'envio', 'motoboy', 'transportadora', 'excursao'],
+    shipping_delivery: ['entrega', 'frete', 'envio', 'enviam', 'enviamos', 'todo brasil', 'motoboy', 'transportadora', 'excursao'],
     pickup_location: ['retirada', 'retirar', 'endereco', 'localizacao', 'buscar', 'ponto de encontro', 'local de retirada'],
     exchange_returns: ['troca', 'devolucao', 'defeito', 'garantia'],
     payment: ['pagamento', 'pix', 'cartao', 'boleto', 'parcelamento'],
@@ -288,6 +288,9 @@ function classifyEvidenceRelevance(text = '', policyType = '') {
     /\bmotoboy\b/i,
     /\bcep\b/i,
     /\benvio para todo\b/i,
+    /\benviamos para todo\b/i,
+    /\benviam para todo\b/i,
+    /\btodo brasil\b/i,
     /\btransportadora\b/i,
     /\bcorreios\b/i
   ];
@@ -334,6 +337,9 @@ function classifyEvidenceRelevance(text = '', policyType = '') {
       /\bentrega no\b/i,
       /\bentrega em\b/i,
       /\benvio para todo\b/i,
+      /\benviamos para todo\b/i,
+      /\benviam para todo\b/i,
+      /\btodo brasil\b/i,
       /\btransportadora\b/i,
       /\bcorreios\b/i,
       /\bprazo de entrega\b/i
@@ -2601,8 +2607,8 @@ function getStorePolicyKnowledgeQuery(message = '') {
   if (/pedido minimo|minimo de pecas|mínimo de peças|valor minimo|compra minima/i.test(text)) return 'pedido minimo';
   if (/como comprar|comprar com voces|comprar com vocês/i.test(text)) return 'como comprar';
   if (/\bpagamento\b|\bpagar\b|\bpago\b|\bpix\b|\bcartao\b|\bcartão\b|\bboleto\b|formas? de pagamento|como pago/i.test(text)) return 'pagamento';
-  if (/\b(excursao|ponto de encontro|local de retirada)\b/i.test(text) && /\b(entrega|entregam|enviar|envio|retirada|retirar|buscar)\b/i.test(text)) return 'entrega retirada localizacao';
-  if (/\bentrega\b|\bentregam\b|\bfrete\b|\benviar\b|\benvio\b|\bmotoboy\b/i.test(text)) return 'entrega frete';
+  if (/\b(excursao|ponto de encontro|local de retirada)\b/i.test(text) && /\b(entrega|entregam|enviar|enviam|enviamos|envio|retirada|retirar|buscar)\b/i.test(text)) return 'entrega retirada localizacao';
+  if (/\bentrega\b|\bentregam\b|\bfrete\b|\benviar\b|\benviam\b|\benviamos\b|\benvio\b|\bmotoboy\b|\btodo brasil\b|\bbrasil todo\b/i.test(text)) return 'entrega frete';
   if (/\bendereco\b|\bendereço\b|onde fica|localizacao|localização/i.test(text)) return 'endereco';
   if (/\btroca\b|\bdevolucao\b|\bdevolução\b/i.test(text)) return text.includes('devolu') ? 'devolucao' : 'troca';
   if (/\bretirada\b|\bretirar\b|\bpessoalmente\b|buscar ai|posso retirar|retirar no estoque|endereco retirada|manda o endereco pra retirar/i.test(text)) return 'retirada endereco';
@@ -5621,7 +5627,7 @@ function buildDeterministicStorePolicyPlannerPlan(message = '') {
   if (!query) return null;
   console.log('[PLANNER SHADOW] deterministic=true reason=store_policy');
   const minimumOrderQuery = getMinimumOrderPolicyQuery(message);
-  const shouldSearchSite = /\b(entrega|entregam|excursao|ponto de encontro|local de retirada|retirada|retirar|pessoalmente|endereco|motoboy|frete|envio)\b/i.test(normalizeSearchText(message));
+  const shouldSearchSite = /\b(entrega|entregam|excursao|ponto de encontro|local de retirada|retirada|retirar|pessoalmente|endereco|motoboy|frete|envio|enviam|enviamos|todo brasil|brasil todo)\b/i.test(normalizeSearchText(message));
   const tools = [
     { name: 'search_vector_knowledge', args: { query, entity_type: 'store_policy' }, reason: 'recuperar evidencias semanticas do cliente atual' },
     { name: 'search_config_knowledge', args: { query }, reason: 'consultar configuracao e prompt do cliente atual' },

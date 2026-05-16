@@ -3,6 +3,7 @@ const cors = require('cors');
 const http = require('http');
 const socketIo = require('socket.io');
 const { mediaRoot } = require('./src/utils/mediaStore');
+const { createResponseRegistry } = require('./src/whatsapp/response-registry');
 
 console.log('🚀 Iniciando ContatoSync Evolution...');
 
@@ -42,6 +43,7 @@ const server = http.createServer(app);
 const PORT = process.env.PORT || 3003;
 const FALLBACK_PUBLIC_BASE_URL = 'https://web-production-50297.up.railway.app';
 const aiReplyTimers = new Map();
+const responseRegistry = createResponseRegistry();
 
 function getPublicBaseUrl() {
   const explicit = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL;
@@ -56,7 +58,15 @@ function toPublicMediaUrl(mediaUrl) {
   return baseUrl ? baseUrl + (mediaUrl.startsWith('/') ? mediaUrl : '/' + mediaUrl) : mediaUrl;
 }
 
-async function sendAIAutoReply({ sessionName, clientId, conversation, contact, jid, inboundContent, media, conversationCreated }) {
+function getResponseRegistryKey(payload = {}) {
+  return String(payload.incomingMessageId || payload.whatsappMessageId || `${payload.clientId || ''}:${payload.conversation?.id || ''}:${payload.inboundContent || ''}`).slice(0, 500);
+}
+
+function canSendResponse(messageId) {
+  return responseRegistry.canSendResponse(messageId);
+}
+
+async function sendAIAutoReply({ sessionName, clientId, conversation, contact, jid, inboundContent, media, conversationCreated, incomingMessageId }) {
   if (!inboundContent || !String(inboundContent).trim()) return;
 
   var { supabaseAdmin } = require('./src/config/supabase');
@@ -64,6 +74,13 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
   var baileysService = require('./src/services/baileysService');
   var { getIO } = require('./src/services/socketService');
   var { generateAIResponse } = require('./src/services/aiService');
+  var responseKey = getResponseRegistryKey({ incomingMessageId, clientId, conversation, inboundContent });
+
+  console.log('[INCOMING MESSAGE] ' + JSON.stringify({
+    conversationId: conversation.id,
+    messageId: responseKey,
+    text: String(inboundContent || '').slice(0, 500)
+  }));
 
   var aiResult;
   try {
@@ -94,44 +111,62 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
 
   var now = new Date().toISOString();
   var hasProductCards = Array.isArray(aiResult.product_cards) && aiResult.product_cards.length > 0;
-  var productMediaSent = false;
-  if (hasProductCards) {
-    try {
-      await baileysService.sendCarouselMessage(sessionName, jid, {
-        body: 'Fotos do produto encontradas na loja:',
-        cards: aiResult.product_cards
-      });
-      productMediaSent = true;
-      console.log('[AI AUTO] Carrossel interativo de produtos enviado | conv: ' + conversation.id + ' | cards: ' + aiResult.product_cards.length);
-    } catch (carouselError) {
-      console.warn('[AI AUTO] Falha ao enviar carrossel interativo, tentando album de midia: ' + carouselError.message);
-      const cardsToSend = aiResult.product_cards.slice(0, 10);
-      for (let index = 0; index < cardsToSend.length; index += 1) {
-        const card = cardsToSend[index];
-        try {
-          await baileysService.sendRemoteImageMessage(sessionName, jid, card.imageUrl, '');
-          productMediaSent = true;
-        } catch (imageError) {
-          console.warn('[AI AUTO] Falha ao enviar imagem do produto: ' + imageError.message);
-        }
-      }
-      console.log('[AI AUTO] Fallback por album de midia enviado | conv: ' + conversation.id + ' | imagens: ' + cardsToSend.length + ' | alguma_enviada: ' + productMediaSent);
-    }
-  }
-
   var aiText = String(aiResult.response || '').trim();
   if (!aiText && hasProductCards) {
-    aiText = productMediaSent
-      ? 'Enviei as fotos do produto acima. Seguem os detalhes que encontrei na loja.'
-      : 'Encontrei estas opcoes na loja, mas nao consegui enviar as fotos automaticamente agora.';
+    aiText = 'Encontrei estas opcoes no catalogo.';
   }
-  if (hasProductCards && productMediaSent) {
-    aiText = 'Enviei acima as opcoes que encontrei para o que voce pediu. Se quiser, posso verificar tamanhos, cores ou disponibilidade.';
+  if (!aiText) aiText = 'Me passa mais um detalhe para eu conseguir te ajudar melhor?';
+
+  var agentAction = hasProductCards ? 'send_text_and_cards' : 'send_text';
+  console.log('[AGENT RESULT] ' + JSON.stringify({
+    conversationId: conversation.id,
+    messageId: responseKey,
+    action: agentAction,
+    textPreview: aiText.slice(0, 180),
+    cardsCount: hasProductCards ? aiResult.product_cards.length : 0,
+    guardrailAction: aiResult.confidence_guardrail?.action || '',
+    explicitHumanRequest: aiResult.route?.explicitHumanRequest === true
+  }));
+
+  var sendGate = canSendResponse(responseKey);
+  console.log('[SEND DECISION] ' + JSON.stringify({
+    messageId: responseKey,
+    action: agentAction,
+    willSend: sendGate.allowed,
+    sendCountForMessage: sendGate.sendCountForMessage
+  }));
+  if (!sendGate.allowed) {
+    console.log('[BLOCKED DUPLICATE SEND] ' + JSON.stringify({
+      messageId: responseKey,
+      attemptedSendType: agentAction,
+      reason: 'response already sent for incoming message'
+    }));
+    return;
   }
-  if (hasProductCards && !productMediaSent) {
-    aiText = 'Encontrei o produto, mas nao consegui enviar as fotos automaticamente agora. Vou chamar um atendente para ajudar.';
+
+  var sendResult = null;
+  var sendType = hasProductCards ? 'carousel' : 'text';
+  if (hasProductCards) {
+    try {
+      sendResult = await baileysService.sendCarouselMessage(sessionName, jid, {
+        body: aiText,
+        cards: aiResult.product_cards
+      });
+    } catch (carouselError) {
+      console.warn('[AI AUTO] Falha ao enviar carrossel interativo, enviando texto unico: ' + carouselError.message);
+      sendType = 'text';
+      sendResult = await baileysService.sendTextMessage(sessionName, jid, aiText);
+    }
+  } else {
+    sendResult = await baileysService.sendTextMessage(sessionName, jid, aiText);
   }
-  var sendResult = await baileysService.sendTextMessage(sessionName, jid, aiText);
+
+  console.log('[WHATSAPP SEND] ' + JSON.stringify({
+    messageId: responseKey,
+    sendType,
+    textPreview: aiText.slice(0, 180),
+    cardsCount: hasProductCards ? aiResult.product_cards.length : 0
+  }));
 
   var { data: newMessage, error: messageError } = await supabaseAdmin
     .from('evolution_messages')
@@ -178,7 +213,10 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       metadata: {
         model: aiResult.model,
         provider: aiResult.provider,
-        tokens: aiResult.total_tokens || 0
+        tokens: aiResult.total_tokens || 0,
+        incoming_message_id: responseKey,
+        send_type: sendType,
+        cards_count: hasProductCards ? aiResult.product_cards.length : 0
       },
       created_at: now
     }]);
@@ -254,10 +292,12 @@ function enqueueAIAutoReply(payload) {
     if (nextContent) existing.messages.push(nextContent);
     if (payload.media && (payload.media.path || payload.media.url)) existing.media = payload.media;
     existing.payload = { ...existing.payload, ...payload, inboundContent: existing.messages.join('\n') };
+    existing.incomingMessageIds.push(payload.incomingMessageId || '');
     clearTimeout(existing.timer);
   } else {
     existing = {
       messages: nextContent ? [nextContent] : [],
+      incomingMessageIds: [payload.incomingMessageId || ''],
       media: payload.media,
       payload: payload,
       timer: null,
@@ -275,6 +315,7 @@ function enqueueAIAutoReply(payload) {
       var finalPayload = {
         ...existing.payload,
         inboundContent: existing.messages.join('\n'),
+        incomingMessageId: existing.incomingMessageIds.filter(Boolean).join('|') || existing.payload.incomingMessageId,
         media: existing.media
       };
       sendAIAutoReply(finalPayload).catch(function(aiError) {
@@ -1258,6 +1299,7 @@ app.post('/internal/messages/process', async function(req, res) {
         contact: { ...contact },
         jid: jid,
         inboundContent: content,
+        incomingMessageId: whatsappMessageId || newMsgId,
         media: {
           messageType: messageType || 'text',
           url: publicMediaUrl,

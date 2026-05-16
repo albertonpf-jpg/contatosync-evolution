@@ -1,5 +1,35 @@
 # ContatoSync Evolution API
 
+## Retrieval-Grounded WhatsApp Agent
+
+O atendimento automatico do WhatsApp usa a arquitetura Retrieval-Grounded WhatsApp Agent:
+
+WhatsApp Message
+-> Message Normalizer
+-> Lightweight Router
+-> Source Decision
+-> Retrieval Layer
+-> RAG / API / Catalog / Site / Files / Conversation Memory
+-> Evidence Ranker
+-> Answer Composer
+-> Confidence Guardrail
+-> WhatsApp Response / Explicit Human Handoff
+
+O sistema usa um router leve antes das buscas. Esse router avalia todas as possibilidades da mensagem, incluindo intencao geral, necessidade de RAG, API, catalogo, site, arquivos, memoria da conversa e pedido explicito de humano. Ele nao consulta todas as fontes por padrao, nao responde ao cliente, nao escolhe topicos rigidos de politica e nao substitui RAG, catalogo, site, arquivos ou APIs.
+
+O Source Decision recebe a matriz do router e decide quais fontes serao usadas. RAG, site, arquivos, catalogo, APIs e memoria da conversa sao as fontes de verdade. A camada de retrieval retorna evidencias, nao respostas finais.
+
+O agente respondedor so compoe a resposta depois das evidencias. O Confidence Guardrail valida seguranca e confianca antes do envio. Quando falta informacao, o sistema faz uma pergunta objetiva. Quando nao ha evidencia suficiente, o sistema nao inventa resposta e nao chama humano automaticamente.
+
+Regra operacional:
+
+- Antes das evidencias: somente roteamento leve e decisao de fontes.
+- Depois das evidencias: composicao de resposta fundamentada.
+- Se nao houver evidencia suficiente: nao responder com suposicao.
+- Se faltar informacao: perguntar melhor.
+- Se o cliente pedir humano explicitamente: encaminhar para humano.
+- Se o cliente nao pedir humano explicitamente: continuar tentando resolver com perguntas, fontes e novas buscas.
+
 Backend API completo para o sistema ContatoSync Evolution - solução multi-cliente de gestão WhatsApp com CRM e IA integrada.
 
 ## 🚀 Características
@@ -359,5 +389,16 @@ MIT License - veja o arquivo LICENSE para detalhes.
 - Website: plannedmidia.com.br
 
 ---
+
+### Modulos da arquitetura Retrieval-Grounded
+
+- `src/agent`: orquestrador central, composer e guardrail.
+- `src/router`: lightweight router e source decision.
+- `src/retrieval`: retrieval orchestrator, query rewriter e evidence ranker.
+- `src/rag`: adaptadores de RAG, documentos, site e arquivos.
+- `src/tools`: executores de API, catalogo, cliente, pedido e agenda.
+- `src/memory`: memoria recente da conversa.
+- `src/handoff`: handoff humano somente por pedido explicito.
+- `src/logs`: logs estruturados do fluxo.
 
 **ContatoSync Evolution** - Transformando a gestão de WhatsApp empresarial 🚀

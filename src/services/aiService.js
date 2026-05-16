@@ -6,6 +6,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { promisify } = require('util');
 const { execFile } = require('child_process');
+const retrievalGroundedAgent = require('../agent/whatsapp-agent.orchestrator');
 
 const execFileAsync = promisify(execFile);
 const RECENT_PRODUCTS_MEMORY_TTL_MS = 30 * 60 * 1000;
@@ -136,7 +137,7 @@ function buildSystemPrompt(config, contact, conversation) {
     `- Telefone: ${contact?.phone || conversation?.phone || 'nao informado'}`,
     '- Nunca invente precos, estoque, prazos ou politicas.',
     '- Quando houver URLs, arquivos ou integracoes configuradas no motor da IA, use essas fontes antes de concluir que nao encontrou a informacao.',
-    '- Se faltar informacao, diga que vai encaminhar para um atendente humano.',
+    '- Se faltar informacao, faca uma pergunta objetiva para continuar o atendimento.',
     canGreet ? '- Esta parece ser a primeira resposta deste atendimento; pode cumprimentar uma vez se fizer sentido.' : '- Esta conversa ja esta em andamento; nao envie boas-vindas, saudacao inicial ou apresentacao novamente.',
     '- Responda como mensagem curta de WhatsApp, sem markdown pesado.'
   ].join('\n');
@@ -543,7 +544,7 @@ function buildStorePolicyFactsSummaryResponse(message = '', evidenceBundle = {})
     ...(Array.isArray(evidenceBundle.sourceFacts) ? evidenceBundle.sourceFacts : [])
   ].filter(fact => fact && fact.text);
   if (directFacts.length === 0) {
-    return 'Nao encontrei essa informacao com seguranca aqui. Posso chamar um atendente para confirmar?';
+    return 'Me passa mais um detalhe para eu verificar melhor?';
   }
   const mainFact = directFacts[0];
   const text = String(mainFact.text || '').trim().replace(/\s+/g, ' ');
@@ -1695,7 +1696,7 @@ function buildProductLookupEmptyResponse(searchText) {
       'modelos'
     ].includes(token));
   const requested = tokens.length > 0 ? tokens.join(' ') : 'esse produto';
-  console.log('[PRODUCT FALLBACK HUMAN] reason=lookup_empty requested="' + requested + '"');
+  console.log('[PRODUCT LOOKUP EMPTY] reason=lookup_empty requested="' + requested + '"');
   return `Nao encontrei exatamente ${requested} no momento. Posso procurar opcoes parecidas para voce?`;
 }
 
@@ -1869,7 +1870,7 @@ function buildCarouselCardDescription(product) {
 }
 
 function buildAIUnavailableResponse(config) {
-  return 'No momento nao consegui acessar o modelo de IA configurado. Sua mensagem foi recebida e um atendente pode continuar se necessario.';
+  return 'No momento nao consegui acessar o modelo de IA configurado. Me passa mais um detalhe por texto para eu tentar te ajudar melhor?';
 }
 
 function buildOutsideWorkingHoursResponse(config) {
@@ -6250,7 +6251,7 @@ function shouldUsePlannerForStorePolicy(plan = {}) {
 
 async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, context = {}) {
   const conv = conversationState.conversationId || getConversationMemoryKey(context.conversation || {});
-  console.log('[PLANNER ACTIVE] type=store_policy conv=' + conv);
+  console.log('[DEPRECATED LEGACY ROUTE] type=store_policy conv=' + conv);
   const config = context.effectiveConfig || context.config || {};
   const evidenceBundle = {
     facts: [],
@@ -6325,11 +6326,11 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
       const topic = String(tool.args?.topic || query || conversationState.message || '').trim();
       if (topic) {
         evidenceBundle.tools_executed.push({ name, reason: 'semantic_intent_identified' });
-        console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
+        console.log('[DEPRECATED LEGACY TOOL] name=' + name + ' status=executed');
       } else {
         evidenceBundle.missing_data.push('store_policy_topic');
         evidenceBundle.tools_skipped.push({ name, reason: 'missing_topic' });
-        console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+        console.log('[DEPRECATED LEGACY TOOL] name=' + name + ' status=skipped');
       }
       continue;
     }
@@ -6339,7 +6340,7 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
       if (knowledgeContext) {
         evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + knowledgeContext.slice(0, 12000);
         evidenceBundle.tools_executed.push({ name, reason: 'knowledge_context_loaded' });
-        console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
+        console.log('[DEPRECATED LEGACY TOOL] name=' + name + ' status=executed');
       } else {
         const sources = buildKnowledgeSourcesForConfig(config);
         if (sources.length > 0) {
@@ -6348,16 +6349,16 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
             const siteEvidenceText = buildSiteContextText(siteContext).slice(0, 12000);
             evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + siteEvidenceText;
             evidenceBundle.tools_executed.push({ name, reason: 'site_context_loaded_for_knowledge_search' });
-            console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
+            console.log('[DEPRECATED LEGACY TOOL] name=' + name + ' status=executed');
           } else {
             evidenceBundle.missing_data.push('knowledge_base');
             evidenceBundle.tools_skipped.push({ name, reason: 'no_knowledge_or_site_context' });
-            console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+            console.log('[DEPRECATED LEGACY TOOL] name=' + name + ' status=skipped');
           }
         } else {
           evidenceBundle.missing_data.push('knowledge_base');
           evidenceBundle.tools_skipped.push({ name, reason: 'no_knowledge_context' });
-          console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+          console.log('[DEPRECATED LEGACY TOOL] name=' + name + ' status=skipped');
         }
       }
       continue;
@@ -6371,22 +6372,22 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
           const siteEvidenceText = buildSiteContextText(siteContext).slice(0, 12000);
           evidenceBundle.contextText += (evidenceBundle.contextText ? '\n\n' : '') + siteEvidenceText;
           evidenceBundle.tools_executed.push({ name, reason: 'site_context_loaded' });
-          console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=executed');
+          console.log('[DEPRECATED LEGACY TOOL] name=' + name + ' status=executed');
         } else {
           evidenceBundle.missing_data.push('site_sources');
           evidenceBundle.tools_skipped.push({ name, reason: 'empty_site_context' });
-          console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+          console.log('[DEPRECATED LEGACY TOOL] name=' + name + ' status=skipped');
         }
       } else {
         evidenceBundle.missing_data.push('site_sources');
         evidenceBundle.tools_skipped.push({ name, reason: 'no_site_sources' });
-        console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+        console.log('[DEPRECATED LEGACY TOOL] name=' + name + ' status=skipped');
       }
       continue;
     }
 
     evidenceBundle.tools_skipped.push({ name, reason: 'not_allowed_for_store_policy_active' });
-    console.log('[PLANNER ACTIVE TOOL] name=' + name + ' status=skipped');
+    console.log('[DEPRECATED LEGACY TOOL] name=' + name + ' status=skipped');
   }
 
   evidenceBundle.facts = [
@@ -6397,7 +6398,7 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     ...evidenceBundle.noiseFacts
   ];
   const directFactsCount = evidenceBundle.configFacts.length + evidenceBundle.sourceFacts.length;
-  console.log('[PLANNER ACTIVE EVIDENCE] policyFacts=' + evidenceBundle.policyFacts.length
+  console.log('[DEPRECATED LEGACY EVIDENCE] policyFacts=' + evidenceBundle.policyFacts.length
     + ' configFacts=' + evidenceBundle.configFacts.length
     + ' sourceFacts=' + evidenceBundle.sourceFacts.length
     + ' directFacts=' + directFactsCount
@@ -6406,7 +6407,7 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     + ' missing=' + evidenceBundle.missing_data.length
     + ' warnings=' + evidenceBundle.warnings.length);
   if (!hasDirectStorePolicyEvidence(evidenceBundle) && !evidenceBundle.contextText) {
-    console.log('[PLANNER ACTIVE FALLBACK] reason=no_relevant_evidence');
+    console.log('[DEPRECATED LEGACY FALLBACK] reason=no_relevant_evidence');
     return null;
   }
 
@@ -6421,13 +6422,13 @@ async function resolveStorePolicyWithPlanner(plan = {}, conversationState = {}, 
     }
   );
   if (!answer || !answer.response) {
-    console.log('[PLANNER ACTIVE FALLBACK] reason=empty_answer');
+    console.log('[DEPRECATED LEGACY FALLBACK] reason=empty_answer');
     return null;
   }
   const activeConfidence = evidenceBundle.contextText ? 'medium' : 'low';
-  answer.model = evidenceBundle.contextText ? 'planner_semantic_evidence' : 'planner_semantic_evidence_fallback';
+  answer.model = evidenceBundle.contextText ? 'deprecated_semantic_evidence' : 'deprecated_semantic_evidence_fallback';
   answer.confidence = activeConfidence;
-  console.log('[PLANNER ACTIVE ANSWER] confidence=' + activeConfidence + ' model=' + answer.model);
+  console.log('[DEPRECATED LEGACY ANSWER] confidence=' + activeConfidence + ' model=' + answer.model);
   return answer;
 }
 
@@ -6435,7 +6436,7 @@ async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundl
   const evidenceText = String(evidenceBundle.contextText || '').trim();
   const buildSummaryAnswer = (model = 'planner_store_policy_summary', processingTimeMs = 0) => ({
     skipped: false,
-    response: 'Nao encontrei essa informacao com seguranca aqui. Posso chamar um atendente para confirmar?',
+    response: 'Me passa mais um detalhe para eu verificar melhor?',
     provider: 'planner',
     model,
     prompt_tokens: 0,
@@ -6450,7 +6451,7 @@ async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundl
   if (!evidenceText) {
     return {
       skipped: false,
-      response: 'Nao encontrei essa informacao com seguranca aqui. Posso chamar um atendente para confirmar?',
+      response: 'Me passa mais um detalhe para eu verificar melhor?',
       provider: 'planner',
       model: 'planner_store_policy_fallback',
       prompt_tokens: 0,
@@ -6467,15 +6468,15 @@ async function generateFinalAnswerFromEvidence(message, plan = {}, evidenceBundl
   const provider = config._plannerProvider || getProviderForModel(config.model);
   const apiKey = config._plannerApiKey;
   const storeDisplayName = getStoreDisplayName(config || {});
-  const prompt = `Voce e atendente de ${storeDisplayName}.
-Responda a pergunta do cliente como um atendente humano faria.
+  const prompt = `Voce e assistente de ${storeDisplayName}.
+Responda a pergunta do cliente de forma natural.
 Use somente as evidencias brutas abaixo.
 Nao escolha a resposta por palavra-chave, categoria ou topico fixo. Entenda semanticamente a pergunta inteira, inclusive negacoes e correcoes do cliente.
 Antes de responder, verifique se as evidencias realmente respondem a pergunta exata do cliente.
 Se as evidencias falarem de outro assunto, ignore esse outro assunto.
-Se a evidencia nao responder claramente a pergunta exata, diga: "Nao encontrei essa informacao com seguranca aqui. Posso chamar um atendente para confirmar?"
+Se a evidencia nao responder claramente a pergunta exata, faca uma pergunta objetiva para continuar a investigacao.
 Nao invente regras, prazos, valores, endereco, excecoes ou politicas.
-Seja curto e humano.
+Seja curto e natural.
 
 Pergunta do cliente: "${String(message || '').replace(/"/g, '\\"')}"
 Entendimento do planner: "${String(plan.understanding || '').replace(/"/g, '\\"')}"
@@ -6555,7 +6556,7 @@ ${evidenceText.slice(0, 16000)}`;
       product_search_text: ''
     };
   } catch (error) {
-    console.warn('[PLANNER ACTIVE ANSWER FALLBACK] reason=provider_error_with_direct_evidence message=' + String(error?.message || error || '').slice(0, 160));
+    console.warn('[DEPRECATED LEGACY ANSWER FALLBACK] reason=provider_error_with_direct_evidence message=' + String(error?.message || error || '').slice(0, 160));
     return buildSummaryAnswer('planner_store_policy_summary', Date.now() - startedAt);
   }
 }
@@ -7849,6 +7850,135 @@ async function getConversationMessagesFromStart(supabase, clientId, conversation
   return data.filter(item => String(item.content || '').trim());
 }
 
+function mapRagResultsToEvidence(results = []) {
+  return (Array.isArray(results) ? results : []).map(item => ({
+    sourceType: item.source_type || item.sourceType || 'rag',
+    sourceName: item.source_name || item.sourceName || 'RAG',
+    content: item.content || item.text || '',
+    score: item.score || item.similarity || 0.5,
+    metadata: item.metadata || {},
+    isDynamic: false
+  }));
+}
+
+function buildGroundedAgentAdapters({ clientId, effectiveConfig, conversationHistory, contact, conversation, supabase }) {
+  const runtimeContext = {
+    clientId,
+    client_id: clientId,
+    supabase,
+    conversation,
+    contact,
+    openaiApiKey: effectiveConfig?._ragRuntimeContext?.openaiApiKey,
+    apiKey: effectiveConfig?._ragRuntimeContext?.apiKey,
+    effectiveConfig,
+    config: effectiveConfig
+  };
+
+  return {
+    async rag({ query }) {
+      const ragResult = await searchRagKnowledge(clientId, query, {
+        topK: effectiveConfig.rag_top_k || 5,
+        minScore: effectiveConfig.rag_score_threshold || 0.25
+      }, runtimeContext);
+      return mapRagResultsToEvidence(ragResult.results || []);
+    },
+    async file({ query }) {
+      const fileContext = buildKnowledgeContextForConfig(effectiveConfig);
+      if (!fileContext?.contextText) return [];
+      return [{
+        sourceType: 'file',
+        sourceName: 'arquivos configurados',
+        content: fileContext.contextText,
+        score: 0.6,
+        metadata: { query },
+        isDynamic: false
+      }];
+    },
+    async site({ query }) {
+      const siteContext = await buildSiteContextForConfig(query, effectiveConfig);
+      if (!siteContext?.contextText && siteContext?.lookupAttempted !== true) return [];
+      return [{
+        sourceType: 'site',
+        sourceName: 'site e URLs configuradas',
+        content: siteContext.contextText || '',
+        score: siteContext.contextText ? 0.6 : 0.2,
+        metadata: { lookupAttempted: siteContext.lookupAttempted === true },
+        isDynamic: false
+      }];
+    },
+    async catalog({ query, message }) {
+      const catalogContext = await buildProductContextForConfig(query || message.text, effectiveConfig, conversationHistory, {
+        conversation
+      });
+      const products = catalogContext.product_context_products || catalogContext.recent_products_data || [];
+      if (products.length > 0) saveRecentProductsMemory(conversation, products);
+      return [{
+        sourceType: 'catalog',
+        sourceName: 'catalogo de produtos',
+        content: catalogContext.contextText || '',
+        score: catalogContext.productsFound ? 0.9 : 0.35,
+        metadata: {
+          lookupAttempted: catalogContext.lookupAttempted === true,
+          productsFound: catalogContext.productsFound === true,
+          productCards: catalogContext.productCards || [],
+          products,
+          searchText: catalogContext.searchText || query || ''
+        },
+        isDynamic: true
+      }];
+    },
+    async api({ query }) {
+      const operationalContext = await buildOperationalContextForConfig(query, effectiveConfig, contact, conversation);
+      if (!operationalContext?.contextText && operationalContext?.lookupAttempted !== true) return [];
+      return [{
+        sourceType: 'api',
+        sourceName: 'integracoes transacionais',
+        content: operationalContext.contextText || '',
+        score: operationalContext.contextText ? 0.85 : 0.25,
+        metadata: { lookupAttempted: operationalContext.lookupAttempted === true },
+        isDynamic: true
+      }];
+    }
+  };
+}
+
+async function runRetrievalGroundedAgent({ supabase, clientId, message, conversation, contact, effectiveConfig, conversationHistory }) {
+  const startedAt = Date.now();
+  const result = await retrievalGroundedAgent.handleIncomingWhatsAppMessage({
+    clientId,
+    text: message,
+    conversation,
+    contact,
+    conversationHistory
+  }, {
+    adapters: buildGroundedAgentAdapters({
+      clientId,
+      effectiveConfig,
+      conversationHistory,
+      contact,
+      conversation,
+      supabase
+    }),
+    logger: console
+  });
+
+  return {
+    skipped: false,
+    response: result.response,
+    provider: 'retrieval_grounded_agent',
+    model: 'retrieval_grounded_whatsapp_agent',
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    processing_time_ms: Date.now() - startedAt,
+    product_images: [],
+    product_cards: result.product_cards || [],
+    route: result.route,
+    retrieval_plan: result.retrievalPlan,
+    confidence_guardrail: result.validation
+  };
+}
+
 async function generateAIResponse({ supabase, clientId, message, conversation, contact, media }) {
   const { config, client, integrations } = await getAISetup(supabase, clientId);
 
@@ -7898,13 +8028,14 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   };
 
   if (mediaOnlyMessage) {
-    const apiKey = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
-    if (!isUsableProviderApiKey(provider, apiKey)) {
+    const mediaKind = getMediaKind(media);
+    const transcriptionApiKey = client?.openai_api_key;
+    if (!transcriptionApiKey || !media?.path || !['audio', 'video'].includes(mediaKind)) {
       return {
         skipped: false,
-        response: 'Recebi a midia, mas nao consegui analisar automaticamente agora. Pode me mandar a mensagem em texto?',
-        provider,
-        model: 'media_without_api_key',
+        response: 'Recebi a midia. Pode me mandar em texto o que voce precisa para eu verificar certinho?',
+        provider: 'retrieval_grounded_agent',
+        model: 'media_needs_text_clarification',
         prompt_tokens: 0,
         completion_tokens: 0,
         total_tokens: 0,
@@ -7913,32 +8044,37 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         product_cards: []
       };
     }
-    console.log('[MEDIA ONLY] bypassing_planner type=' + getMediaKind(media));
     try {
-      const result = provider === 'claude'
-        ? await callClaude({
-            apiKey,
-            config: effectiveConfig,
-            input: '',
-            systemPrompt,
-            media,
-            conversationHistory,
-            contact,
-            conversation
-          })
-        : await callOpenAI({ apiKey, config: effectiveConfig, input: '', systemPrompt, media, conversationHistory, contact, conversation });
-      result.response = normalizeProductMediaResponse(
-        suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation),
-        result.product_cards
-      );
-      await logAIResult(supabase, {
-        client_id: clientId,
-        conversation_id: conversation?.id,
-        input_message: '[media]',
-        status: 'success',
-        ...result
-      });
-      return { skipped: false, ...result };
+      const transcribedText = String(await transcribeOpenAIMedia({
+        apiKey: transcriptionApiKey,
+        filePath: media.path,
+        mimeType: media.mimeType
+      }) || '').trim();
+      if (!transcribedText) {
+        return {
+          skipped: false,
+          response: 'Recebi a midia, mas nao consegui entender o conteudo. Pode me mandar em texto o que voce precisa?',
+          provider: 'retrieval_grounded_agent',
+          model: 'media_transcription_empty',
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          processing_time_ms: 0,
+          product_images: [],
+          product_cards: []
+        };
+      }
+      console.log('[MESSAGE NORMALIZED] ' + JSON.stringify({
+        conversationId: conversation?.id || '',
+        step: 'message_normalizer',
+        inputSummary: '[media]',
+        outputSummary: transcribedText.slice(0, 160),
+        confidence: 0.8,
+        sourcesUsed: [],
+        decision: 'midia transcrita antes do retrieval-grounded agent',
+        timestamp: new Date().toISOString()
+      }));
+      message = transcribedText;
     } catch (error) {
       console.warn('[MEDIA ONLY] fallback reason=' + String(error?.message || error).slice(0, 180));
       await logAIResult(supabase, {
@@ -7951,9 +8087,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       });
       return {
         skipped: false,
-        response: 'Recebi a midia, mas nao consegui analisar automaticamente agora. Pode me mandar a mensagem em texto?',
-        provider,
-        model: 'media_analysis_failed',
+        response: 'Recebi a midia, mas nao consegui transcrever agora. Pode me mandar em texto o que voce precisa?',
+        provider: 'retrieval_grounded_agent',
+        model: 'media_transcription_failed',
         prompt_tokens: 0,
         completion_tokens: 0,
         total_tokens: 0,
@@ -7964,953 +8100,35 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     }
   }
 
-  let plannerShadowResult = null;
   try {
-    plannerShadowResult = await answerPlannerShadowMode({
+    const groundedResult = await runRetrievalGroundedAgent({
+      supabase,
+      clientId,
       message,
       conversation,
       contact,
-      conversationHistory,
       effectiveConfig,
-      config,
-      provider,
-      apiKey: apiKeyForClassify
+      conversationHistory
     });
-  } catch (error) {
-    console.warn('[PLANNER SHADOW ERROR] message=' + String(error?.message || error).slice(0, 180));
-  }
-
-  if (shouldUsePlannerForStorePolicy(plannerShadowResult?.plan)) {
-    try {
-      const plannerActiveResult = await resolveStorePolicyWithPlanner(
-        plannerShadowResult.plan,
-        plannerShadowResult.conversationState || buildConversationStateForPlanner({ message, conversation, contact, conversationHistory }),
-        {
-          message,
-          conversation,
-          contact,
-          conversationHistory,
-          clientId,
-          supabase,
-          effectiveConfig,
-          config,
-          provider,
-          apiKey: apiKeyForClassify,
-          openaiApiKey: client?.openai_api_key
-        }
-      );
-      if (plannerActiveResult) return plannerActiveResult;
-    } catch (error) {
-      console.warn('[PLANNER ACTIVE FALLBACK] reason=' + String(error?.message || error).slice(0, 180));
-    }
-  }
-
-  if (isSimpleGreeting(message)) {
-    const response = suppressRepeatedGreeting(buildGreetingResponse(message, effectiveConfig), effectiveConfig.greeting_message, conversation);
-    return {
-      skipped: false,
-      response,
-      provider: 'system',
-      model: 'simple_greeting',
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      processing_time_ms: 0,
-      product_images: [],
-      product_cards: []
-    };
-  }
-
-  const selectedProductMemory = getSelectedProductMemory(conversation);
-  const pendingProductSelectionMemory = getPendingProductSelectionMemory(conversation);
-  const pendingActionMemory = getPendingActionMemory(conversation);
-  const hasSelectedProductMemory = Boolean(selectedProductMemory);
-  const hasPendingProductSelection = Boolean(pendingProductSelectionMemory);
-  const hasPendingActionMemory = Boolean(pendingActionMemory);
-  const explicitNewProductRequest = isExplicitNewProductRequest(message);
-  if (explicitNewProductRequest) {
-    console.log('[STOCK FOLLOWUP SKIP] reason=explicit_new_product_request');
-  }
-  const earlyStockFollowupIntent = (!explicitNewProductRequest && (isStockAvailabilityFollowUp(message) || (hasSelectedProductMemory && isSelectedProductFollowUp(message)) || (extractProductIndexReference(message) && (getRecentProductsMemory(conversation).length > 0 || hasPendingProductSelection))))
-    ? buildStockFollowupIntentFromMessage(message, conversationHistory, 'early_before_product_lookup', conversation)
-    : null;
-  if (earlyStockFollowupIntent) {
-    const earlyStockAnswer = buildRecentProductStockAnswer(earlyStockFollowupIntent, message, conversationHistory, conversation);
-    if (earlyStockAnswer) {
-      console.log('[FOLLOWUP DECISION] structured_recent_stock=true model=' + earlyStockAnswer.model);
-      return {
-        skipped: false,
-        response: earlyStockAnswer.response,
-        provider: 'system',
-        model: earlyStockAnswer.model,
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: [],
-        product_cards: [],
-        product_lookup_attempted: false,
-        product_search_text: ''
-      };
-    }
-  }
-
-  if (!explicitNewProductRequest && hasSelectedProductMemory && isSelectedProductPurchaseIntent(message)) {
-    const selectedMemory = getSelectedProductMemory(conversation);
-    if (selectedMemory?.product) {
-      console.log('[PURCHASE FOLLOWUP] selected_product="' + String(selectedMemory.product.title || '').replace(/"/g, '\\"') + '"');
-      return {
-        skipped: false,
-        response: buildSelectedProductPurchaseResponse(selectedMemory.product, selectedMemory.lastFilters || {}),
-        provider: 'system',
-        model: 'selected_product_purchase',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: [],
-        product_cards: [],
-        product_lookup_attempted: false,
-        product_search_text: ''
-      };
-    }
-  }
-
-  if (isPendingActionConfirmation(message)) {
-    const pendingAction = pendingActionMemory || getPendingActionMemory(conversation);
-    if (pendingAction) {
-      const pendingResult = await executePendingActionForConversation(pendingAction, message, {
-        effectiveConfig,
-        conversationHistory,
-        conversation,
-        apiKey: apiKeyForClassify,
-        provider
-      });
-      clearPendingActionMemory(conversation, 'executed');
-      if (pendingResult) return pendingResult;
-    } else {
-      console.log('[PENDING ACTION MISS] reason=no_pending_action');
-    }
-  }
-
-  if (isShortContextualReply(message) && !hasPendingActionMemory && !hasPendingProductSelection && !hasSelectedProductMemory) {
-    console.log('[CONTEXTUAL SHORT MESSAGE] action=clarify reason=no_pending_state');
-    return {
-      skipped: false,
-      response: 'Certo. Me diga o que voce quer consultar.',
-      provider: 'system',
-      model: 'contextual_short_reply_without_context',
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      processing_time_ms: 0,
-      product_images: [],
-      product_cards: [],
-      product_lookup_attempted: false,
-      product_search_text: ''
-    };
-  }
-
-  if (!isWithinWorkingHours(config, config.timezone || 'America/Sao_Paulo')) {
-    const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
-    saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
-    if (productContext.lookupAttempted) {
-      const productCards = productContext.productCards || [];
-      const cleanProductQuery = getProductSearchPhrase(message) || productContext.searchText || message;
-      saveLastProductSearchRequestMemory(conversation, message, cleanProductQuery);
-      if (productCards.length === 0) {
-        clearRecentProductsMemory(conversation, 'outside_hours_product_lookup_empty');
-        return {
-          skipped: false,
-          response: buildProductLookupEmptyResponse(cleanProductQuery),
-          provider: 'catalog',
-          model: 'product_lookup_empty',
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-          processing_time_ms: 0,
-          product_images: [],
-          product_cards: [],
-          product_lookup_attempted: true,
-          product_search_text: cleanProductQuery,
-          products_found: false
-        };
-      }
-      return {
-        skipped: false,
-        response: buildProductCardsResponse(productCards),
-        provider: 'catalog',
-        model: 'catalog_lookup',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: productContext.imageUrls || [],
-        product_cards: productCards,
-        product_lookup_attempted: true,
-        product_search_text: productContext.searchText || cleanProductQuery
-      };
-    }
-    return {
-      skipped: false,
-      response: buildOutsideWorkingHoursResponse(effectiveConfig),
-      provider: 'system',
-      model: 'outside_working_hours',
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      processing_time_ms: 0,
-      product_images: [],
-      product_cards: []
-    };
-  }
-
-  if (includesAnyKeyword(message, config.blacklist_keywords)) {
-    return { skipped: true, reason: 'Palavra bloqueada detectada' };
-  }
-
-  const todayUsage = await countTodayUsage(supabase, clientId);
-  const dailyLimit = config.daily_limit === null || config.daily_limit === undefined ? 50 : Number(config.daily_limit);
-  if (dailyLimit > 0 && todayUsage >= dailyLimit) {
-    const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
-    saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
-    if (productContext.lookupAttempted) {
-      const productCards = productContext.productCards || [];
-      console.log('[AI] Limite diario atingido, usando busca deterministica do catalogo | cards: ' + productCards.length);
-      return {
-        skipped: false,
-        response: productCards.length > 0
-          ? buildProductCardsResponse(productCards)
-          : productContext.productsFound
-            ? buildProductContextSummaryResponse(productContext, productContext.searchText || message)
-            : buildProductLookupEmptyResponse(productContext.searchText || message),
-        provider: 'catalog',
-        model: 'catalog_lookup',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: productContext.imageUrls || [],
-        product_cards: productCards,
-        product_lookup_attempted: true,
-        product_search_text: productContext.searchText || message
-      };
-    }
-    return {
-      skipped: false,
-      response: buildDailyLimitResponse(effectiveConfig),
-      provider: 'system',
-      model: 'daily_limit_reached',
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      processing_time_ms: 0,
-      product_images: [],
-      product_cards: []
-    };
-  }
-
-  // ─── NOVO: Classificação de intenção ────────────────────────────────────────
-  let customerIntent = buildCustomerIntentFromPlannerPlan(plannerShadowResult?.plan, message);
-  if (customerIntent) {
-    console.log('[INTENT FROM PLANNER] answer_type=' + plannerShadowResult.plan.answer_type
-      + ' intent=' + customerIntent.intent
-      + ' confidence=' + plannerShadowResult.plan.confidence
-      + ' query="' + (customerIntent.search_query || '') + '"');
-  } else {
-    customerIntent = await classifyCustomerIntent({
-      apiKey: apiKeyForClassify,
-      provider,
-      message,
-      conversationHistory,
-      config: effectiveConfig
-    });
-  }
-  customerIntent = coerceStockFollowupIntent(customerIntent, message, conversationHistory, conversation);
-  if ((customerIntent.intent === 'knowledge_question' || customerIntent.intent === 'general_message' || customerIntent.intent === 'clarification')
-    && isCatalogFollowUpRequest(message)
-    && getRecentCustomerProductRequest(conversationHistory, conversation)) {
-    const followUpQuery = getProductSearchPhrase(getRecentCustomerProductRequest(conversationHistory, conversation));
-    console.log('[CLASSIFY COERCE PRODUCT FOLLOWUP] from=' + customerIntent.intent + ' query="' + followUpQuery + '"');
-    customerIntent = {
-      ...customerIntent,
-      intent: 'product_followup',
-      source: 'recent_context',
-      search_query: followUpQuery,
-      question_type: 'product_search',
-      sources_needed: ['recent_products', 'product_api'],
-      operation: 'search',
-      reference: 'recent_products',
-      needs_clarification: false,
-      clarification_question: '',
-      entities: {
-        ...(customerIntent.entities || {}),
-        product: followUpQuery
-      }
-    };
-  }
-
-  // Log seguro da intenção completa (sem token)
-  console.log('[INTENT FULL] intent=' + customerIntent.intent
-    + ' qtype=' + (customerIntent.question_type || 'n/a')
-    + ' op=' + (customerIntent.operation || 'n/a')
-    + ' sources=' + JSON.stringify(customerIntent.sources_needed || [])
-    + ' query="' + (customerIntent.search_query || '') + '"'
-    + ' semantic="' + (customerIntent.semantic_query || '') + '"'
-    + ' theme="' + (customerIntent.theme || '') + '"'
-    + ' product_type="' + (customerIntent.product_type || '') + '"'
-    + ' allow_related=' + (customerIntent.allow_related_products === true ? 'true' : 'false')
-    + ' entities=' + JSON.stringify(customerIntent.entities || {}));
-
-  // ─── 1. Pedido/Rastreio ────────────────────────────────────────────────────
-  if (customerIntent.intent === 'order_lookup' || customerIntent.intent === 'tracking_lookup') {
-    const operationalContext = await buildOperationalContextForConfig(message, effectiveConfig, contact, conversation);
-    const operationalResponse = buildOperationalSummaryResponse(operationalContext, message);
-    if (operationalResponse) {
-      return {
-        skipped: false,
-        response: operationalResponse,
-        provider: 'integration',
-        model: 'facilzap_operational_lookup',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: [],
-        product_cards: [],
-        product_lookup_attempted: false,
-        product_search_text: ''
-      };
-    }
-    // Se integração não retornou dados, cai para LLM com contexto operacional
-  }
-
-  // ─── 2. Follow-up de estoque/tamanho contextual ──────────────────────────
-  if (customerIntent.question_type === 'stock_by_size_color' || customerIntent.intent === 'product_stock_followup') {
-    const recentStockAnswer = buildRecentProductStockAnswer(customerIntent, message, conversationHistory, conversation);
-    if (recentStockAnswer) {
-      console.log('[FOLLOWUP DECISION] structured_recent_stock=true model=' + recentStockAnswer.model);
-      return {
-        skipped: false,
-        response: recentStockAnswer.response,
-        provider: 'system',
-        model: recentStockAnswer.model,
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: [],
-        product_cards: [],
-        product_lookup_attempted: false,
-        product_search_text: ''
-      };
-    }
-  }
-
-  if (customerIntent.intent === 'product_stock_followup') {
-    // Guard: se a mensagem contém produto explícito, o LLM classificou errado.
-    // Redirecionar para product_search com a query extraída.
-    const _stockFollowupOverrideQuery = getProductSearchPhrase(message);
-    // Tentar responder com dados dos cards recentes antes de buscar
-    const _recentStockCtx = getReliableRecentProductStockContext(conversationHistory, conversation);
-    if (!_stockFollowupOverrideQuery && _recentStockCtx.length > 0) {
-      const requestedSizes = customerIntent.filters && customerIntent.filters.size
-        ? String(customerIntent.filters.size).split(',').map(s => s.trim()).filter(Boolean)
-        : extractRequestedSizes(message);
-      // Verificar se algum produto recente tem o tamanho pedido
-      const matchingProduct = requestedSizes.length > 0
-        ? _recentStockCtx.find(p => requestedSizes.some(s => p.sizes.includes(s)))
-        : _recentStockCtx[0];
-      if (matchingProduct) {
-        const sizeInfo = requestedSizes.length > 0
-          ? requestedSizes.join(', ')
-          : (matchingProduct.sizes.length > 0 ? matchingProduct.sizes.join(', ') : 'informado');
-        const stockInfo = matchingProduct.stock !== null ? String(matchingProduct.stock) : 'disponível';
-        const hasSizeInCard = requestedSizes.length === 0 || matchingProduct.sizes.some(s => requestedSizes.includes(s));
-        let stockResponse;
-        if (hasSizeInCard && matchingProduct.sizes.length > 0) {
-          stockResponse = `Pelo catalogo, esse modelo aparece com tamanho ${sizeInfo} e estoque ${stockInfo}.`
-            + (matchingProduct.sizes.length > 1
-              ? ''
-              : ' Nao tenho a separacao exata por tamanho, mas o estoque total e ' + stockInfo + '.');
-        } else {
-          stockResponse = `Esse produto aparece com tamanho ${sizeInfo} e estoque total ${stockInfo}.`;
-        }
-        console.log('[FOLLOWUP DECISION] stock_from_recent_card=true product="' + matchingProduct.title + '" sizes=' + JSON.stringify(matchingProduct.sizes) + ' stock=' + matchingProduct.stock);
-        return {
-          skipped: false,
-          response: stockResponse,
-          provider: 'system',
-          model: 'recent_card_stock',
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-          processing_time_ms: 0,
-          product_images: [],
-          product_cards: [],
-          product_lookup_attempted: false,
-          product_search_text: ''
-        };
-      }
-    }
-    if (_stockFollowupOverrideQuery) {
-      console.log('[FOLLOWUP DECISION] explicit_product=true reason=override_stock_followup query="' + _stockFollowupOverrideQuery + '"');
-      const _overrideQuery = customerIntent.search_query || _stockFollowupOverrideQuery;
-      console.log('[PRODUCT CLEAN QUERY] "' + _overrideQuery + '" (override from product_stock_followup)');
-      const _overrideContext = await buildProductContextForConfig(_overrideQuery, effectiveConfig, conversationHistory);
-      saveRecentProductsMemory(conversation, _overrideContext.product_context_products || _overrideContext.recent_products_data || []);
-      if (_overrideContext.lookupAttempted) {
-        const _overrideCards = _overrideContext.productCards || [];
-        if (_overrideCards.length > 0 || _overrideContext.productsFound) {
-          return {
-            skipped: false,
-            response: _overrideCards.length > 0
-              ? buildProductCardsResponse(_overrideCards)
-              : buildProductContextSummaryResponse(_overrideContext, _overrideContext.searchText || _overrideQuery),
-            provider: 'catalog',
-            model: 'catalog_lookup',
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-            processing_time_ms: 0,
-            product_images: _overrideContext.imageUrls || [],
-            product_cards: _overrideCards,
-            product_lookup_attempted: true,
-            product_search_text: _overrideContext.searchText || _overrideQuery
-          };
-        }
-      }
-      // Busca não encontrou nada: sai do bloco e cai para product_search/semântico abaixo
-    }
-    if (customerIntent.needs_clarification && !_stockFollowupOverrideQuery) {
-      const recentProductTitles = getRecentlySentProductTitles(conversationHistory);
-      const responseText = buildProductSelectionList(recentProductTitles);
-      return {
-        skipped: false,
-        response: responseText,
-        provider: 'system',
-        model: 'contextual_size_stock_question',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: [],
-        product_cards: [],
-        product_lookup_attempted: false,
-        product_search_text: ''
-      };
-    }
-    // Se tem produto específico e não precisa de clarificação, busca normal
-    if (customerIntent.reference === 'specific_product' && customerIntent.selected_product_index !== null) {
-      // Fase 2: responder com estoque exato. Por enquanto, cai para general_message.
-    }
-    // Sem produto específico: cai para LLM com contexto do histórico
-  }
-
-  // ─── 3. Follow-up de produto (mais opções, fotos) ───────────────────────
-  if (customerIntent.intent === 'product_followup') {
-    const lastProductRequest = getRecentCustomerProductRequest(conversationHistory, conversation);
-    // Tokens da mensagem atual — pode ser refinamento de tema, cor, tamanho ou modelo
-    const _followupCurrentTokens = getProductSearchPhrase(message);
-    const _followupHasOwnTokens = _followupCurrentTokens.length > 0;
-    if (lastProductRequest) {
-      const _followupBaseQuery = getProductSearchPhrase(lastProductRequest);
-      // Se a mensagem atual tem tokens próprios (refinamento/complemento),
-      // combinar com a busca anterior para formar query completa.
-      // Ex: combina o pedido anterior com o novo refinamento e deduplica tokens.
-      let cleanQuery = _followupBaseQuery;
-      if (_followupHasOwnTokens && _followupBaseQuery) {
-        // Verificar se a mensagem atual é busca ampla por tema (sem produto específico do contexto)
-        // Exemplos: perguntas amplas por tema/personagem sem categoria nova.
-        // Nesses casos NÃO herdar o produto anterior — usar só o tema
-        const _broadThemeOnly = /\b(tema|personagem|personagens|marca|estampa|licenciado|licenciada)\b/i.test(normalizeSearchText(message))
-          && !/\b(camisa|camiseta|blusa|vestido|saia|conjunto|moletom|body|roupa|pijama|jaqueta|casaco|bermuda|short|calca|cropped)\b/i.test(normalizeSearchText(message));
-        if (_broadThemeOnly) {
-          cleanQuery = _followupCurrentTokens;
-          console.log('[CONTEXT MERGE] broad_theme=true, ignorando produto anterior. query="' + cleanQuery + '"');
-        } else {
-          const baseTokens = _followupBaseQuery.split(' ').filter(Boolean);
-          const currentTokens = _followupCurrentTokens.split(' ').filter(Boolean);
-          // Merge sem duplicatas (por inclusão de substring)
-          const merged = [...baseTokens];
-          for (const t of currentTokens) {
-            if (!merged.some(b => b.includes(t) || t.includes(b))) {
-              merged.push(t);
-            }
-          }
-          cleanQuery = merged.slice(0, 6).join(' ');
-          console.log('[CONTEXT MERGE] previous="' + _followupBaseQuery + '" current="' + _followupCurrentTokens + '" merged="' + cleanQuery + '"');
-        } // fim else merge
-      } else if (_followupHasOwnTokens && !_followupBaseQuery) {
-        // Sem histórico de produto, usar só os tokens atuais
-        cleanQuery = _followupCurrentTokens;
-      }
-      console.log('[FOLLOWUP DECISION] explicit_product=' + _followupHasOwnTokens + ' reason=product_followup query="' + cleanQuery + '"');
-      if (cleanQuery) {
-        console.log('[PRODUCT CLEAN QUERY] "' + cleanQuery + '" (product_followup)');
-        const followupLookupMessage = _followupHasOwnTokens ? cleanQuery : message;
-        const productContext = await buildProductContextForConfig(followupLookupMessage, effectiveConfig, conversationHistory, { baseProductRequest: lastProductRequest, conversation });
-        saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
-        if (productContext.lookupAttempted) {
-          const productCards = productContext.productCards || [];
-          if (productCards.length > 0 || productContext.productsFound) {
-            return {
-              skipped: false,
-              response: productCards.length > 0
-                ? buildProductCardsResponse(productCards)
-                : buildProductContextSummaryResponse(productContext, productContext.searchText || cleanQuery),
-              provider: 'catalog',
-              model: 'catalog_lookup',
-              prompt_tokens: 0,
-              completion_tokens: 0,
-              total_tokens: 0,
-              processing_time_ms: 0,
-              product_images: productContext.imageUrls || [],
-              product_cards: productCards,
-              product_lookup_attempted: true,
-              product_search_text: productContext.searchText || cleanQuery
-            };
-          }
-          // Não encontrou nada na busca literal — tentar semântico se há tema
-          // (cai para product_search abaixo com a mesma query combinada)
-          if (_followupHasOwnTokens) {
-            console.log('[FOLLOWUP DECISION] explicit_product=true reason=followup_no_cards_try_semantic');
-            // Reprocessar como product_search para acionar semântico
-            const _semCards = productContext.productCards || [];
-            const _semAllCollected = productContext.allProductsCollected || [];
-            const _semQuery =
-              (customerIntent.semantic_query && String(customerIntent.semantic_query).trim()) ||
-              cleanQuery;
-            const _semThemeToken = customerIntent.theme ? normalizeSearchText(String(customerIntent.theme)) : '';
-            const _semCardsAtendeTema = _semThemeToken
-              ? _semCards.some(card => {
-                  const h = normalizeSearchText([card.title, card.description].join(' '));
-                  return h.includes(_semThemeToken) || _semThemeToken.split(' ').some(t => t.length >= 4 && h.includes(t));
-                })
-              : true;
-            const _semDecisionReason = _semCards.length === 0
-              ? 'cards_zero'
-              : (!_semCardsAtendeTema && _semThemeToken ? 'cards_sem_tema' : 'nao_necessario');
-            const _canSem = (
-              _semDecisionReason !== 'nao_necessario' &&
-              _semAllCollected.length > 0 &&
-              _semQuery.length > 0 &&
-              isUsableProviderApiKey(provider, apiKeyForClassify)
-            );
-            console.log('[SEMANTIC DECISION] reason=' + _semDecisionReason + ' | canRun=' + _canSem + ' | candidatos=' + _semAllCollected.length);
-            if (_canSem) {
-              console.log('[SEMANTIC RANK] candidatos: ' + _semAllCollected.length + ' | query: "' + _semQuery + '"');
-              const _semResult = await semanticRankProducts(_semAllCollected, customerIntent, _semQuery, apiKeyForClassify, provider);
-              console.log('[SEMANTIC RANK] matches: ' + ((_semResult.productCards || []).length));
-              if (_semResult.productCards && _semResult.productCards.length > 0) {
-                const _semCardsImg = _semResult.productCards.filter(c => c.imageUrl);
-                const _semCardsTxt = _semResult.productCards.filter(c => !c.imageUrl);
-                const _semNoteText = buildRelatedProductsNote(cleanQuery || _semQuery, customerIntent);
-                saveRecentProductsMemory(conversation, _semResult.products || []);
-                console.log('[SEMANTIC CARDS] cards com imagem: ' + _semCardsImg.length + ' | sem imagem: ' + _semCardsTxt.length);
-                if (_semCardsImg.length > 0) {
-                  return {
-                    skipped: false,
-                    response: _semNoteText + '\n\n' + buildProductCardsResponse(_semCardsImg),
-                    provider: 'catalog',
-                    model: 'semantic_catalog_lookup',
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    total_tokens: 0,
-                    processing_time_ms: 0,
-                    product_images: _semCardsImg.map(c => c.imageUrl).filter(Boolean),
-                    product_cards: _semCardsImg,
-                    product_lookup_attempted: true,
-                    product_search_text: _semQuery,
-                    products_found: true,
-                    semantic_rank_used: true
-                  };
-                }
-                const _semListaTxt = _semCardsTxt.map(c => '• ' + c.title + (c.description ? ' — ' + c.description : '')).join('\n');
-                return {
-                  skipped: false,
-                  response: _semNoteText + '\n\n' + _semListaTxt,
-                  provider: 'catalog',
-                  model: 'semantic_catalog_lookup_text',
-                  prompt_tokens: 0,
-                  completion_tokens: 0,
-                  total_tokens: 0,
-                  processing_time_ms: 0,
-                  product_images: [],
-                  product_cards: [],
-                  product_lookup_attempted: true,
-                  product_search_text: _semQuery,
-                  products_found: true,
-                  semantic_rank_used: true
-                };
-              }
-            }
-          }
-          console.log('[FOLLOWUP LOOKUP EMPTY] query="' + cleanQuery.replace(/"/g, '\\"') + '"');
-          clearRecentProductsMemory(conversation, 'product_followup_lookup_empty');
-          clearPendingActionMemory(conversation, 'product_followup_lookup_empty');
-          return {
-            skipped: false,
-            response: buildProductLookupEmptyResponse(cleanQuery),
-            provider: 'catalog',
-            model: 'product_followup_lookup_empty',
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-            processing_time_ms: 0,
-            product_images: [],
-            product_cards: [],
-            product_lookup_attempted: true,
-            product_search_text: productContext.searchText || cleanQuery
-          };
-        }
-      }
-    }
-    // Sem query clara: cai para LLM com histórico
-  }
-
-  // ─── 4. Busca de produto novo ────────────────────────────────────────────
-  if (customerIntent.intent === 'product_search') {
-    const cleanQuery = customerIntent.search_query || getProductSearchPhrase(message);
-    console.log('[PRODUCT CLEAN QUERY] "' + cleanQuery + '"');
-    if (cleanQuery) {
-      const ragObservationQuery = [message, cleanQuery].filter(Boolean).join(' ');
-      saveLastProductSearchRequestMemory(conversation, message, cleanQuery);
-      const activeRagCards = customerIntent.source === 'semantic_planner'
-        ? (plannerShadowResult?.ragBundle?.product_cards || [])
-        : [];
-      const activeRagProducts = customerIntent.source === 'semantic_planner'
-        ? dedupeRecentProductContext(plannerShadowResult?.ragBundle?.products || [])
-        : [];
-      if (activeRagCards.length > 0) {
-        console.log('[PLANNER RAG PRODUCT ANSWER] source=active_rag cards=' + activeRagCards.length + ' products=' + activeRagProducts.length);
-        saveRecentProductsMemory(conversation, activeRagProducts);
-        return {
-          skipped: false,
-          response: buildProductCardsResponse(activeRagCards),
-          provider: 'catalog',
-          model: 'planner_rag_catalog_lookup',
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-          processing_time_ms: 0,
-          product_images: activeRagCards.map(card => card.imageUrl).filter(Boolean),
-          product_cards: activeRagCards,
-          product_lookup_attempted: true,
-          product_search_text: cleanQuery,
-          products_found: true,
-          planner_rag_used: true
-        };
-      }
-      const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory, {
-        ragObservationQuery,
-        conversation,
-        forceRagPrefilter: customerIntent.source === 'semantic_planner'
-      });
-      saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
-      if (productContext.lookupAttempted) {
-        const productCards = productContext.productCards || [];
-        if (productCards.length > 0 || productContext.productsFound) {
-          return {
-            skipped: false,
-            response: productCards.length > 0
-              ? buildProductCardsResponse(productCards)
-              : buildProductContextSummaryResponse(productContext, productContext.searchText || cleanQuery),
-            provider: 'catalog',
-            model: 'catalog_lookup',
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-            processing_time_ms: 0,
-            product_images: productContext.imageUrls || [],
-            product_cards: productCards,
-            product_lookup_attempted: true,
-            product_search_text: productContext.searchText || cleanQuery
-          };
-        }
-
-        // ── FALLBACK SEMÂNTICO ────────────────────────────────────────────────
-        // Ativa se:
-        //   1. intent === 'product_search' (garantido pelo if externo)
-        //   2. allProductsCollected.length > 0 (catálogo coletou produtos)
-        //   3. semanticQuery não vazio (sem usar message bruta/normalizada)
-        //   4. allow_related_products !== false
-        //   5. API key válida
-        //   E uma das condições:
-        //   A) productCards.length === 0 (busca normal não achou nada), OU
-        //   B) customerIntent.theme existe e nenhum card encontrado tem relação com o tema
-        let allProductsCollected = (productContext.allProductsCollected || []);
-        // Se a API não retornou nenhum candidato mas há um product_type definido,
-        // tentar busca ampliada com apenas o tipo (ex: "roupa" ou "camiseta")
-        // para ter candidatos para o semântico avaliar semanticamente.
-        if (allProductsCollected.length === 0 && customerIntent.product_type && isUsableProviderApiKey(provider, apiKeyForClassify)) {
-          const broadQuery = normalizeSearchText(String(customerIntent.product_type)).split(' ').slice(0, 2).join(' ');
-          if (broadQuery && broadQuery !== cleanQuery) {
-            console.log('[SEMANTIC DECISION] allProductsCollected=0 tentando busca ampliada com product_type="' + broadQuery + '"');
-            const broadContext = await buildProductContextForConfig(broadQuery, effectiveConfig, conversationHistory);
-            saveRecentProductsMemory(conversation, broadContext.product_context_products || broadContext.recent_products_data || []);
-            if (broadContext.allProductsCollected && broadContext.allProductsCollected.length > 0) {
-              allProductsCollected = broadContext.allProductsCollected;
-              console.log('[SEMANTIC DECISION] busca ampliada retornou ' + allProductsCollected.length + ' candidatos');
-            } else if (broadContext.productCards && broadContext.productCards.length > 0) {
-              // Usar os products dos cards como candidatos
-              allProductsCollected = broadContext.allProductsCollected || [];
-              console.log('[SEMANTIC DECISION] busca ampliada retornou cards diretos: ' + (broadContext.productCards || []).length);
-            }
-          }
-        }
-        const semanticQuery =
-          (customerIntent.semantic_query && String(customerIntent.semantic_query).trim()) ||
-          (customerIntent.search_query && String(customerIntent.search_query).trim()) ||
-          getProductSearchPhrase(cleanQuery) ||
-          '';
-        // Verificar se os cards encontrados atendem o tema pedido
-        const themeToken = customerIntent.theme ? normalizeSearchText(String(customerIntent.theme)) : '';
-        const cardsAtendeTema = themeToken
-          ? productCards.some(card => {
-              const haystack = normalizeSearchText([card.title, card.description].join(' '));
-              return haystack.includes(themeToken) || themeToken.split(' ').some(t => t.length >= 4 && haystack.includes(t));
-            })
-          : true; // sem tema definido: considera atendido
-        const semDecisionReason = productCards.length === 0
-          ? 'cards_zero'
-          : (!cardsAtendeTema && themeToken ? 'cards_sem_tema' : 'nao_necessario');
-        const canTrySemanticRank = (
-          semDecisionReason !== 'nao_necessario' &&
-          allProductsCollected.length > 0 &&
-          semanticQuery.length > 0 &&
-          customerIntent.allow_related_products !== false &&
-          isUsableProviderApiKey(provider, apiKeyForClassify)
-        );
-        console.log('[SEMANTIC DECISION] reason=' + semDecisionReason
-          + ' | theme="' + themeToken + '"'
-          + ' | cards=' + productCards.length
-          + ' | candidatos=' + allProductsCollected.length
-          + ' | canRun=' + canTrySemanticRank);
-        if (canTrySemanticRank) {
-          console.log('[SEMANTIC RANK] candidatos: ' + allProductsCollected.length + ' | query: "' + semanticQuery + '"');
-          const semanticResult = await semanticRankProducts(
-            allProductsCollected,
-            customerIntent,
-            semanticQuery,
-            apiKeyForClassify,
-            provider
-          );
-          console.log('[SEMANTIC RANK] matches: ' + ((semanticResult.productCards || []).length));
-          if (semanticResult.productCards && semanticResult.productCards.length > 0) {
-            // Separar cards com e sem imageUrl para não prometer foto quando não há imagem
-            const cardsComImagem = semanticResult.productCards.filter(c => c.imageUrl);
-            const cardsSemImagem = semanticResult.productCards.filter(c => !c.imageUrl);
-            const noteText = buildRelatedProductsNote(cleanQuery || semanticQuery, customerIntent);
-            saveRecentProductsMemory(conversation, semanticResult.products || []);
-            console.log('[SEMANTIC CARDS] cards com imagem: ' + cardsComImagem.length + ' | sem imagem: ' + cardsSemImagem.length);
-            if (cardsComImagem.length > 0) {
-              // Retorna product_cards + response com buildProductCardsResponse
-              // para que o sistema envie o carrossel direto, sem passar pelo LLM
-              return {
-                skipped: false,
-                response: noteText + '\n\n' + buildProductCardsResponse(cardsComImagem),
-                provider: 'catalog',
-                model: 'semantic_catalog_lookup',
-                prompt_tokens: 0,
-                completion_tokens: 0,
-                total_tokens: 0,
-                processing_time_ms: 0,
-                product_images: cardsComImagem.map(c => c.imageUrl).filter(Boolean),
-                product_cards: cardsComImagem,
-                product_lookup_attempted: true,
-                product_search_text: semanticQuery,
-                products_found: true,
-                semantic_rank_used: true
-              };
-            }
-            // Só cards sem imagem: resumo textual, sem prometer foto
-            const listaTexto = cardsSemImagem.map(c => '• ' + c.title + (c.description ? ' — ' + c.description : '')).join('\n');
-            return {
-              skipped: false,
-              response: noteText + '\n\n' + listaTexto,
-              provider: 'catalog',
-              model: 'semantic_catalog_lookup_text',
-              prompt_tokens: 0,
-              completion_tokens: 0,
-              total_tokens: 0,
-              processing_time_ms: 0,
-              product_images: [],
-              product_cards: [],
-              product_lookup_attempted: true,
-              product_search_text: semanticQuery,
-              products_found: true,
-              semantic_rank_used: true
-            };
-          }
-        }
-        // ── FIM FALLBACK SEMÂNTICO ────────────────────────────────────────────
-
-        // Se chegou aqui: busca literal falhou E semântico falhou/não pôde rodar.
-        // Resposta humana sem termos técnicos, sem passar pelo LLM.
-        if (productContext.lookupAttempted) {
-          const _humanFallbackQuery = cleanQuery || semanticQuery || '';
-          console.log('[PRODUCT FALLBACK HUMAN] reason=semantic_failed query="' + _humanFallbackQuery + '"');
-          clearRecentProductsMemory(conversation, 'product_lookup_empty');
-          savePendingActionMemory(conversation, {
-            type: 'search_related_products',
-            originalQuery: _humanFallbackQuery,
-            semanticQuery: buildRelatedSemanticQuery(_humanFallbackQuery, customerIntent),
-            allow_related_products: true,
-            customerIntent: {
-              ...customerIntent,
-              allow_related_products: true
-            }
-          });
-          return {
-            skipped: false,
-            response: buildProductLookupEmptyResponse(_humanFallbackQuery),
-            provider: 'catalog',
-            model: 'product_lookup_empty',
-            prompt_tokens: 0,
-            completion_tokens: 0,
-            total_tokens: 0,
-            processing_time_ms: 0,
-            product_images: [],
-            product_cards: [],
-            product_lookup_attempted: true,
-            product_search_text: _humanFallbackQuery,
-            products_found: false
-          };
-        }
-      }
-    }
-    // Se cleanQuery estiver vazio: cai para LLM normal
-  }
-
-  // ─── 5. Base de conhecimento ─────────────────────────────────────────────
-  if (customerIntent.intent === 'knowledge_question') {
-    const searchQuery = customerIntent.search_query || message;
-    const siteContext = await buildSiteContextForConfig(searchQuery, effectiveConfig);
-    if (siteContext.contextText) {
-      // Se tem API key válida, deixa o LLM responder com contexto do site
-      // Se não, responde deterministicamente com o resumo
-      if (!isUsableProviderApiKey(provider, apiKeyForClassify)) {
-        return {
-          skipped: false,
-          response: buildSiteContextSummaryResponse(siteContext),
-          provider: 'site',
-          model: 'site_lookup',
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-          processing_time_ms: 0,
-          product_images: [],
-          product_cards: []
-        };
-      }
-      // Com API key, o contexto será injetado no callOpenAI/callClaude
-    }
-  }
-
-  // ─── 6. Mensagem geral ou clarificação ──────────────────────────────────
-  if (customerIntent.intent === 'clarification') {
-    return {
-      skipped: false,
-      response: customerIntent.clarification_question || 'Pode me dar mais detalhes?',
-      provider: 'system',
-      model: 'clarification',
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      processing_time_ms: 0,
-      product_images: [],
-      product_cards: []
-    };
-  }
-
-  // ─── Fallback: fluxo existente de LLM ────────────────────────────────────
-  const apiKey = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
-  if (!isUsableProviderApiKey(provider, apiKey)) {
-    const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
-    saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
-    if (productContext.lookupAttempted) {
-      const productCards = productContext.productCards || [];
-      console.log('[AI] API key invalida ou ausente, usando busca deterministica do catalogo | provider: ' + provider + ' | cards: ' + productCards.length);
-      return {
-        skipped: false,
-        response: productCards.length > 0
-          ? buildProductCardsResponse(productCards)
-          : productContext.productsFound
-            ? buildProductContextSummaryResponse(productContext, productContext.searchText || message)
-            : buildProductLookupEmptyResponse(productContext.searchText || message),
-        provider: 'catalog',
-        model: 'catalog_lookup',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: productContext.imageUrls || [],
-        product_cards: productCards,
-        product_lookup_attempted: true,
-        product_search_text: productContext.searchText || message
-      };
-    }
-    const siteContext = await buildSiteContextForConfig(message, effectiveConfig);
-    if (siteContext.contextText) {
-      return {
-        skipped: false,
-        response: buildSiteContextSummaryResponse(siteContext),
-        provider: 'site',
-        model: 'site_lookup',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: [],
-        product_cards: []
-      };
-    }
-    return {
-      skipped: false,
-      response: buildAIUnavailableResponse(effectiveConfig),
-      provider,
-      model: 'api_key_unavailable',
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      processing_time_ms: 0,
-      product_images: [],
-      product_cards: []
-    };
-  }
-
-  try {
-    const result = provider === 'claude'
-      ? await callClaude({
-          apiKey,
-          config: effectiveConfig,
-          input: message,
-          systemPrompt,
-          media,
-          conversationHistory,
-          contact,
-          conversation
-        })
-      : await callOpenAI({ apiKey, config: effectiveConfig, input: message, systemPrompt, media, conversationHistory, contact, conversation });
-
-    // Nunca sobrescrever a resposta do LLM com texto técnico.
-    // Se o LLM respondeu e não há product_cards, aceitar a resposta normalizada.
-    result.response = normalizeProductMediaResponse(
-      suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation),
-      result.product_cards
-    );
-
     await logAIResult(supabase, {
       client_id: clientId,
       conversation_id: conversation?.id,
       input_message: message,
       status: 'success',
-      ...result
+      ...groundedResult
     });
-
-    return { skipped: false, ...result };
+    return groundedResult;
   } catch (error) {
+    console.warn('[CONFIDENCE GUARDRAIL] ' + JSON.stringify({
+      conversationId: conversation?.id || '',
+      step: 'guardrail',
+      inputSummary: String(message || '').slice(0, 160),
+      outputSummary: 'Me passa mais um detalhe para eu conseguir te ajudar melhor?',
+      confidence: 0.2,
+      sourcesUsed: [],
+      decision: 'erro no fluxo retrieval-grounded; fallback seguro sem handoff',
+      timestamp: new Date().toISOString()
+    }));
     await logAIResult(supabase, {
       client_id: clientId,
       conversation_id: conversation?.id,
@@ -8919,92 +8137,11 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       status: 'error',
       error_message: error.message
     });
-
-    const apiKeyError = /incorrect api key|invalid api key|api key.*invalid|401/i.test(String(error.message || ''));
-    if (apiKeyError) {
-      const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
-      saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
-      const productCards = productContext.productCards || [];
-      if (productContext.lookupAttempted) {
-        console.log('[AI] API key rejeitada pelo provedor, usando busca deterministica do catalogo | cards: ' + productCards.length);
-        return {
-          skipped: false,
-          response: productCards.length > 0
-            ? buildProductCardsResponse(productCards)
-            : productContext.productsFound
-              ? buildProductContextSummaryResponse(productContext, productContext.searchText || message)
-              : buildProductLookupEmptyResponse(productContext.searchText || message),
-          provider: 'catalog',
-          model: 'catalog_lookup',
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-          processing_time_ms: 0,
-          product_images: productContext.imageUrls || [],
-          product_cards: productCards,
-          product_lookup_attempted: true,
-          product_search_text: productContext.searchText || message
-        };
-      }
-      const siteContext = await buildSiteContextForConfig(message, effectiveConfig);
-      if (siteContext.contextText) {
-        return {
-          skipped: false,
-          response: buildSiteContextSummaryResponse(siteContext),
-          provider: 'site',
-          model: 'site_lookup',
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-          processing_time_ms: 0,
-          product_images: [],
-          product_cards: []
-        };
-      }
-      return {
-        skipped: false,
-        response: buildAIUnavailableResponse(effectiveConfig),
-        provider,
-        model: 'api_key_unavailable',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: [],
-        product_cards: []
-      };
-    }
-
-    const productContext = await buildProductContextForConfig(message, effectiveConfig, conversationHistory);
-    saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
-    const productCards = productContext.productCards || [];
-    if (productContext.lookupAttempted) {
-      console.log('[AI] Erro no provedor, usando busca deterministica do catalogo | erro: ' + error.message + ' | cards: ' + productCards.length);
-      return {
-        skipped: false,
-        response: productCards.length > 0
-          ? buildProductCardsResponse(productCards)
-          : productContext.productsFound
-            ? buildProductContextSummaryResponse(productContext, productContext.searchText || message)
-            : buildAIProviderErrorResponse(effectiveConfig),
-        provider: 'catalog',
-        model: productCards.length > 0 ? 'catalog_lookup' : 'provider_error_fallback',
-        prompt_tokens: 0,
-        completion_tokens: 0,
-        total_tokens: 0,
-        processing_time_ms: 0,
-        product_images: productContext.imageUrls || [],
-        product_cards: productCards,
-        product_lookup_attempted: true,
-        product_search_text: productContext.searchText || message
-      };
-    }
-
     return {
       skipped: false,
-      response: buildAIProviderErrorResponse(effectiveConfig),
-      provider,
-      model: 'provider_error_fallback',
+      response: 'Me passa mais um detalhe para eu conseguir te ajudar melhor?',
+      provider: 'retrieval_grounded_agent',
+      model: 'retrieval_grounded_safe_fallback',
       prompt_tokens: 0,
       completion_tokens: 0,
       total_tokens: 0,
@@ -9013,6 +8150,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       product_cards: []
     };
   }
+
+
 }
 module.exports = {
   generateAIResponse

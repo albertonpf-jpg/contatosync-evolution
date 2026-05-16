@@ -1511,19 +1511,64 @@ async function executeAgenticRagTools(plan = {}, state = {}, context = {}) {
     if (name === 'search_vector_products') {
       const result = await searchVectorProducts(clientId, tool.args?.query || query, tool.args || {}, context);
       const hydrated = await hydrateProductsFromApiOrCache(clientId, result.results || [], config, context);
-      bundle.products.push(...hydrated);
+      const filtered = filterHydratedVectorProductsForQuery(hydrated, tool.args?.query || query);
+      bundle.products.push(...filtered.filtered);
       bundle.tools_used.push({ tool: name, status: result.skipped ? 'skipped' : 'executed', reason: result.reason || '' });
+      console.log('[AGENT EVIDENCE] tool=' + name
+        + ' results=' + ((result.results || []).length)
+        + ' hydrated=' + hydrated.length
+        + ' filtered=' + filtered.filtered.length
+        + ' rejected=' + filtered.rejected.length);
       continue;
     }
     if (name === 'hydrate_products_from_api' || name === 'search_product_api' || name === 'filter_products_by_size') {
-      bundle.tools_used.push({ tool: name, status: 'skipped', reason: 'product_rag_active_flow_disabled_by_default' });
-      console.log('[AGENT TOOL] name=' + name + ' status=skipped reason=product_rag_active_flow_disabled_by_default');
+      const productQuery = String(tool.args?.query || query || '').trim();
+      const configuredSources = buildProductSourcesForConfig(config);
+      const vectorProductHints = bundle.products
+        .map(product => ({
+          title: product.title || '',
+          titleKey: normalizeSearchText(product.title || ''),
+          productId: product.id || product.product_id || ''
+        }))
+        .filter(hint => hint.titleKey);
+      const productContext = await fetchProductContext(productQuery, configuredSources, { vectorProductHints });
+      bundle.product_cards.push(...(productContext.productCards || []));
+      bundle.products.push(...(productContext.product_context_products || productContext.recent_products_data || []));
+      bundle.productFacts.push('product_cards=' + ((productContext.productCards || []).length));
+      bundle.productFacts.push('products_found=' + (productContext.productsFound === true ? 'true' : 'false'));
+      bundle.tools_used.push({ tool: name, status: 'executed', reason: 'product_api_consulted_by_active_rag' });
+      console.log('[AGENT EVIDENCE] tool=' + name
+        + ' product_cards=' + ((productContext.productCards || []).length)
+        + ' products=' + ((productContext.product_context_products || productContext.recent_products_data || []).length));
       continue;
     }
     bundle.tools_used.push({ tool: name, status: 'skipped', reason: 'not_implemented_in_universal_router_yet' });
     console.log('[AGENT TOOL] name=' + name + ' status=skipped reason=not_implemented_in_universal_router_yet');
   }
+  if (['product_search', 'product_info', 'variation', 'selection'].includes(plan.answer_type)
+    && bundle.product_cards.length === 0) {
+    const productQuery = String(plan.search_query || plan.semantic_query || query || '').trim();
+    if (productQuery) {
+      console.log('[AGENT TOOL] name=search_product_api status=started reason=planner_product_active_default');
+      const configuredSources = buildProductSourcesForConfig(config);
+      const vectorProductHints = bundle.products
+        .map(product => ({
+          title: product.title || '',
+          titleKey: normalizeSearchText(product.title || ''),
+          productId: product.id || product.product_id || ''
+        }))
+        .filter(hint => hint.titleKey);
+      const productContext = await fetchProductContext(productQuery, configuredSources, { vectorProductHints });
+      bundle.product_cards.push(...(productContext.productCards || []));
+      bundle.products.push(...(productContext.product_context_products || productContext.recent_products_data || []));
+      bundle.productFacts.push('active_default_product_cards=' + ((productContext.productCards || []).length));
+      bundle.tools_used.push({ tool: 'search_product_api', status: 'executed', reason: 'planner_product_active_default' });
+      console.log('[AGENT EVIDENCE] tool=search_product_api product_cards=' + ((productContext.productCards || []).length)
+        + ' products=' + ((productContext.product_context_products || productContext.recent_products_data || []).length));
+    }
+  }
   bundle.confidence = bundle.directFacts.length > 0 ? 'high' : (bundle.contextFacts.length > 0 ? 'medium' : 'low');
+  if (bundle.product_cards.length > 0 || bundle.products.length > 0) bundle.confidence = 'high';
   return bundle;
 }
 
@@ -6133,15 +6178,22 @@ async function answerPlannerShadowMode(context = {}) {
   if (!plan) return null;
   const evidenceBundle = executePlannerToolsShadow(plan, conversationState, context);
   const config = context.effectiveConfig || context.config || {};
-  if (getRagFlag(config, 'rag_agent_shadow_enabled', 'RAG_AGENT_SHADOW_ENABLED', false) && shouldUseAgenticRag(plan, config)) {
+  let ragBundle = null;
+  if (shouldUseAgenticRag(plan, config)) {
     try {
-      await executeAgenticRagTools(plan, conversationState, context);
+      ragBundle = await executeAgenticRagTools(plan, conversationState, context);
+      console.log('[PLANNER RAG ACTIVE] answer_type=' + plan.answer_type
+        + ' confidence=' + (ragBundle?.confidence || 'low')
+        + ' products=' + ((ragBundle?.products || []).length)
+        + ' cards=' + ((ragBundle?.product_cards || []).length)
+        + ' directFacts=' + ((ragBundle?.directFacts || []).length)
+        + ' contextFacts=' + ((ragBundle?.contextFacts || []).length));
     } catch (error) {
-      console.warn('[AGENT TOOL] status=shadow_error message=' + String(error?.message || error).slice(0, 180));
+      console.warn('[AGENT TOOL] status=active_error message=' + String(error?.message || error).slice(0, 180));
     }
   }
   logPlannerShadowResult(plan, evidenceBundle, { ms: Date.now() - startedAt });
-  return { plan, evidenceBundle, conversationState };
+  return { plan, evidenceBundle, ragBundle, conversationState };
 }
 
 function shouldUsePlannerForStorePolicy(plan = {}) {
@@ -7355,7 +7407,7 @@ async function buildProductContextForConfig(message, config, conversationHistory
     ? extractPreviouslyMentionedProductTitles(conversationHistory)
     : [];
   const ragObservationQuery = String(options.ragObservationQuery || (isCatalogFollowUpRequest(message) ? searchText : message) || searchText || '').trim();
-  const productPrefilterEnabled = shouldSearch && getRagFlag(config, 'rag_product_prefilter_enabled', 'RAG_PRODUCT_PREFILTER_ENABLED', false);
+  const productPrefilterEnabled = shouldSearch && (options.forceRagPrefilter === true || getRagFlag(config, 'rag_product_prefilter_enabled', 'RAG_PRODUCT_PREFILTER_ENABLED', false));
   const vectorProductHints = productPrefilterEnabled
     ? await getRagProductPrefilterHints(ragObservationQuery || searchText, config)
     : [];
@@ -8464,7 +8516,37 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     if (cleanQuery) {
       const ragObservationQuery = [message, cleanQuery].filter(Boolean).join(' ');
       saveLastProductSearchRequestMemory(conversation, message, cleanQuery);
-      const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory, { ragObservationQuery, conversation });
+      const activeRagCards = customerIntent.source === 'semantic_planner'
+        ? (plannerShadowResult?.ragBundle?.product_cards || [])
+        : [];
+      const activeRagProducts = customerIntent.source === 'semantic_planner'
+        ? dedupeRecentProductContext(plannerShadowResult?.ragBundle?.products || [])
+        : [];
+      if (activeRagCards.length > 0) {
+        console.log('[PLANNER RAG PRODUCT ANSWER] source=active_rag cards=' + activeRagCards.length + ' products=' + activeRagProducts.length);
+        saveRecentProductsMemory(conversation, activeRagProducts);
+        return {
+          skipped: false,
+          response: buildProductCardsResponse(activeRagCards),
+          provider: 'catalog',
+          model: 'planner_rag_catalog_lookup',
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          processing_time_ms: 0,
+          product_images: activeRagCards.map(card => card.imageUrl).filter(Boolean),
+          product_cards: activeRagCards,
+          product_lookup_attempted: true,
+          product_search_text: cleanQuery,
+          products_found: true,
+          planner_rag_used: true
+        };
+      }
+      const productContext = await buildProductContextForConfig(cleanQuery, effectiveConfig, conversationHistory, {
+        ragObservationQuery,
+        conversation,
+        forceRagPrefilter: customerIntent.source === 'semantic_planner'
+      });
       saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
       if (productContext.lookupAttempted) {
         const productCards = productContext.productCards || [];

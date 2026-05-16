@@ -6383,6 +6383,14 @@ function saveRecentProductsMemory(conversation = {}, products = []) {
   console.log('[RECENT PRODUCTS MEMORY SAVE] conv=' + key + ' count=' + safeProducts.length);
 }
 
+function clearRecentProductsMemory(conversation = {}, reason = 'manual') {
+  const key = getConversationMemoryKey(conversation);
+  if (!key) return;
+  if (recentProductsByConversation.delete(key)) {
+    console.log('[RECENT PRODUCTS MEMORY CLEAR] conv=' + key + ' reason=' + reason);
+  }
+}
+
 function getRecentProductsMemory(conversation = {}) {
   const key = getConversationMemoryKey(conversation);
   if (!key) {
@@ -7791,13 +7799,31 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     saveRecentProductsMemory(conversation, productContext.product_context_products || productContext.recent_products_data || []);
     if (productContext.lookupAttempted) {
       const productCards = productContext.productCards || [];
+      const cleanProductQuery = getProductSearchPhrase(message) || productContext.searchText || message;
+      saveLastProductSearchRequestMemory(conversation, message, cleanProductQuery);
+      if (productCards.length === 0) {
+        clearRecentProductsMemory(conversation, 'outside_hours_product_lookup_empty');
+        return {
+          skipped: false,
+          response: buildProductLookupEmptyResponse(cleanProductQuery),
+          provider: 'catalog',
+          model: 'product_lookup_empty',
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          processing_time_ms: 0,
+          product_images: [],
+          product_cards: [],
+          product_lookup_attempted: true,
+          product_search_text: cleanProductQuery,
+          products_found: false
+        };
+      }
       return {
         skipped: false,
-        response: productCards.length > 0
-          ? buildProductCardsResponse(productCards)
-          : buildOutsideWorkingHoursResponse(effectiveConfig),
+        response: buildProductCardsResponse(productCards),
         provider: 'catalog',
-        model: productCards.length > 0 ? 'catalog_lookup' : 'outside_working_hours',
+        model: 'catalog_lookup',
         prompt_tokens: 0,
         completion_tokens: 0,
         total_tokens: 0,
@@ -7805,7 +7831,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         product_images: productContext.imageUrls || [],
         product_cards: productCards,
         product_lookup_attempted: true,
-        product_search_text: productContext.searchText || message
+        product_search_text: productContext.searchText || cleanProductQuery
       };
     }
     return {
@@ -8196,6 +8222,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
             }
           }
           console.log('[FOLLOWUP LOOKUP EMPTY] query="' + cleanQuery.replace(/"/g, '\\"') + '"');
+          clearRecentProductsMemory(conversation, 'product_followup_lookup_empty');
           clearPendingActionMemory(conversation, 'product_followup_lookup_empty');
           return {
             skipped: false,
@@ -8369,6 +8396,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         if (productContext.lookupAttempted) {
           const _humanFallbackQuery = cleanQuery || semanticQuery || '';
           console.log('[PRODUCT FALLBACK HUMAN] reason=semantic_failed query="' + _humanFallbackQuery + '"');
+          clearRecentProductsMemory(conversation, 'product_lookup_empty');
           savePendingActionMemory(conversation, {
             type: 'search_related_products',
             originalQuery: _humanFallbackQuery,

@@ -3126,6 +3126,15 @@ function hasPositiveProductStock(product = {}) {
   return Number.isFinite(Number(stock)) && Number(stock) > 0;
 }
 
+function productIsRecommendableForRequest(product = {}, requestedSizes = []) {
+  if (!hasPositiveProductStock(product)) return false;
+  if (!requestedSizes.length) return true;
+  if (productMatchesRequestedSizeWithStock(product, requestedSizes)) return true;
+  const entries = getProductVariationStockEntries(product);
+  if (entries.length > 0) return false;
+  return productMatchesRequestedSize(product, requestedSizes);
+}
+
 function getAvailableProductSizes(product = {}) {
   const sizes = new Set();
   for (const entry of getProductVariationStockEntries(product)) {
@@ -3401,6 +3410,7 @@ function getRelevantProducts(products, message, options = {}) {
         _sizes: extractProductSizes(product),
         _availableStock: availableStock,
         _hasStock: hasStock,
+        _isRecommendable: productIsRecommendableForRequest(product, requestedSizes),
         _hasRequestedSizeInStock: hasRequestedSizeInStock,
         _wasPreviouslyShown: isPreviouslyShownProduct(product, excludedTitleKeys),
         _ragHintMatched: ragHintTitleKeys.includes(title),
@@ -3410,6 +3420,7 @@ function getRelevantProducts(products, message, options = {}) {
         _hasConflictingTitleColor: colorTokens.length > 0 && titleColors.some(color => !colorTokens.includes(color))
       };
     })
+    .filter(product => product._isRecommendable)
     .sort((a, b) => b.score - a.score);
   const hintedProducts = ragHintTitleKeys.length > 0
     ? uniqueProducts.filter(product => product._ragHintMatched).map(product => ({ ...product, score: product.score + 12 }))
@@ -3431,19 +3442,18 @@ function getRelevantProducts(products, message, options = {}) {
       .map(product => ({ ...product, score: product.score + 8 }));
     if (sizeMatched.length === 0) return [];
     const sizeMatchedInStock = sizeMatched
-      .filter(product => product._hasRequestedSizeInStock || product._hasStock)
+      .filter(product => product._hasRequestedSizeInStock || productIsRecommendableForRequest(product, requestedSizes))
       .sort((a, b) => Number(b._hasRequestedSizeInStock) - Number(a._hasRequestedSizeInStock) || b.score - a.score);
     if (sizeMatchedInStock.length > 0 && (messageTokens.length === 0 || specificTokens.length === 0)) {
       return preferNotPreviouslyShown(sizeMatchedInStock, excludedTitleKeys).slice(0, 6);
     }
     if (messageTokens.length === 0 || specificTokens.length === 0) {
-      return preferNotPreviouslyShown(sizeMatched, excludedTitleKeys).slice(0, 6);
+      return [];
     }
   }
 
   if (messageTokens.length === 0) {
-    const inStockProducts = candidateProducts.filter(product => product._hasStock);
-    return preferNotPreviouslyShown(inStockProducts.length > 0 ? inStockProducts : candidateProducts, excludedTitleKeys).slice(0, 6);
+    return preferNotPreviouslyShown(candidateProducts, excludedTitleKeys).slice(0, 6);
   }
 
   const minSpecificMatches = specificTokens.length >= 2 ? specificTokens.length : specificTokens.length;
@@ -3451,7 +3461,7 @@ function getRelevantProducts(products, message, options = {}) {
   const matched = candidateProducts.filter(product => {
     if (product.score <= 0) return false;
     if (specificTokens.length > 0 && hasNegativeProductMatch(product, specificTokens)) return false;
-    if (requestedSizes.length > 0 && !productMatchesRequestedSize(product, requestedSizes)) return false;
+    if (requestedSizes.length > 0 && !productIsRecommendableForRequest(product, requestedSizes)) return false;
     if (minSpecificMatches > 0 && product._specificMatches < minSpecificMatches) return false;
     if (colorTokens.length > 0 && product._colorMatches < colorTokens.length) return false;
     if (product._hasConflictingTitleColor) return false;
@@ -3462,11 +3472,9 @@ function getRelevantProducts(products, message, options = {}) {
   if (matched.length > 0) {
     const titleOrCategoryMatched = matched.filter(product => product._titleMatches > 0 || countTokenMatches(normalizeSearchText([product.category, product.categoryName, product.categoria_nome].join(' ')), specificTokens) > 0);
     if (specificTokens.length > 0 && titleOrCategoryMatched.length > 0) {
-      const inStockTitleOrCategoryMatched = titleOrCategoryMatched.filter(product => product._hasStock);
-      return preferNotPreviouslyShown(inStockTitleOrCategoryMatched.length > 0 ? inStockTitleOrCategoryMatched : titleOrCategoryMatched, excludedTitleKeys).slice(0, 6);
+      return preferNotPreviouslyShown(titleOrCategoryMatched, excludedTitleKeys).slice(0, 6);
     }
-    const inStockMatched = matched.filter(product => product._hasStock);
-    return preferNotPreviouslyShown(inStockMatched.length > 0 ? inStockMatched : matched, excludedTitleKeys).slice(0, 6);
+    return preferNotPreviouslyShown(matched, excludedTitleKeys).slice(0, 6);
   }
   return [];
 }
@@ -3777,7 +3785,12 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
     }
   }
 
-  const relevantProducts = getRelevantProducts(products, message, options);
+  const requestedSizes = extractRequestedSizes(message);
+  const recommendableProducts = products.filter(product => productIsRecommendableForRequest(product, requestedSizes));
+  if (products.length !== recommendableProducts.length) {
+    console.log('[AI PRODUCT STOCK FILTER] coletados=' + products.length + ' com_estoque=' + recommendableProducts.length + ' removidos=' + (products.length - recommendableProducts.length));
+  }
+  const relevantProducts = getRelevantProducts(recommendableProducts, message, options);
   console.log('[AI PRODUCT] Resultado catalogo | produtos_coletados: ' + products.length + ' | produtos_relevantes: ' + relevantProducts.length);
 
   if (relevantProducts.length === 0) {
@@ -3788,7 +3801,7 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
       product_context_products: [],
       recent_products_data: [],
       productsFound: false,
-      allProductsCollected: products.length > 0 ? products : []
+      allProductsCollected: recommendableProducts.length > 0 ? recommendableProducts : []
     };
   }
 
@@ -3830,7 +3843,7 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
     recent_products_data: productContextProducts,
     productsFound: relevantProducts.length > 0,
     lookupAttempted: true,
-    allProductsCollected: products  // todos os coletados, para fallback semântico de tema
+    allProductsCollected: recommendableProducts
   };
 }
 
@@ -6774,7 +6787,16 @@ function escapeLogValue(value = '') {
 }
 
 function selectSemanticCandidateProducts(allProducts = [], customerIntent = {}, semanticQuery = '', limit = 60) {
-  const products = Array.isArray(allProducts) ? allProducts : [];
+  const requestedSizes = extractRequestedSizes([
+    semanticQuery,
+    customerIntent.entities?.size || '',
+    customerIntent.size || ''
+  ].join(' '));
+  const rawProducts = Array.isArray(allProducts) ? allProducts : [];
+  const products = rawProducts.filter(product => productIsRecommendableForRequest(product, requestedSizes));
+  if (rawProducts.length !== products.length) {
+    console.log('[SEMANTIC STOCK FILTER] before=' + rawProducts.length + ' after=' + products.length + ' removed=' + (rawProducts.length - products.length));
+  }
   const requestProfile = getSemanticRequestProfile(customerIntent, semanticQuery);
   const queryTokens = getSpecificProductTokens(getSearchTokens([
     semanticQuery,
@@ -6825,10 +6847,23 @@ async function semanticRankProducts(candidateProducts, customerIntent, semanticQ
     return { productCards: [], customerNote: '' };
   }
 
+  const requestedSizes = extractRequestedSizes([
+    semanticQuery,
+    customerIntent?.entities?.size || '',
+    customerIntent?.size || ''
+  ].join(' '));
+  const stockCandidates = candidateProducts.filter(product => productIsRecommendableForRequest(product, requestedSizes));
+  if (candidateProducts.length !== stockCandidates.length) {
+    console.log('[SEMANTIC STOCK FILTER] before=' + candidateProducts.length + ' after=' + stockCandidates.length + ' removed=' + (candidateProducts.length - stockCandidates.length));
+  }
+  if (stockCandidates.length === 0) {
+    return { productCards: [], customerNote: '' };
+  }
+
   const requestProfile = getSemanticRequestProfile(customerIntent, semanticQuery);
-  const rankedCandidates = candidateProducts.length > SEMANTIC_MAX_CANDIDATES
-    ? selectSemanticCandidateProducts(candidateProducts, customerIntent, semanticQuery, SEMANTIC_MAX_CANDIDATES)
-    : candidateProducts.slice(0, SEMANTIC_MAX_CANDIDATES);
+  const rankedCandidates = stockCandidates.length > SEMANTIC_MAX_CANDIDATES
+    ? selectSemanticCandidateProducts(stockCandidates, customerIntent, semanticQuery, SEMANTIC_MAX_CANDIDATES)
+    : stockCandidates.slice(0, SEMANTIC_MAX_CANDIDATES);
   console.log('[SEMANTIC BATCH] batch=1 size=' + rankedCandidates.length);
 
   // Lista compacta para a IA — sem URLs longas, sem base64, sem HTML

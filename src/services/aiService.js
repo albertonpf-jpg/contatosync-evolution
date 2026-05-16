@@ -5702,63 +5702,67 @@ async function planCustomerRequestShadow(message, conversationState, config, pro
   const contextualPlan = buildDeterministicContextualPlannerPlan(message, conversationState);
   if (contextualPlan) return contextualPlan;
 
-  const deterministicPlan = buildDeterministicStorePolicyPlannerPlan(message);
-  if (deterministicPlan) return deterministicPlan;
-
   if (!isUsableProviderApiKey(provider, apiKey)) {
     console.log('[PLANNER SHADOW] skipped reason=no_api_key');
-    return null;
+    return buildDeterministicStorePolicyPlannerPlan(message);
   }
 
-  const compactState = buildCompactPlannerState(conversationState);
-  const storeDisplayName = getStoreDisplayName(config || {});
-  const plannerPrompt = `Planeje atendimento WhatsApp de ${storeDisplayName}. Nao responda ao cliente. Retorne somente JSON valido.
+  try {
+    const compactState = buildCompactPlannerState(conversationState);
+    const storeDisplayName = getStoreDisplayName(config || {});
+    const plannerPrompt = `Planeje atendimento WhatsApp de ${storeDisplayName}. Nao responda ao cliente. Retorne somente JSON valido.
 Schema: {"understanding":"","answer_type":"product_search|product_info|stock|variation|store_policy|order|tracking|pending_confirmation|selection|general|clarification","confidence":"high|medium|low","needs_clarification":false,"clarification_question":"","tools":[{"name":"get_selected_product","args":{},"reason":""}],"expected_answer_strategy":""}
 Ferramentas: get_recent_products,get_selected_product,get_pending_product_selection,use_pending_action,search_vector_knowledge,search_config_knowledge,search_vector_products,search_product_api,hydrate_products_from_api,filter_products_by_size,search_products,semantic_search_products,inspect_product,inspect_product_variations,get_product_stock,get_order_status,get_tracking,search_knowledge_base,search_site_sources,search_files,get_store_policy,ask_clarification.
-Regras: "outras cores" => get_selected_product + inspect_product_variations; "tamanho informado" => get_selected_product/get_recent_products + get_product_stock; "numero de opcao" => get_pending_product_selection; confirmacao curta com acao pendente => use_pending_action; politicas/FAQ/conhecimento => search_vector_knowledge + search_config_knowledge + search_knowledge_base/search_site_sources; produto com tema/personagem/tamanho => search_vector_products + hydrate_products_from_api + filter_products_by_size, ou semantic_search_products se vetor de produto nao estiver ativo; preco/estoque/url/imagem de produto sempre precisam de search_product_api/hydrate_products_from_api ou memoria estruturada, nunca apenas vetor; pergunta sobre pedido com numero => get_order_status + get_tracking; confirmacao curta sem estado pendente => clarification + ask_clarification; se faltar contexto => ask_clarification.
+Regras: o planner semantico e a entrada principal. Nao dependa de palavra exata: frases como "manda pra Bahia?", "chega em outro estado?", "entregam no Brasil todo?", "posso comprar com CPF?", "como pago?" e "tem troca?" sao store_policy e devem usar search_vector_knowledge + search_config_knowledge + get_store_policy + search_knowledge_base/search_site_sources. "outras cores" => get_selected_product + inspect_product_variations; "tamanho informado" => get_selected_product/get_recent_products + get_product_stock; "numero de opcao" => get_pending_product_selection; confirmacao curta com acao pendente => use_pending_action; produto com tema/personagem/tamanho => search_vector_products + hydrate_products_from_api + filter_products_by_size, ou semantic_search_products se vetor de produto nao estiver ativo; preco/estoque/url/imagem de produto sempre precisam de search_product_api/hydrate_products_from_api ou memoria estruturada, nunca apenas vetor; pergunta sobre pedido com numero => get_order_status + get_tracking; confirmacao curta sem estado pendente => clarification + ask_clarification; se faltar contexto => ask_clarification.
 Estado compacto: ${JSON.stringify(compactState)}`;
 
-  const timeoutMs = Number(config?.planner_shadow_timeout_ms || 4000);
-  const plannerModel = String(config?.planner_shadow_model || '').trim();
-  let responseText = '';
-  if (provider === 'claude') {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: plannerModel || 'claude-3-haiku-20240307',
-        max_tokens: 450,
-        temperature: 0,
-        messages: [{ role: 'user', content: plannerPrompt }]
-      }),
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (!res.ok) throw new Error('planner_http_' + res.status);
-    const data = await res.json().catch(() => null);
-    responseText = data?.content?.[0]?.text || '';
-  } else {
-    const res = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: plannerModel || 'gpt-4o-mini',
-        temperature: 0,
-        max_output_tokens: 450,
-        input: [{ role: 'user', content: [{ type: 'input_text', text: plannerPrompt }] }]
-      }),
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (!res.ok) throw new Error('planner_http_' + res.status);
-    const data = await res.json().catch(() => null);
-    responseText = getOpenAIText(data) || '';
-  }
+    const timeoutMs = Number(config?.planner_shadow_timeout_ms || 9000);
+    const plannerModel = String(config?.planner_shadow_model || '').trim();
+    let responseText = '';
+    if (provider === 'claude') {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: plannerModel || 'claude-3-haiku-20240307',
+          max_tokens: 450,
+          temperature: 0,
+          messages: [{ role: 'user', content: plannerPrompt }]
+        }),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+      if (!res.ok) throw new Error('planner_http_' + res.status);
+      const data = await res.json().catch(() => null);
+      responseText = data?.content?.[0]?.text || '';
+    } else {
+      const res = await fetch('https://api.openai.com/v1/responses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: plannerModel || 'gpt-4o-mini',
+          temperature: 0,
+          max_output_tokens: 450,
+          input: [{ role: 'user', content: [{ type: 'input_text', text: plannerPrompt }] }]
+        }),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+      if (!res.ok) throw new Error('planner_http_' + res.status);
+      const data = await res.json().catch(() => null);
+      responseText = getOpenAIText(data) || '';
+    }
 
-  const parsed = JSON.parse(String(responseText || '').replace(/```json|```/g, '').trim());
-  return sanitizePlannerPlan(parsed);
+    const parsed = JSON.parse(String(responseText || '').replace(/```json|```/g, '').trim());
+    const plan = sanitizePlannerPlan(parsed);
+    console.log('[PLANNER SEMANTIC] answer_type=' + plan.answer_type + ' confidence=' + plan.confidence + ' tools=' + plan.tools.map(tool => tool.name).join(','));
+    return plan;
+  } catch (error) {
+    console.warn('[PLANNER SEMANTIC FALLBACK] reason=' + String(error?.message || error).slice(0, 180));
+    return buildDeterministicStorePolicyPlannerPlan(message);
+  }
 }
 
 function addPlannerToolStatus(evidenceBundle, name, status, reason) {
@@ -5947,7 +5951,7 @@ async function answerPlannerShadowMode(context = {}) {
 
 function shouldUsePlannerForStorePolicy(plan = {}) {
   if (!plan || plan.answer_type !== 'store_policy') return false;
-  if (plan.confidence !== 'high') return false;
+  if (!['high', 'medium'].includes(plan.confidence)) return false;
   if (plan.needs_clarification === true) return false;
   const toolNames = Array.isArray(plan.tools) ? plan.tools.map(tool => tool.name).filter(Boolean) : [];
   return toolNames.some(name => ['get_store_policy', 'search_vector_knowledge', 'search_config_knowledge', 'search_knowledge_base', 'search_site_sources'].includes(name));

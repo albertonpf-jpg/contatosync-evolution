@@ -161,9 +161,12 @@ function getStorePolicyTopicFromText(message = '', plan = {}) {
     plan.understanding || '',
     ...(Array.isArray(plan.tools) ? plan.tools.map(tool => [tool?.args?.query, tool?.args?.topic, tool?.reason].filter(Boolean).join(' ')) : [])
   ].join(' '));
+  if (/\b(perguntei|pergunta|falei|quero saber)\b.{0,40}\b(atacado|atacadista|revenda|grade|sacado)\b/i.test(text)
+    || /\b(atacado|atacadista|revenda|grade fechada|grade infantil)\b/i.test(text)) return 'wholesale';
   if (getMinimumOrderPolicyQuery(text) || /\b(pedido minimo|compra minima|quantidade minima|minimo de compra|valor minimo)\b/i.test(text)) return 'minimum_order';
   if (/\b(cnpj|cpf|documento|cadastro|pessoa fisica|pessoa juridica)\b/i.test(text)) return 'cnpj';
   if (/\b(frete gratis|frete gratuito|gratis|gratuito)\b/i.test(text) && /\b(frete|entrega|envio)\b/i.test(text)) return 'free_shipping';
+  if (/\b(nao perguntei|nao falei|nao era|nao foi)\b.{0,30}\b(retirada|entrega|frete|envio)\b/i.test(text)) return 'store_policy';
   if (/\b(entrega|entregam|frete|enviar|enviam|enviamos|envio|motoboy|transportadora|excursao|todo brasil|brasil todo)\b/i.test(text)) return 'shipping_delivery';
   if (/\b(retirada|retirar|pessoalmente|buscar|endereco|localizacao|onde fica|ponto de encontro|local de retirada)\b/i.test(text)) return 'pickup_location';
   if (/\b(troca|devolucao|devolução|defeito|garantia)\b/i.test(text)) return 'exchange_returns';
@@ -175,6 +178,7 @@ function getStorePolicyTopicFromText(message = '', plan = {}) {
 function getStorePolicyTopicQueries(topic = '', message = '') {
   const normalizedMessage = normalizeSearchText(message);
   const map = {
+    wholesale: ['atacado', 'venda no atacado', 'comprar no atacado', 'revenda', 'grade', 'grade fechada', 'atacadista'],
     minimum_order: ['pedido minimo', 'compra minima', 'quantidade minima', 'minimo de compras', 'valor minimo'],
     cnpj: ['cnpj', 'cpf', 'documento', 'cadastro', 'pessoa fisica', 'pessoa juridica'],
     free_shipping: ['frete gratis', 'frete gratuito', 'entrega gratis', 'envio gratis'],
@@ -301,6 +305,17 @@ function classifyEvidenceRelevance(text = '', policyType = '') {
   }
 
   const directPatterns = {
+    wholesale: [
+      /\batacado\b/i,
+      /\batacadista\b/i,
+      /\brevenda\b/i,
+      /\bcomprar no atacado\b/i,
+      /\bvenda no atacado\b/i,
+      /\bvendem no atacado\b/i,
+      /\bgrade fechada\b/i,
+      /\bgrade infantil\b/i,
+      /\bgrade\b/i
+    ],
     payment: [
       /\bpix\b/i,
       /\bcartao\b/i,
@@ -399,7 +414,8 @@ function classifyEvidenceRelevance(text = '', policyType = '') {
       minimum_order: 'contains_minimum_order_terms',
       cnpj: 'contains_document_terms',
       exchange_returns: 'contains_exchange_return_terms',
-      fulfillment_time: 'contains_fulfillment_time_terms'
+      fulfillment_time: 'contains_fulfillment_time_terms',
+      wholesale: 'contains_wholesale_terms'
     };
     return { relevance: 'direct', reason: reasonByType[policyType] || 'contains_policy_terms' };
   }
@@ -446,6 +462,24 @@ function extractStorePolicyFactsFromConfig(config = {}, plan = {}, message = '')
           entry.sourceName,
           topic
         )
+      });
+    }
+  }
+  if (topic === 'wholesale') {
+    const wholesaleSources = [
+      ...buildKnowledgeSourcesForConfig(config),
+      ...buildProductSourcesForConfig(config)
+    ].filter(source => /\batacado\b/i.test(String(source?.url || source?.name || '')));
+    for (const source of wholesaleSources.slice(0, 3)) {
+      facts.push({
+        type: topic,
+        source: 'configured_source',
+        text: 'A loja possui fonte/catalogo de atacado configurado.',
+        sourceType: 'configured_source',
+        sourceName: source.name || 'Fonte configurada',
+        relevance: 'direct',
+        reason: 'configured_wholesale_source',
+        confidence: 'high'
       });
     }
   }
@@ -1024,7 +1058,7 @@ async function searchRagKnowledge(clientId = '', query = '', options = {}, conte
 function buildRagEvidenceBundle(results = [], options = {}) {
   const topic = options.topic || 'store_policy';
   const queries = getStorePolicyTopicQueries(topic, options.query || '');
-  const directOnlyTopics = new Set(['cnpj', 'free_shipping']);
+  const directOnlyTopics = new Set(['cnpj', 'free_shipping', 'wholesale']);
   const facts = [];
   for (const result of (Array.isArray(results) ? results : [])) {
     if (!result || !result.content) continue;
@@ -3985,6 +4019,13 @@ function getMediaKind(media = {}) {
   if (type === 'video' || type === 'gif' || mime.startsWith('video/')) return 'video';
   if (type === 'document' || mime === 'application/pdf') return 'document';
   return type || 'file';
+}
+
+function isMediaOnlyPlaceholderMessage(message = '', media = {}) {
+  if (!media || (!media.path && !media.url)) return false;
+  const text = String(message || '').trim();
+  if (!text) return true;
+  return /^\[(audio|áudio|video|vídeo|imagem|image|foto|documento|arquivo)\]$/i.test(text);
 }
 
 function getMediaDescription(media = {}) {
@@ -7868,7 +7909,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     return { skipped: true, reason: 'Resposta automatica desabilitada' };
   }
 
-  if (!message || !String(message).trim()) {
+  if ((!message || !String(message).trim()) && (!media || (!media.path && !media.url))) {
     return { skipped: true, reason: 'Mensagem sem texto' };
   }
 
@@ -7894,6 +7935,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   const systemPrompt = buildSystemPrompt(effectiveConfig, contact, conversation);
   const conversationHistory = await getConversationMessagesFromStart(supabase, clientId, conversation?.id);
   const apiKeyForClassify = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
+  const mediaOnlyMessage = isMediaOnlyPlaceholderMessage(message, media);
   effectiveConfig._ragRuntimeContext = {
     clientId,
     client_id: clientId,
@@ -7903,6 +7945,73 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     openaiApiKey: client?.openai_api_key,
     apiKey: client?.openai_api_key
   };
+
+  if (mediaOnlyMessage) {
+    const apiKey = provider === 'claude' ? client?.claude_api_key : client?.openai_api_key;
+    if (!isUsableProviderApiKey(provider, apiKey)) {
+      return {
+        skipped: false,
+        response: 'Recebi a midia, mas nao consegui analisar automaticamente agora. Pode me mandar a mensagem em texto?',
+        provider,
+        model: 'media_without_api_key',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: []
+      };
+    }
+    console.log('[MEDIA ONLY] bypassing_planner type=' + getMediaKind(media));
+    try {
+      const result = provider === 'claude'
+        ? await callClaude({
+            apiKey,
+            config: effectiveConfig,
+            input: '',
+            systemPrompt,
+            media,
+            conversationHistory,
+            contact,
+            conversation
+          })
+        : await callOpenAI({ apiKey, config: effectiveConfig, input: '', systemPrompt, media, conversationHistory, contact, conversation });
+      result.response = normalizeProductMediaResponse(
+        suppressRepeatedGreeting(result.response, effectiveConfig.greeting_message, conversation),
+        result.product_cards
+      );
+      await logAIResult(supabase, {
+        client_id: clientId,
+        conversation_id: conversation?.id,
+        input_message: '[media]',
+        status: 'success',
+        ...result
+      });
+      return { skipped: false, ...result };
+    } catch (error) {
+      console.warn('[MEDIA ONLY] fallback reason=' + String(error?.message || error).slice(0, 180));
+      await logAIResult(supabase, {
+        client_id: clientId,
+        conversation_id: conversation?.id,
+        input_message: '[media]',
+        model: effectiveConfig.model,
+        status: 'error',
+        error_message: error.message
+      });
+      return {
+        skipped: false,
+        response: 'Recebi a midia, mas nao consegui analisar automaticamente agora. Pode me mandar a mensagem em texto?',
+        provider,
+        model: 'media_analysis_failed',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: []
+      };
+    }
+  }
 
   let plannerShadowResult = null;
   try {

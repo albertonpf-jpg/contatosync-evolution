@@ -4,7 +4,7 @@ const { executeWithRLS } = require('../config/supabase');
 const { contactSchemas, validate } = require('../utils/validation');
 const { formatPhone, getPagination, formatPaginationMeta, formatActivity } = require('../utils/helpers');
 const { success, error, notFound, conflict, asyncHandler, handleSupabaseError, paginated } = require('../utils/response');
-const { emitNewContact, emitActivity } = require('../services/socketService');
+const { emitNewContact, emitContactUpdate, emitActivity } = require('../services/socketService');
 
 const router = express.Router();
 
@@ -229,6 +229,8 @@ router.put('/:id',
           })
         }])
     );
+
+    emitContactUpdate(req.user.id, updatedContact);
 
     success(res, updatedContact, 'Contato atualizado com sucesso');
   })

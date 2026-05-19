@@ -61,6 +61,10 @@ interface SocketConversationPayload {
   evolution_contacts?: Contact;
 }
 
+interface ContactUpdatePayload extends Contact {
+  id?: string;
+}
+
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'Erro desconhecido';
 }
@@ -232,6 +236,7 @@ export default function ConversationsPage() {
   const prevMsgCount = useRef(0);
   const currentConvId = useRef<string | null>(null);
   const autoOpenedInitialConv = useRef(false);
+  const aiPauseTagsByContact = useRef<Map<string, string[]>>(new Map());
 
   useEffect(() => {
     currentConvId.current = selectedConv?.id ?? null;
@@ -255,6 +260,22 @@ export default function ConversationsPage() {
     return token || (typeof window !== 'undefined' ? localStorage.getItem('contatosync_token') : '') || '';
   }, [token]);
 
+  const applyContactTagOverrides = useCallback((items: Conversation[]): Conversation[] => {
+    return items.map(item => {
+      const overrideTags = aiPauseTagsByContact.current.get(item.contact_id);
+      if (!overrideTags) return item;
+      return {
+        ...item,
+        evolution_contacts: {
+          ...(item.evolution_contacts || {}),
+          name: item.evolution_contacts?.name || item.contact_name || 'Sem nome',
+          phone: item.evolution_contacts?.phone || item.phone || '',
+          tags: overrideTags,
+        },
+      };
+    });
+  }, []);
+
   const fetchConvs = useCallback(async () => {
     if (authLoading) return [];
     const currentToken = getToken();
@@ -266,7 +287,7 @@ export default function ConversationsPage() {
     }
     try {
       const data = await apiFetch('/conversations?page=1&limit=50&status=active', currentToken);
-      const items: Conversation[] = data?.items ?? [];
+      const items: Conversation[] = applyContactTagOverrides(data?.items ?? []);
       setConversations(items);
       setSelectedConv(prevSelected => {
         if (!prevSelected) return prevSelected;
@@ -280,7 +301,7 @@ export default function ConversationsPage() {
     } finally {
       setLoadingConvs(false);
     }
-  }, [authLoading, getToken]);
+  }, [applyContactTagOverrides, authLoading, getToken]);
 
   const fetchMsgs = useCallback(async (id: string) => {
     if (authLoading) return [];
@@ -368,6 +389,7 @@ export default function ConversationsPage() {
         contact_id: payload.contact_id,
         contact_name: payload.contact_name || fullConv?.contact_name,
         phone: payload.phone || fullConv?.phone,
+        evolution_contacts: fullConv?.evolution_contacts || payload.evolution_contacts,
         unread_count: currentConvId.current === conversationId ? 0 : (fullConv?.unread_count ?? undefined),
         status: fullConv?.status,
         last_message_at: payload.sent_at || payload.created_at,
@@ -400,16 +422,25 @@ export default function ConversationsPage() {
       upsertConversationFromSocket(payload);
     };
 
+    const handleContactUpdated = (payload?: ContactUpdatePayload) => {
+      if (!payload?.id || !Array.isArray(payload.tags)) return;
+      aiPauseTagsByContact.current.set(payload.id, payload.tags);
+      setConversations(prev => applyContactTagOverrides(prev));
+      setSelectedConv(prev => (prev?.contact_id === payload.id ? applyContactTagOverrides([prev])[0] : prev));
+    };
+
     on('new_message', handleNewMessage);
     on('conversation_updated', handleConvUpdated);
     on('conversation_update', handleConvUpdated);
+    on('contact_updated', handleContactUpdated);
 
     return () => {
       off('new_message', handleNewMessage);
       off('conversation_updated', handleConvUpdated);
       off('conversation_update', handleConvUpdated);
+      off('contact_updated', handleContactUpdated);
     };
-  }, [off, on]);
+  }, [applyContactTagOverrides, off, on]);
 
   // Socket.IO é o canal imediato. O polling abaixo cobre reconexões e eventos perdidos.
   useEffect(() => {
@@ -519,6 +550,7 @@ export default function ConversationsPage() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
       const updatedContact = json?.data || { ...(selectedConv.evolution_contacts || {}), tags: nextTags };
+      aiPauseTagsByContact.current.set(selectedConv.contact_id, nextTags);
       const mergeContact = (conv: Conversation): Conversation => ({
         ...conv,
         evolution_contacts: {

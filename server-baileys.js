@@ -44,6 +44,7 @@ const PORT = process.env.PORT || 3003;
 const FALLBACK_PUBLIC_BASE_URL = 'https://web-production-50297.up.railway.app';
 const aiReplyTimers = new Map();
 const responseRegistry = createResponseRegistry();
+const AI_PAUSED_TAG = 'ai_paused';
 
 function getPublicBaseUrl() {
   const explicit = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL;
@@ -66,8 +67,45 @@ function canSendResponse(messageId) {
   return responseRegistry.canSendResponse(messageId);
 }
 
+function hasAIPausedTag(tags) {
+  if (Array.isArray(tags)) return tags.map(String).includes(AI_PAUSED_TAG);
+  if (typeof tags === 'string') {
+    try {
+      const parsed = JSON.parse(tags);
+      if (Array.isArray(parsed)) return parsed.map(String).includes(AI_PAUSED_TAG);
+    } catch (_) {
+      return tags.split(',').map(item => item.trim()).includes(AI_PAUSED_TAG);
+    }
+  }
+  return false;
+}
+
+async function isAIPausedForConversation(clientId, conversation) {
+  if (hasAIPausedTag(conversation?.tags)) return true;
+  if (!conversation?.id) return false;
+
+  try {
+    var { supabaseAdmin } = require('./src/config/supabase');
+    var { data } = await supabaseAdmin
+      .from('evolution_conversations')
+      .select('tags')
+      .eq('client_id', clientId)
+      .eq('id', conversation.id)
+      .single();
+    return hasAIPausedTag(data?.tags);
+  } catch (error) {
+    console.warn('[AI AUTO] Nao foi possivel verificar pausa da IA | conv: ' + conversation.id + ' | erro: ' + error.message);
+    return false;
+  }
+}
+
 async function sendAIAutoReply({ sessionName, clientId, conversation, contact, jid, inboundContent, media, conversationCreated, incomingMessageId }) {
   if (!inboundContent || !String(inboundContent).trim()) return;
+
+  if (await isAIPausedForConversation(clientId, conversation)) {
+    console.log('[AI AUTO] Ignorado: IA pausada para conversa | conv: ' + conversation.id);
+    return;
+  }
 
   var { supabaseAdmin } = require('./src/config/supabase');
   var { v4: uuidv4 } = require('uuid');
@@ -247,6 +285,7 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       status: conversation.status || 'active',
       priority: conversation.priority || 'normal',
       lead_stage: conversation.lead_stage || 'new',
+      tags: conversation.tags || [],
       unread_count: conversation.unread_count || 0,
       total_messages: totalMessages,
       last_message_at: now,
@@ -284,6 +323,11 @@ async function getAIReplyDelayMs(clientId) {
 }
 
 function enqueueAIAutoReply(payload) {
+  if (hasAIPausedTag(payload?.conversation?.tags)) {
+    console.log('[AI AUTO] Nao enfileirado: IA pausada para conversa | conv: ' + payload.conversation.id);
+    return;
+  }
+
   var key = payload.clientId + ':' + payload.conversation.id;
   var existing = aiReplyTimers.get(key);
   var nextContent = String(payload.inboundContent || '').trim();
@@ -1236,6 +1280,7 @@ app.post('/internal/messages/process', async function(req, res) {
           status: conversation.status || 'active',
           priority: conversation.priority || 'normal',
           lead_stage: conversation.lead_stage || 'new',
+          tags: conversation.tags || [],
           unread_count: conversation.unread_count || 1,
           total_messages: conversation.total_messages || 1,
           last_message_at: now,
@@ -1255,6 +1300,7 @@ app.post('/internal/messages/process', async function(req, res) {
         status: conversation.status || 'active',
         priority: conversation.priority || 'normal',
         lead_stage: conversation.lead_stage || 'new',
+        tags: conversation.tags || [],
         unread_count: conversation.unread_count || 1,
         total_messages: conversation.total_messages || 1,
         last_message_at: now,

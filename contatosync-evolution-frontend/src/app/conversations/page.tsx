@@ -1,13 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Camera, Check, CheckCheck, FileText, Image as ImageIcon, MessageSquare, Mic, Paperclip, Search, Send, Smile, Square, Video, X } from 'lucide-react';
+import { ArrowLeft, Bot, BotOff, Camera, Check, CheckCheck, FileText, Image as ImageIcon, MessageSquare, Mic, Paperclip, Search, Send, Smile, Square, Video, X } from 'lucide-react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSocketContext } from '@/contexts/SocketContext';
 import { getApiUrl } from '@/lib/runtime-config';
 
 const API = getApiUrl();
+const AI_PAUSED_TAG = 'ai_paused';
 const QUICK_EMOJIS = ['😀', '😂', '😍', '🙏', '👍', '👏', '🔥', '❤️', '✅', '🎉', '😎', '🤝', '📌', '💬', '🚀', '⭐'];
 
 interface Contact {
@@ -26,6 +27,7 @@ interface Conversation {
   unread_count: number;
   created_at: string;
   updated_at: string;
+  tags?: string[];
   evolution_contacts?: Contact;
 }
 
@@ -56,6 +58,7 @@ interface SocketConversationPayload {
   last_message_at?: string;
   created_at?: string;
   updated_at?: string;
+  tags?: string[];
   evolution_contacts?: Contact;
 }
 
@@ -128,6 +131,10 @@ function getBestPhone(...phones: Array<string | undefined>): string {
 
 function getConversationId(payload?: SocketConversationPayload): string {
   return payload?.conversation_id || payload?.conversationId || payload?.id || '';
+}
+
+function isAIPaused(conversation?: Conversation | null): boolean {
+  return Array.isArray(conversation?.tags) && conversation.tags.includes(AI_PAUSED_TAG);
 }
 
 function normalizeDirection(direction?: string): Message['direction'] {
@@ -210,6 +217,7 @@ export default function ConversationsPage() {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState('');
   const [sending, setSending] = useState(false);
+  const [aiPauseUpdating, setAiPauseUpdating] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -333,6 +341,7 @@ export default function ConversationsPage() {
         },
         unread_count: payload?.unread_count ?? baseConversation.unread_count,
         status: payload?.status || baseConversation.status,
+        tags: payload?.tags ?? baseConversation.tags,
         last_message_at: payload?.last_message_at || baseConversation.last_message_at,
         updated_at: payload?.updated_at || baseConversation.updated_at,
       };
@@ -490,6 +499,34 @@ export default function ConversationsPage() {
       alert('Erro ao enviar. Verifique se o WhatsApp esta conectado.');
     } finally {
       setSending(false);
+    }
+  };
+
+  const toggleAIPause = async () => {
+    if (!selectedConv || aiPauseUpdating) return;
+    const paused = isAIPaused(selectedConv);
+    const currentTags = Array.isArray(selectedConv.tags) ? selectedConv.tags : [];
+    const nextTags = paused
+      ? currentTags.filter(tag => tag !== AI_PAUSED_TAG)
+      : [...new Set([...currentTags, AI_PAUSED_TAG])];
+
+    setAiPauseUpdating(true);
+    try {
+      const res = await fetch(`${API}/conversations/${selectedConv.id}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${getToken()}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags: nextTags }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      const updated = json?.data || { ...selectedConv, tags: nextTags };
+      setSelectedConv(prev => (prev?.id === selectedConv.id ? { ...prev, ...updated, tags: nextTags } : prev));
+      setConversations(prev => prev.map(item => (item.id === selectedConv.id ? { ...item, ...updated, tags: nextTags } : item)));
+    } catch (error: unknown) {
+      console.error('[toggleAIPause]', error);
+      alert('Erro ao atualizar a pausa da IA para esta conversa.');
+    } finally {
+      setAiPauseUpdating(false);
     }
   };
 
@@ -778,9 +815,12 @@ export default function ConversationsPage() {
                     </div>
                     <div className="flex items-center justify-between mt-0.5">
                       <span className="text-xs text-gray-500 truncate">{getPhone(conv) || 'WhatsApp'}</span>
-                      {conv.unread_count > 0 && (
-                        <span className="ml-2 bg-green-500 text-white text-xs font-bold rounded-full h-5 min-w-[20px] flex items-center justify-center px-1.5">{conv.unread_count}</span>
-                      )}
+                      <div className="ml-2 flex items-center gap-1">
+                        {isAIPaused(conv) && <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">IA pausada</span>}
+                        {conv.unread_count > 0 && (
+                          <span className="bg-green-500 text-white text-xs font-bold rounded-full h-5 min-w-[20px] flex items-center justify-center px-1.5">{conv.unread_count}</span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </button>
@@ -799,6 +839,16 @@ export default function ConversationsPage() {
                   <h2 className="font-semibold text-gray-900 text-sm truncate">{getName(selectedConv)}</h2>
                   <p className="text-xs text-gray-500 truncate">{getPhone(selectedConv) || 'WhatsApp'}</p>
                 </div>
+                <button
+                  type="button"
+                  onClick={toggleAIPause}
+                  disabled={aiPauseUpdating}
+                  title={isAIPaused(selectedConv) ? 'Reativar IA para esta conversa' : 'Pausar IA para esta conversa'}
+                  className={`inline-flex h-9 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium disabled:opacity-50 ${isAIPaused(selectedConv) ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' : 'border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100'}`}
+                >
+                  {isAIPaused(selectedConv) ? <BotOff className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
+                  <span className="hidden sm:inline">{isAIPaused(selectedConv) ? 'IA pausada' : 'IA ativa'}</span>
+                </button>
                 <span className={`text-xs px-2 py-0.5 rounded-full ${selectedConv.status === 'active' ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'}`}>{selectedConv.status === 'active' ? 'Ativa' : selectedConv.status}</span>
               </div>
 

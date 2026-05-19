@@ -1,5 +1,31 @@
 # ContatoSync Evolution API
 
+## Dify como cerebro da IA
+
+O ContatoSync pode usar o Dify como motor principal da vendedora IA sem remover o pipeline operacional atual. Nesse modo, o ContatoSync continua controlando Baileys, Supabase, catalogo, links, cards e carrossel; o Dify recebe a mensagem, historico e evidencias reais para compor a resposta.
+
+Variaveis de ambiente:
+
+```env
+AI_PROVIDER=dify
+DIFY_API_URL=https://seu-dify.com
+DIFY_API_KEY=app-sua-chave-do-dify
+
+# Opcional: se false, nao cai para o agente local quando o Dify falhar.
+DIFY_FAILOVER_TO_LOCAL=true
+DIFY_TIMEOUT_MS=45000
+```
+
+Fluxo:
+
+WhatsApp Baileys
+-> ContatoSync normaliza conversa e contato
+-> ContatoSync consulta catalogo/APIs/site quando aplicavel
+-> Dify recebe contexto oficial e gera o texto
+-> ContatoSync envia texto/card/carrossel pelo Baileys
+
+Se `AI_PROVIDER=dify` estiver ativo e o Dify falhar, o comportamento padrao e cair para o agente retrieval-grounded local. Para desabilitar esse fallback, defina `DIFY_FAILOVER_TO_LOCAL=false`.
+
 ## Retrieval-Grounded WhatsApp Agent
 
 O atendimento automatico do WhatsApp usa a arquitetura Retrieval-Grounded WhatsApp Agent:

@@ -8,6 +8,7 @@ const { isWithinWorkingHours, getPagination, formatPaginationMeta, formatActivit
 const { success, error, notFound, asyncHandler, handleSupabaseError, paginated } = require('../utils/response');
 const { emitConfigUpdate, emitAIResponse } = require('../services/socketService');
 const { generateAIResponse } = require('../services/aiService');
+const { hasDifyConfig } = require('../services/difyService');
 const { createStoredFile, mediaRoot } = require('../utils/mediaStore');
 
 const router = express.Router();
@@ -315,7 +316,7 @@ router.post('/test',
 
     const apiKey = String(config.model || '').includes('claude') ? client?.claude_api_key : client?.openai_api_key;
 
-    if (!apiKey) {
+    if (!apiKey && !hasDifyConfig(config)) {
       return error(res, 'API key não configurada', 400);
     }
 

@@ -1,0 +1,189 @@
+const DEFAULT_TIMEOUT_MS = 45000;
+
+const conversationIds = new Map();
+
+function cleanBaseUrl(value = '') {
+  return String(value || '').trim().replace(/\/+$/, '');
+}
+
+function getDifyEndpoint(baseUrl = '') {
+  const clean = cleanBaseUrl(baseUrl);
+  if (!clean) return '';
+  if (/\/v1$/i.test(clean)) return `${clean}/chat-messages`;
+  if (/\/chat-messages$/i.test(clean)) return clean;
+  return `${clean}/v1/chat-messages`;
+}
+
+function getDifyConfig(config = {}) {
+  const apiUrl = cleanBaseUrl(
+    config.dify_api_url
+    || config.difyApiUrl
+    || process.env.DIFY_API_URL
+    || process.env.DIFY_BASE_URL
+    || ''
+  );
+  const apiKey = String(
+    config.dify_api_key
+    || config.difyApiKey
+    || process.env.DIFY_API_KEY
+    || ''
+  ).trim();
+  const enabled = String(
+    config.ai_provider
+    || config.provider
+    || process.env.AI_PROVIDER
+    || ''
+  ).trim().toLowerCase() === 'dify'
+    || config.dify_enabled === true
+    || String(process.env.DIFY_ENABLED || '').trim().toLowerCase() === 'true';
+
+  return {
+    enabled,
+    apiUrl,
+    apiKey,
+    endpoint: getDifyEndpoint(apiUrl),
+    timeoutMs: Number(config.dify_timeout_ms || process.env.DIFY_TIMEOUT_MS || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
+    failoverToLocal: String(process.env.DIFY_FAILOVER_TO_LOCAL || 'true').trim().toLowerCase() !== 'false'
+  };
+}
+
+function hasDifyConfig(config = {}) {
+  const difyConfig = getDifyConfig(config);
+  return Boolean(difyConfig.enabled && difyConfig.endpoint && difyConfig.apiKey);
+}
+
+function getConversationKey({ clientId, conversation }) {
+  return `${clientId || 'client'}:${conversation?.id || conversation?.phone || 'manual'}`;
+}
+
+function getStoredConversationId(key) {
+  return conversationIds.get(key) || '';
+}
+
+function setStoredConversationId(key, conversationId) {
+  const value = String(conversationId || '').trim();
+  if (!value) return;
+  conversationIds.set(key, value);
+}
+
+function truncate(value = '', max = 12000) {
+  const text = String(value || '').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}\n\n[conteudo truncado para caber na chamada do Dify]`;
+}
+
+function formatHistory(history = []) {
+  return (Array.isArray(history) ? history : [])
+    .slice(-30)
+    .map(item => {
+      const speaker = item.direction === 'out' || item.is_from_ai ? 'Atendente/IA' : 'Cliente';
+      return `${speaker}: ${String(item.content || '').trim()}`;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildDifyQuery({ message, contact, conversation, systemPrompt, conversationHistory, productContext, siteContext, operationalContext }) {
+  const blocks = [
+    'Responda somente a mensagem final que deve ser enviada ao cliente no WhatsApp. Use portugues do Brasil, texto curto e natural.',
+    systemPrompt ? `Instrucao do atendimento:\n${truncate(systemPrompt, 2500)}` : '',
+    `Cliente: ${contact?.name || conversation?.contact_name || 'Contato sem nome'}`,
+    `Telefone: ${contact?.phone || conversation?.phone || 'nao informado'}`,
+    formatHistory(conversationHistory) ? `Historico recente:\n${truncate(formatHistory(conversationHistory), 5000)}` : '',
+    productContext?.contextText ? `Produtos reais encontrados nas APIs/catalogo do ContatoSync:\n${truncate(productContext.contextText, 9000)}` : '',
+    siteContext?.contextText ? `Informacoes oficiais da loja/site:\n${truncate(siteContext.contextText, 5000)}` : '',
+    operationalContext?.contextText ? `Informacoes transacionais consultadas:\n${truncate(operationalContext.contextText, 5000)}` : '',
+    'Regras criticas: nunca invente preco, estoque, prazo, link ou politica. Se houver produtos reais acima, use somente esses produtos. Nao escreva URL de imagem. Se o sistema tiver cards/carrossel, eles serao enviados fora do texto.',
+    `Mensagem atual do cliente:\n${String(message || '').trim()}`
+  ].filter(Boolean);
+
+  return blocks.join('\n\n---\n\n');
+}
+
+async function callDifyChatMessage({
+  clientId,
+  message,
+  contact,
+  conversation,
+  config,
+  systemPrompt,
+  conversationHistory,
+  productContext,
+  siteContext,
+  operationalContext
+}) {
+  const difyConfig = getDifyConfig(config);
+  if (!difyConfig.enabled) return { skipped: true, reason: 'Dify desabilitado' };
+  if (!difyConfig.endpoint || !difyConfig.apiKey) {
+    throw new Error('Dify habilitado, mas DIFY_API_URL ou DIFY_API_KEY nao foi configurado');
+  }
+
+  const startedAt = Date.now();
+  const key = getConversationKey({ clientId, conversation });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), difyConfig.timeoutMs);
+
+  try {
+    const response = await fetch(difyConfig.endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${difyConfig.apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        inputs: {
+          client_id: clientId || '',
+          contact_name: contact?.name || conversation?.contact_name || '',
+          phone: contact?.phone || conversation?.phone || '',
+          conversation_id: conversation?.id || '',
+          products_found: productContext?.productsFound === true,
+          product_cards_count: Array.isArray(productContext?.productCards) ? productContext.productCards.length : 0
+        },
+        query: buildDifyQuery({
+          message,
+          contact,
+          conversation,
+          systemPrompt,
+          conversationHistory,
+          productContext,
+          siteContext,
+          operationalContext
+        }),
+        response_mode: 'blocking',
+        conversation_id: getStoredConversationId(key),
+        user: String(contact?.phone || conversation?.phone || conversation?.id || clientId || 'whatsapp-user')
+      }),
+      signal: controller.signal
+    });
+
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data?.message || data?.error || `Dify respondeu HTTP ${response.status}`);
+    }
+
+    setStoredConversationId(key, data?.conversation_id);
+    const answer = String(data?.answer || '').trim();
+    if (!answer) throw new Error('Dify nao retornou answer na resposta');
+
+    const usage = data?.metadata?.usage || {};
+    return {
+      skipped: false,
+      response: answer,
+      provider: 'dify',
+      model: data?.metadata?.model || config?.dify_model || 'dify_chatflow',
+      prompt_tokens: usage.prompt_tokens || usage.promptTokens || 0,
+      completion_tokens: usage.completion_tokens || usage.completionTokens || 0,
+      total_tokens: usage.total_tokens || usage.totalTokens || usage.total || 0,
+      processing_time_ms: Date.now() - startedAt,
+      dify_conversation_id: data?.conversation_id || ''
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+module.exports = {
+  callDifyChatMessage,
+  getDifyConfig,
+  hasDifyConfig
+};

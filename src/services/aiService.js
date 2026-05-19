@@ -7,6 +7,7 @@ const crypto = require('crypto');
 const { promisify } = require('util');
 const { execFile } = require('child_process');
 const retrievalGroundedAgent = require('../agent/whatsapp-agent.orchestrator');
+const { callDifyChatMessage, getDifyConfig } = require('./difyService');
 
 const execFileAsync = promisify(execFile);
 const RECENT_PRODUCTS_MEMORY_TTL_MS = 30 * 60 * 1000;
@@ -7983,6 +7984,42 @@ async function runRetrievalGroundedAgent({ supabase, clientId, message, conversa
   };
 }
 
+async function runDifyAgent({ supabase, clientId, message, conversation, contact, effectiveConfig, conversationHistory, systemPrompt }) {
+  const startedAt = Date.now();
+  const [productContext, siteContext, operationalContext] = await Promise.all([
+    buildProductContextForConfig(message, effectiveConfig, conversationHistory, { conversation }),
+    buildSiteContextForConfig(message, effectiveConfig),
+    buildOperationalContextForConfig(message, effectiveConfig, contact, conversation)
+  ]);
+  const products = productContext.product_context_products || productContext.recent_products_data || [];
+  if (products.length > 0) saveRecentProductsMemory(conversation, products);
+
+  const result = await callDifyChatMessage({
+    clientId,
+    message,
+    contact,
+    conversation,
+    config: effectiveConfig,
+    systemPrompt,
+    conversationHistory,
+    productContext,
+    siteContext,
+    operationalContext
+  });
+
+  return {
+    ...result,
+    processing_time_ms: result.processing_time_ms || (Date.now() - startedAt),
+    product_images: productContext.imageUrls || [],
+    product_cards: productContext.productCards || [],
+    product_context_products: products,
+    recent_products_data: products,
+    product_lookup_attempted: productContext.lookupAttempted === true,
+    product_search_text: productContext.searchText || '',
+    products_found: productContext.productsFound === true || Boolean(productContext.contextText)
+  };
+}
+
 async function generateAIResponse({ supabase, clientId, message, conversation, contact, media }) {
   const { config, client, integrations } = await getAISetup(supabase, clientId);
 
@@ -8105,6 +8142,63 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   }
 
   try {
+    const difyConfig = getDifyConfig(effectiveConfig);
+    if (difyConfig.enabled) {
+      try {
+        const difyResult = await runDifyAgent({
+          supabase,
+          clientId,
+          message,
+          conversation,
+          contact,
+          effectiveConfig,
+          conversationHistory,
+          systemPrompt
+        });
+        await logAIResult(supabase, {
+          client_id: clientId,
+          conversation_id: conversation?.id,
+          input_message: message,
+          status: 'success',
+          ...difyResult
+        });
+        console.log('[DIFY AGENT] ' + JSON.stringify({
+          conversationId: conversation?.id || '',
+          provider: difyResult.provider,
+          model: difyResult.model,
+          productCards: Array.isArray(difyResult.product_cards) ? difyResult.product_cards.length : 0,
+          productsFound: difyResult.products_found === true,
+          processingTimeMs: difyResult.processing_time_ms || 0
+        }));
+        return difyResult;
+      } catch (difyError) {
+        console.warn('[DIFY AGENT] falha: ' + String(difyError?.message || difyError).slice(0, 300));
+        await logAIResult(supabase, {
+          client_id: clientId,
+          conversation_id: conversation?.id,
+          input_message: message,
+          model: effectiveConfig.model,
+          provider: 'dify',
+          status: 'error',
+          error_message: difyError.message
+        });
+        if (!difyConfig.failoverToLocal) {
+          return {
+            skipped: false,
+            response: buildAIProviderErrorResponse(effectiveConfig),
+            provider: 'dify',
+            model: 'dify_safe_fallback',
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            processing_time_ms: 0,
+            product_images: [],
+            product_cards: []
+          };
+        }
+      }
+    }
+
     const groundedResult = await runRetrievalGroundedAgent({
       supabase,
       clientId,

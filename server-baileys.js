@@ -16,6 +16,13 @@ try {
   require('dotenv').config();
   console.log('✅ Dotenv carregado');
 
+  console.log('[DIFY CONFIG] ' + JSON.stringify({
+    provider: process.env.AI_PROVIDER || '',
+    hasApiUrl: Boolean(process.env.DIFY_API_URL || process.env.DIFY_BASE_URL),
+    hasApiKey: Boolean(process.env.DIFY_API_KEY),
+    failoverToLocal: process.env.DIFY_FAILOVER_TO_LOCAL !== 'false'
+  }));
+
   authRoutes = require('./src/routes/auth');
   clientsRoutes = require('./src/routes/clients');
   contactsRoutes = require('./src/routes/contacts');

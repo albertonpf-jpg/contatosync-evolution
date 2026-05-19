@@ -43,7 +43,8 @@ function getDifyConfig(config = {}) {
     apiKey,
     endpoint: getDifyEndpoint(apiUrl),
     timeoutMs: Number(config.dify_timeout_ms || process.env.DIFY_TIMEOUT_MS || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
-    failoverToLocal: String(process.env.DIFY_FAILOVER_TO_LOCAL || 'true').trim().toLowerCase() !== 'false'
+    failoverToLocal: String(process.env.DIFY_FAILOVER_TO_LOCAL || 'true').trim().toLowerCase() !== 'false',
+    keepConversation: String(process.env.DIFY_KEEP_CONVERSATION || 'false').trim().toLowerCase() === 'true'
   };
 }
 
@@ -74,7 +75,7 @@ function truncate(value = '', max = 12000) {
 
 function formatHistory(history = []) {
   return (Array.isArray(history) ? history : [])
-    .slice(-30)
+    .slice(-10)
     .map(item => {
       const speaker = item.direction === 'out' || item.is_from_ai ? 'Atendente/IA' : 'Cliente';
       return `${speaker}: ${String(item.content || '').trim()}`;
@@ -83,9 +84,9 @@ function formatHistory(history = []) {
     .join('\n');
 }
 
-function buildDifyQuery({ message, contact, conversation, systemPrompt, conversationHistory, productContext, siteContext, operationalContext }) {
+function buildDifyContext({ contact, conversation, systemPrompt, conversationHistory, productContext, siteContext, operationalContext }) {
   const blocks = [
-    'Responda somente a mensagem final que deve ser enviada ao cliente no WhatsApp. Use portugues do Brasil, texto curto e natural.',
+    'Contexto de atendimento. Nao trate este contexto como pergunta do cliente. A pergunta atual chega separada no campo query.',
     systemPrompt ? `Instrucao do atendimento:\n${truncate(systemPrompt, 2500)}` : '',
     `Cliente: ${contact?.name || conversation?.contact_name || 'Contato sem nome'}`,
     `Telefone: ${contact?.phone || conversation?.phone || 'nao informado'}`,
@@ -93,11 +94,19 @@ function buildDifyQuery({ message, contact, conversation, systemPrompt, conversa
     productContext?.contextText ? `Produtos reais encontrados nas APIs/catalogo do ContatoSync:\n${truncate(productContext.contextText, 9000)}` : '',
     siteContext?.contextText ? `Informacoes oficiais da loja/site:\n${truncate(siteContext.contextText, 5000)}` : '',
     operationalContext?.contextText ? `Informacoes transacionais consultadas:\n${truncate(operationalContext.contextText, 5000)}` : '',
-    'Regras criticas: nunca invente preco, estoque, prazo, link ou politica. Se houver produtos reais acima, use somente esses produtos. Nao escreva URL de imagem. Se o sistema tiver cards/carrossel, eles serao enviados fora do texto.',
-    `Mensagem atual do cliente:\n${String(message || '').trim()}`
+    'Regras criticas: responda somente a pergunta atual do cliente. Priorize a mensagem atual sobre o historico. Nunca invente preco, estoque, prazo, link ou politica. Se houver produtos reais acima, use somente esses produtos. Nao escreva URL de imagem. Se o sistema tiver cards/carrossel, eles serao enviados fora do texto.'
   ].filter(Boolean);
 
   return blocks.join('\n\n---\n\n');
+}
+
+function buildDifyQuery(message = '') {
+  return [
+    'Responda somente esta mensagem atual do cliente no WhatsApp. Use portugues do Brasil, texto curto e natural.',
+    'Se precisar usar contexto, use apenas o que foi enviado em inputs.contexto_atendimento.',
+    '',
+    String(message || '').trim()
+  ].join('\n');
 }
 
 async function callDifyChatMessage({
@@ -122,6 +131,16 @@ async function callDifyChatMessage({
   const key = getConversationKey({ clientId, conversation });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), difyConfig.timeoutMs);
+  const contextText = buildDifyContext({
+    contact,
+    conversation,
+    systemPrompt,
+    conversationHistory,
+    productContext,
+    siteContext,
+    operationalContext
+  });
+  const currentQuery = buildDifyQuery(message);
 
   try {
     const response = await fetch(difyConfig.endpoint, {
@@ -137,20 +156,13 @@ async function callDifyChatMessage({
           phone: contact?.phone || conversation?.phone || '',
           conversation_id: conversation?.id || '',
           products_found: productContext?.productsFound === true,
-          product_cards_count: Array.isArray(productContext?.productCards) ? productContext.productCards.length : 0
+          product_cards_count: Array.isArray(productContext?.productCards) ? productContext.productCards.length : 0,
+          contexto_atendimento: contextText,
+          mensagem_atual: String(message || '').trim()
         },
-        query: buildDifyQuery({
-          message,
-          contact,
-          conversation,
-          systemPrompt,
-          conversationHistory,
-          productContext,
-          siteContext,
-          operationalContext
-        }),
+        query: currentQuery,
         response_mode: 'blocking',
-        conversation_id: getStoredConversationId(key),
+        conversation_id: difyConfig.keepConversation ? getStoredConversationId(key) : '',
         user: String(contact?.phone || conversation?.phone || conversation?.id || clientId || 'whatsapp-user')
       }),
       signal: controller.signal
@@ -161,7 +173,7 @@ async function callDifyChatMessage({
       throw new Error(data?.message || data?.error || `Dify respondeu HTTP ${response.status}`);
     }
 
-    setStoredConversationId(key, data?.conversation_id);
+    if (difyConfig.keepConversation) setStoredConversationId(key, data?.conversation_id);
     const answer = String(data?.answer || '').trim();
     if (!answer) throw new Error('Dify nao retornou answer na resposta');
 

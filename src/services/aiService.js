@@ -89,6 +89,34 @@ function buildGreetingResponse(message, config = {}) {
   return configured || 'Ola! Como posso ajudar?';
 }
 
+function isCasualAssistantQuestion(message = '') {
+  const text = normalizeSearchText(message);
+  if (!text) return false;
+  if (isSimpleGreeting(message)) return true;
+  if (/\b(tudo bem|td bem|como voce esta|como vc esta|como esta|como vai|qual sua funcao|qual e sua funcao|quem e voce|quem eh voce|voce e quem|o que voce faz|o que vc faz)\b/i.test(text)) {
+    return true;
+  }
+  return false;
+}
+
+function buildCasualAssistantResponse(message = '', config = {}) {
+  const text = normalizeSearchText(message);
+  const storeName = getStoreDisplayName(config);
+  const canAnswerMood = /\b(tudo bem|td bem|como voce esta|como vc esta|como esta|como vai)\b/i.test(text);
+  const asksRole = /\b(qual sua funcao|qual e sua funcao|quem e voce|quem eh voce|voce e quem|o que voce faz|o que vc faz)\b/i.test(text);
+
+  if (canAnswerMood && asksRole) {
+    return `Estou bem, obrigada por perguntar. Sou a assistente virtual de ${storeName} e posso ajudar com produtos, tamanhos, cores, estoque, entrega, pagamento e pedidos. O que voce procura hoje?`;
+  }
+  if (asksRole) {
+    return `Sou a assistente virtual de ${storeName}. Posso ajudar com produtos, tamanhos, cores, estoque, entrega, pagamento e pedidos. O que voce procura hoje?`;
+  }
+  if (canAnswerMood) {
+    return `Estou bem, obrigada por perguntar. Como posso te ajudar hoje?`;
+  }
+  return buildGreetingResponse(message, config);
+}
+
 function getProviderForModel(model) {
   return String(model || '').toLowerCase().includes('claude') ? 'claude' : 'openai';
 }
@@ -8139,6 +8167,37 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
         product_cards: []
       };
     }
+  }
+
+  if (isCasualAssistantQuestion(message)) {
+    const casualResult = {
+      skipped: false,
+      response: buildCasualAssistantResponse(message, effectiveConfig),
+      provider: 'system',
+      model: 'casual_assistant_reply',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: [],
+      product_lookup_attempted: false,
+      products_found: false
+    };
+    console.log('[CASUAL ASSISTANT] ' + JSON.stringify({
+      conversationId: conversation?.id || '',
+      inputSummary: String(message || '').slice(0, 160),
+      outputSummary: casualResult.response.slice(0, 180),
+      decision: 'resposta direta para saudacao/pergunta social sem retrieval'
+    }));
+    await logAIResult(supabase, {
+      client_id: clientId,
+      conversation_id: conversation?.id,
+      input_message: message,
+      status: 'success',
+      ...casualResult
+    });
+    return casualResult;
   }
 
   try {

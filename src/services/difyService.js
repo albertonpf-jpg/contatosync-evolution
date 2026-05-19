@@ -35,7 +35,8 @@ function getDifyConfig(config = {}) {
     || ''
   ).trim().toLowerCase() === 'dify'
     || config.dify_enabled === true
-    || String(process.env.DIFY_ENABLED || '').trim().toLowerCase() === 'true';
+    || String(process.env.DIFY_ENABLED || '').trim().toLowerCase() === 'true'
+    || Boolean(apiUrl && apiKey);
 
   return {
     enabled,

@@ -8169,37 +8169,6 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     }
   }
 
-  if (isCasualAssistantQuestion(message)) {
-    const casualResult = {
-      skipped: false,
-      response: buildCasualAssistantResponse(message, effectiveConfig),
-      provider: 'system',
-      model: 'casual_assistant_reply',
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      processing_time_ms: 0,
-      product_images: [],
-      product_cards: [],
-      product_lookup_attempted: false,
-      products_found: false
-    };
-    console.log('[CASUAL ASSISTANT] ' + JSON.stringify({
-      conversationId: conversation?.id || '',
-      inputSummary: String(message || '').slice(0, 160),
-      outputSummary: casualResult.response.slice(0, 180),
-      decision: 'resposta direta para saudacao/pergunta social sem retrieval'
-    }));
-    await logAIResult(supabase, {
-      client_id: clientId,
-      conversation_id: conversation?.id,
-      input_message: message,
-      status: 'success',
-      ...casualResult
-    });
-    return casualResult;
-  }
-
   try {
     const difyConfig = getDifyConfig(effectiveConfig);
     if (difyConfig.enabled) {
@@ -8256,6 +8225,37 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           };
         }
       }
+    }
+
+    if (isCasualAssistantQuestion(message)) {
+      const casualResult = {
+        skipped: false,
+        response: buildCasualAssistantResponse(message, effectiveConfig),
+        provider: 'system',
+        model: 'casual_assistant_reply',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: [],
+        product_lookup_attempted: false,
+        products_found: false
+      };
+      console.log('[CASUAL ASSISTANT] ' + JSON.stringify({
+        conversationId: conversation?.id || '',
+        inputSummary: String(message || '').slice(0, 160),
+        outputSummary: casualResult.response.slice(0, 180),
+        decision: 'fallback direto para saudacao/pergunta social sem Dify ativo'
+      }));
+      await logAIResult(supabase, {
+        client_id: clientId,
+        conversation_id: conversation?.id,
+        input_message: message,
+        status: 'success',
+        ...casualResult
+      });
+      return casualResult;
     }
 
     const groundedResult = await runRetrievalGroundedAgent({

@@ -14,6 +14,7 @@ const QUICK_EMOJIS = ['😀', '😂', '😍', '🙏', '👍', '👏', '🔥', '�
 interface Contact {
   name: string;
   phone: string;
+  tags?: string[];
 }
 
 interface Conversation {
@@ -27,7 +28,6 @@ interface Conversation {
   unread_count: number;
   created_at: string;
   updated_at: string;
-  tags?: string[];
   evolution_contacts?: Contact;
 }
 
@@ -58,7 +58,6 @@ interface SocketConversationPayload {
   last_message_at?: string;
   created_at?: string;
   updated_at?: string;
-  tags?: string[];
   evolution_contacts?: Contact;
 }
 
@@ -134,7 +133,7 @@ function getConversationId(payload?: SocketConversationPayload): string {
 }
 
 function isAIPaused(conversation?: Conversation | null): boolean {
-  return Array.isArray(conversation?.tags) && conversation.tags.includes(AI_PAUSED_TAG);
+  return Array.isArray(conversation?.evolution_contacts?.tags) && conversation.evolution_contacts.tags.includes(AI_PAUSED_TAG);
 }
 
 function normalizeDirection(direction?: string): Message['direction'] {
@@ -333,15 +332,15 @@ export default function ConversationsPage() {
         contact_id: payload?.contact_id || baseConversation.contact_id,
         contact_name: payload?.contact_name || baseConversation.contact_name,
         phone: nextPhone,
+        unread_count: payload?.unread_count ?? baseConversation.unread_count,
+        status: payload?.status || baseConversation.status,
         evolution_contacts: {
           ...baseConversation.evolution_contacts,
           ...payload?.evolution_contacts,
           phone: getBestPhone(payload?.evolution_contacts?.phone, nextPhone, baseConversation.evolution_contacts?.phone),
           name: payload?.evolution_contacts?.name || baseConversation.evolution_contacts?.name || payload?.contact_name || baseConversation.contact_name || 'Sem nome',
+          tags: payload?.evolution_contacts?.tags ?? baseConversation.evolution_contacts?.tags,
         },
-        unread_count: payload?.unread_count ?? baseConversation.unread_count,
-        status: payload?.status || baseConversation.status,
-        tags: payload?.tags ?? baseConversation.tags,
         last_message_at: payload?.last_message_at || baseConversation.last_message_at,
         updated_at: payload?.updated_at || baseConversation.updated_at,
       };
@@ -505,23 +504,32 @@ export default function ConversationsPage() {
   const toggleAIPause = async () => {
     if (!selectedConv || aiPauseUpdating) return;
     const paused = isAIPaused(selectedConv);
-    const currentTags = Array.isArray(selectedConv.tags) ? selectedConv.tags : [];
+    const currentTags = Array.isArray(selectedConv.evolution_contacts?.tags) ? selectedConv.evolution_contacts.tags : [];
     const nextTags = paused
       ? currentTags.filter(tag => tag !== AI_PAUSED_TAG)
       : [...new Set([...currentTags, AI_PAUSED_TAG])];
 
     setAiPauseUpdating(true);
     try {
-      const res = await fetch(`${API}/conversations/${selectedConv.id}`, {
+      const res = await fetch(`${API}/contacts/${selectedConv.contact_id}`, {
         method: 'PUT',
         headers: { Authorization: `Bearer ${getToken()}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ tags: nextTags }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();
-      const updated = json?.data || { ...selectedConv, tags: nextTags };
-      setSelectedConv(prev => (prev?.id === selectedConv.id ? { ...prev, ...updated, tags: nextTags } : prev));
-      setConversations(prev => prev.map(item => (item.id === selectedConv.id ? { ...item, ...updated, tags: nextTags } : item)));
+      const updatedContact = json?.data || { ...(selectedConv.evolution_contacts || {}), tags: nextTags };
+      const mergeContact = (conv: Conversation): Conversation => ({
+        ...conv,
+        evolution_contacts: {
+          ...(conv.evolution_contacts || {}),
+          name: updatedContact.name || conv.evolution_contacts?.name || conv.contact_name || 'Sem nome',
+          phone: updatedContact.phone || conv.evolution_contacts?.phone || conv.phone || '',
+          tags: nextTags,
+        },
+      });
+      setSelectedConv(prev => (prev?.id === selectedConv.id ? mergeContact(prev) : prev));
+      setConversations(prev => prev.map(item => (item.id === selectedConv.id ? mergeContact(item) : item)));
     } catch (error: unknown) {
       console.error('[toggleAIPause]', error);
       alert('Erro ao atualizar a pausa da IA para esta conversa.');

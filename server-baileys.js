@@ -80,19 +80,20 @@ function hasAIPausedTag(tags) {
   return false;
 }
 
-async function isAIPausedForConversation(clientId, conversation) {
-  if (hasAIPausedTag(conversation?.tags)) return true;
+async function isAIPausedForConversation(clientId, conversation, contact) {
+  if (hasAIPausedTag(contact?.tags)) return true;
+  if (hasAIPausedTag(conversation?.evolution_contacts?.tags)) return true;
   if (!conversation?.id) return false;
 
   try {
     var { supabaseAdmin } = require('./src/config/supabase');
     var { data } = await supabaseAdmin
       .from('evolution_conversations')
-      .select('tags')
+      .select('evolution_contacts(tags)')
       .eq('client_id', clientId)
       .eq('id', conversation.id)
       .single();
-    return hasAIPausedTag(data?.tags);
+    return hasAIPausedTag(data?.evolution_contacts?.tags);
   } catch (error) {
     console.warn('[AI AUTO] Nao foi possivel verificar pausa da IA | conv: ' + conversation.id + ' | erro: ' + error.message);
     return false;
@@ -102,7 +103,7 @@ async function isAIPausedForConversation(clientId, conversation) {
 async function sendAIAutoReply({ sessionName, clientId, conversation, contact, jid, inboundContent, media, conversationCreated, incomingMessageId }) {
   if (!inboundContent || !String(inboundContent).trim()) return;
 
-  if (await isAIPausedForConversation(clientId, conversation)) {
+  if (await isAIPausedForConversation(clientId, conversation, contact)) {
     console.log('[AI AUTO] Ignorado: IA pausada para conversa | conv: ' + conversation.id);
     return;
   }
@@ -269,7 +270,7 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       contact_id: contact.id,
       contact_name: contact.name,
       phone: phone,
-      evolution_contacts: { name: contact.name, phone: phone },
+      evolution_contacts: { name: contact.name, phone: phone, tags: contact.tags || [] },
       direction: 'out',
       status: 'sent',
       is_from_ai: true,
@@ -285,12 +286,11 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
       status: conversation.status || 'active',
       priority: conversation.priority || 'normal',
       lead_stage: conversation.lead_stage || 'new',
-      tags: conversation.tags || [],
       unread_count: conversation.unread_count || 0,
       total_messages: totalMessages,
       last_message_at: now,
       updated_at: now,
-      evolution_contacts: { name: contact.name, phone: phone },
+      evolution_contacts: { name: contact.name, phone: phone, tags: contact.tags || [] },
       timestamp: now
     });
     socketIO.to(targetRoom).emit('ai_response', {
@@ -323,7 +323,7 @@ async function getAIReplyDelayMs(clientId) {
 }
 
 function enqueueAIAutoReply(payload) {
-  if (hasAIPausedTag(payload?.conversation?.tags)) {
+  if (hasAIPausedTag(payload?.contact?.tags) || hasAIPausedTag(payload?.conversation?.evolution_contacts?.tags)) {
     console.log('[AI AUTO] Nao enfileirado: IA pausada para conversa | conv: ' + payload.conversation.id);
     return;
   }
@@ -1256,7 +1256,8 @@ app.post('/internal/messages/process', async function(req, res) {
         phone: displayPhone,
         evolution_contacts: {
           name: contact.name,
-          phone: displayPhone || contact.phone || ''
+          phone: displayPhone || contact.phone || '',
+          tags: contact.tags || []
         },
         content: content,
         message_type: messageType || 'text',
@@ -1280,13 +1281,12 @@ app.post('/internal/messages/process', async function(req, res) {
           status: conversation.status || 'active',
           priority: conversation.priority || 'normal',
           lead_stage: conversation.lead_stage || 'new',
-          tags: conversation.tags || [],
           unread_count: conversation.unread_count || 1,
           total_messages: conversation.total_messages || 1,
           last_message_at: now,
           created_at: conversation.created_at || now,
           updated_at: now,
-          evolution_contacts: { name: contact.name, phone: displayPhone }
+          evolution_contacts: { name: contact.name, phone: displayPhone, tags: contact.tags || [] }
         },
         conversation_created: conversationCreated
       };
@@ -1300,13 +1300,12 @@ app.post('/internal/messages/process', async function(req, res) {
         status: conversation.status || 'active',
         priority: conversation.priority || 'normal',
         lead_stage: conversation.lead_stage || 'new',
-        tags: conversation.tags || [],
         unread_count: conversation.unread_count || 1,
         total_messages: conversation.total_messages || 1,
         last_message_at: now,
         created_at: conversation.created_at || now,
         updated_at: now,
-        evolution_contacts: { name: contact.name, phone: displayPhone || contact.phone || '' },
+        evolution_contacts: { name: contact.name, phone: displayPhone || contact.phone || '', tags: contact.tags || [] },
         created: conversationCreated,
         timestamp: now
       };

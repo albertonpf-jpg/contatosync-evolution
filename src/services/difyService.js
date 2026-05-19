@@ -28,18 +28,21 @@ function getDifyConfig(config = {}) {
     || process.env.DIFY_API_KEY
     || ''
   ).trim();
-  const enabled = String(
+  const providerValue = String(
     config.ai_provider
     || config.provider
     || process.env.AI_PROVIDER
     || ''
-  ).trim().toLowerCase() === 'dify'
+  ).trim().toLowerCase();
+  const providerIsDify = providerValue === 'dify';
+  const enabled = providerIsDify
     || config.dify_enabled === true
     || String(process.env.DIFY_ENABLED || '').trim().toLowerCase() === 'true'
     || Boolean(apiUrl && apiKey);
 
   return {
     enabled,
+    providerIsDify,
     apiUrl,
     apiKey,
     endpoint: getDifyEndpoint(apiUrl),

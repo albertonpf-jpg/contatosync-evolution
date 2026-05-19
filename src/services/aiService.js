@@ -8171,6 +8171,31 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
 
   try {
     const difyConfig = getDifyConfig(effectiveConfig);
+    if (difyConfig.providerIsDify && (!difyConfig.endpoint || !difyConfig.apiKey)) {
+      const missingConfigResult = {
+        skipped: false,
+        response: 'A IA esta configurada para usar Dify, mas a conexao do Dify ainda nao foi configurada no servidor.',
+        provider: 'dify',
+        model: 'dify_missing_configuration',
+        prompt_tokens: 0,
+        completion_tokens: 0,
+        total_tokens: 0,
+        processing_time_ms: 0,
+        product_images: [],
+        product_cards: []
+      };
+      console.error('[DIFY AGENT] configuracao ausente: DIFY_API_URL e/ou DIFY_API_KEY nao definidos');
+      await logAIResult(supabase, {
+        client_id: clientId,
+        conversation_id: conversation?.id,
+        input_message: message,
+        status: 'error',
+        error_message: 'Dify configurado como provider, mas DIFY_API_URL/DIFY_API_KEY ausentes',
+        ...missingConfigResult
+      });
+      return missingConfigResult;
+    }
+
     if (difyConfig.enabled) {
       try {
         const difyResult = await runDifyAgent({
@@ -8210,7 +8235,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           status: 'error',
           error_message: difyError.message
         });
-        if (!difyConfig.failoverToLocal) {
+        if (!difyConfig.failoverToLocal || difyConfig.providerIsDify) {
           return {
             skipped: false,
             response: buildAIProviderErrorResponse(effectiveConfig),

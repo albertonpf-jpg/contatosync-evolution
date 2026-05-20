@@ -4341,7 +4341,10 @@ function buildProductSearchText(message, conversationHistory = [], options = {})
   const current = String(message || '').trim();
   const normalizedCurrent = normalizeSearchText(current);
   const currentIsFollowUp = isCatalogFollowUpRequest(normalizedCurrent) || isMoreProductOptionsRequest(current);
-  const lastProductRequest = String(options.baseProductRequest || '').trim() || getRecentCustomerProductRequest(conversationHistory, options.conversation);
+  const historyForBaseRequest = options.ignoreCurrentMessage
+    ? (conversationHistory || []).filter(item => normalizeSearchText(item?.content || '') !== normalizeSearchText(current))
+    : conversationHistory;
+  const lastProductRequest = String(options.baseProductRequest || '').trim() || getRecentCustomerProductRequest(historyForBaseRequest, options.conversation);
   const currentForIntent = currentIsFollowUp && lastProductRequest ? `${lastProductRequest}\n${current}` : current;
   const currentShouldSearch = shouldUseConfiguredProductSources(currentForIntent);
   if (!currentShouldSearch) return currentForIntent;
@@ -4499,7 +4502,7 @@ Responda SOMENTE com JSON (todos os campos obrigatórios):
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
-          model: 'gpt-4o-mini',
+          model: 'gpt-4.1-mini',
           temperature: 0,
           max_output_tokens: 500,
           input: [{ role: 'user', content: [{ type: 'input_text', text: classifyPrompt }] }]
@@ -7266,7 +7269,7 @@ Retorne APENAS JSON valido, sem markdown, sem comentarios:
           'Authorization': `Bearer ${apiKey}`
         },
         body: JSON.stringify({
-          model: 'gpt-4o-mini',
+          model: 'gpt-4.1-mini',
           max_tokens: 600,
           temperature: 0,
           messages: [{ role: 'user', content: rankPrompt }]
@@ -7356,6 +7359,82 @@ Retorne APENAS JSON valido, sem markdown, sem comentarios:
     console.warn('[SEMANTIC] Falha no ranking semantico, usando resposta padrao | erro: ' + String((err && err.message) || err));
     return { productCards: [], customerNote: '' };
   }
+}
+
+function buildSemanticFallbackProductContext(baseContext = {}, semanticResult = {}, semanticQuery = '') {
+  const products = Array.isArray(semanticResult.products) ? semanticResult.products : [];
+  const productCards = Array.isArray(semanticResult.productCards) ? semanticResult.productCards : [];
+  if (productCards.length === 0 || products.length === 0) return baseContext;
+
+  const displayedProducts = products.slice(0, 6);
+  const productContextProducts = displayedProducts.map((product, index) => buildProductContextProduct(product, index + 1));
+  const contextText = displayedProducts.map((product, index) => [
+    `Produto/link ${index + 1}: ${product.url}`,
+    product.sourceName ? `Fonte: ${product.sourceName}` : '',
+    product.title ? `Titulo: ${product.title}` : '',
+    product.price ? `Preco: ${product.price}` : '',
+    getProductAvailableStock(product) !== null && getProductAvailableStock(product) !== undefined ? `Estoque informado: ${getProductAvailableStock(product)}` : '',
+    getAvailableProductSizes(product).length ? `Tamanhos com estoque: ${getAvailableProductSizes(product).join(', ')}` : '',
+    product.variations?.length ? `Variacoes: ${product.variations.join(', ')}` : '',
+    product.description ? `Descricao: ${product.description}` : '',
+    product.images?.length ? `Imagens disponiveis para envio: ${product.images.slice(0, 5).length}` : ''
+  ].filter(Boolean).join('\n')).join('\n\n');
+
+  return {
+    ...baseContext,
+    contextText: `Informacoes coletadas da loja virtual por busca semantica:\n${contextText}`,
+    imageUrls: productCards.map(card => card.imageUrl).filter(Boolean).slice(0, 5),
+    productCards,
+    product_context_products: productContextProducts,
+    recent_products_data: productContextProducts,
+    productsFound: true,
+    lookupAttempted: true,
+    searchText: semanticQuery || baseContext.searchText || '',
+    semantic_rank_used: true
+  };
+}
+
+async function enrichProductContextWithSemanticSearch({
+  message,
+  productContext,
+  conversationHistory,
+  conversation,
+  apiKey,
+  provider
+}) {
+  const cards = productContext?.productCards || [];
+  const allProducts = productContext?.allProductsCollected || [];
+  if (cards.length > 0 || allProducts.length === 0 || !isUsableProviderApiKey(provider, apiKey)) {
+    return productContext;
+  }
+
+  const historyWithoutCurrent = (conversationHistory || []).filter(item => normalizeSearchText(item?.content || '') !== normalizeSearchText(message));
+  const lastProductRequest = getRecentCustomerProductRequest(historyWithoutCurrent, conversation);
+  const semanticQuery = [
+    lastProductRequest,
+    productContext.searchText || '',
+    message
+  ].map(value => String(value || '').trim()).filter(Boolean).join('\n');
+  if (!semanticQuery.trim()) return productContext;
+
+  const customerIntent = {
+    intent: 'product_search',
+    source: 'semantic_fallback',
+    search_query: semanticQuery,
+    semantic_query: semanticQuery,
+    product_type: '',
+    theme: '',
+    allow_related_products: true,
+    entities: {}
+  };
+  const excludedKeys = getPreviouslyShownProductKeys(conversationHistory, conversation);
+  const freshCandidates = allProducts.filter(product => !isPreviouslyShownProduct(product, excludedKeys));
+  const candidates = freshCandidates.length > 0 ? freshCandidates : allProducts;
+  const semanticResult = await semanticRankProducts(candidates, customerIntent, semanticQuery, apiKey, provider);
+  if ((semanticResult.productCards || []).length === 0) return productContext;
+
+  console.log('[DIFY SEMANTIC PRODUCT SEARCH] query="' + escapeLogValue(semanticQuery.slice(0, 180)) + '" candidates=' + candidates.length + ' cards=' + semanticResult.productCards.length);
+  return buildSemanticFallbackProductContext(productContext, semanticResult, semanticQuery);
 }
 
 async function executePendingActionForConversation(action = {}, confirmation = '', context = {}) {
@@ -7448,7 +7527,7 @@ async function executePendingActionForConversation(action = {}, confirmation = '
 // ─── FIM BUSCA SEMÂNTICA ──────────────────────────────────────────────────────
 
 async function buildProductContextForConfig(message, config, conversationHistory = [], options = {}) {
-  const searchText = buildProductSearchText(message, conversationHistory, options);
+  const searchText = buildProductSearchText(message, conversationHistory, { ...options, ignoreCurrentMessage: true });
   const configuredSources = buildProductSourcesForConfig(config);
   if (config?.product_search_enabled === false && configuredSources.length === 0) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
   const shouldSearch = shouldUseConfiguredProductSources(searchText);
@@ -8044,13 +8123,21 @@ async function runRetrievalGroundedAgent({ supabase, clientId, message, conversa
   };
 }
 
-async function runDifyAgent({ supabase, clientId, message, conversation, contact, effectiveConfig, conversationHistory, systemPrompt }) {
+async function runDifyAgent({ supabase, clientId, message, conversation, contact, effectiveConfig, conversationHistory, systemPrompt, apiKey, provider }) {
   const startedAt = Date.now();
-  const [productContext, siteContext, operationalContext] = await Promise.all([
+  let [productContext, siteContext, operationalContext] = await Promise.all([
     buildProductContextForConfig(message, effectiveConfig, conversationHistory, { conversation }),
     buildSiteContextForConfig(message, effectiveConfig),
     buildOperationalContextForConfig(message, effectiveConfig, contact, conversation)
   ]);
+  productContext = await enrichProductContextWithSemanticSearch({
+    message,
+    productContext,
+    conversationHistory,
+    conversation,
+    apiKey,
+    provider
+  });
   const products = productContext.product_context_products || productContext.recent_products_data || [];
   if (products.length > 0) saveRecentProductsMemory(conversation, products);
 
@@ -8069,6 +8156,7 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
 
   return {
     ...result,
+    response: normalizeProductMediaResponse(result.response, productContext.productCards || []),
     processing_time_ms: result.processing_time_ms || (Date.now() - startedAt),
     product_images: productContext.imageUrls || [],
     product_cards: productContext.productCards || [],
@@ -8238,7 +8326,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           contact,
           effectiveConfig,
           conversationHistory,
-          systemPrompt
+          systemPrompt,
+          apiKey: apiKeyForClassify,
+          provider
         });
         await logAIResult(supabase, {
           client_id: clientId,

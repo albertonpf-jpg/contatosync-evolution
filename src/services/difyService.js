@@ -103,7 +103,7 @@ function buildDifyContext({ contact, conversation, systemPrompt, conversationHis
     productContext?.contextText ? `Produtos reais encontrados nas APIs/catalogo do ContatoSync:\n${truncate(productContext.contextText, 9000)}` : '',
     siteContext?.contextText ? `Informacoes oficiais da loja/site:\n${truncate(siteContext.contextText, 5000)}` : '',
     operationalContext?.contextText ? `Informacoes transacionais consultadas:\n${truncate(operationalContext.contextText, 5000)}` : '',
-    'Regras criticas: responda somente a pergunta atual do cliente. Priorize a mensagem atual sobre o historico. Nunca invente preco, estoque, prazo, link ou politica. Se houver produtos reais acima, use somente esses produtos. Nao escreva URL de imagem. Se o sistema tiver cards/carrossel, eles serao enviados fora do texto.'
+    'Regras criticas: responda somente a pergunta atual do cliente. Priorize a mensagem atual sobre o historico. Nunca invente preco, estoque, prazo, link ou politica. Se houver produtos reais acima, use somente esses produtos. Nao escreva URL de imagem. Se product_cards_count for 0, nunca diga que enviou, esta enviando ou vai reenviar fotos/cards; diga apenas que nao encontrou fotos seguras para enviar automaticamente e peca um detalhe ou ofereca nova busca. Se product_cards_count for maior que 0, os cards/carrossel serao enviados pelo sistema fora do texto.'
   ].filter(Boolean);
 
   return blocks.join('\n\n---\n\n');

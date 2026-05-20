@@ -7,7 +7,7 @@ const evidenceRanker = require('../retrieval/evidence-ranker');
 const answerComposer = require('./answer-composer');
 const confidenceGuardrail = require('./confidence-guardrail');
 const humanHandoff = require('../handoff/human-handoff.service');
-const { logAgentStep } = require('../logs/structured-logger');
+const { logAgentStep } = require('../utils/structured-logger');
 
 async function normalize(rawMessage = {}) {
   return messageTypes.createNormalizedMessage({

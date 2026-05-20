@@ -1,5 +1,5 @@
 const { retrieveConversationMemory } = require('../memory/conversation-memory');
-const { logAgentStep } = require('../logs/structured-logger');
+const { logAgentStep } = require('../utils/structured-logger');
 
 function normalizeEvidenceList(value, sourceType) {
   const list = Array.isArray(value) ? value : (value ? [value] : []);

@@ -109,10 +109,15 @@ function buildDifyContext({ contact, conversation, systemPrompt, conversationHis
   return blocks.join('\n\n---\n\n');
 }
 
-function buildDifyQuery(message = '') {
+function buildDifyQuery(message = '', contextText = '') {
   return [
     'Responda somente esta mensagem atual do cliente no WhatsApp. Use portugues do Brasil, texto curto e natural.',
-    'Se precisar usar contexto, use apenas o que foi enviado em inputs.contexto_atendimento.',
+    'Use o contexto abaixo como fonte oficial. Nao trate o contexto como pergunta do cliente.',
+    '',
+    'Contexto oficial do ContatoSync:',
+    truncate(contextText, 14000) || 'Nenhum contexto adicional informado.',
+    '',
+    'Mensagem atual do cliente:',
     '',
     String(message || '').trim()
   ].join('\n');
@@ -149,7 +154,7 @@ async function callDifyChatMessage({
     siteContext,
     operationalContext
   });
-  const currentQuery = buildDifyQuery(message);
+  const currentQuery = buildDifyQuery(message, contextText);
 
   try {
     const response = await fetch(difyConfig.endpoint, {

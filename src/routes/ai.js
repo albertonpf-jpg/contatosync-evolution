@@ -17,6 +17,27 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024 }
 });
 
+const INTERNAL_DIFY_CONFIG_FIELDS = [
+  'dify_enabled',
+  'dify_api_url',
+  'dify_api_key',
+  'dify_app_id',
+  'dify_workspace_id',
+  'dify_provision_status',
+  'dify_provision_error',
+  'dify_model',
+  'dify_timeout_ms'
+];
+
+function toPublicAIConfig(config) {
+  if (!config || typeof config !== 'object') return config;
+  const publicConfig = { ...config };
+  for (const field of INTERNAL_DIFY_CONFIG_FIELDS) {
+    delete publicConfig[field];
+  }
+  return publicConfig;
+}
+
 function normalizeSourceUrls(value) {
   const items = Array.isArray(value) ? value : [];
   const seen = new Set();
@@ -116,10 +137,10 @@ router.get('/config',
         return handleSupabaseError(res, createError, 'Erro ao criar configuração padrão');
       }
 
-      return success(res, newConfig, 'Configuração criada com padrões');
+      return success(res, toPublicAIConfig(newConfig), 'Configuração criada com padrões');
     }
 
-    success(res, config, 'Configuração de IA recuperada');
+    success(res, toPublicAIConfig(config), 'Configuração de IA recuperada');
   })
 );
 
@@ -173,9 +194,9 @@ router.put('/config',
     );
 
     // Emitir evento via WebSocket
-    emitConfigUpdate(req.user.id, updatedConfig);
+    emitConfigUpdate(req.user.id, toPublicAIConfig(updatedConfig));
 
-    success(res, updatedConfig, 'Configuração atualizada com sucesso');
+    success(res, toPublicAIConfig(updatedConfig), 'Configuração atualizada com sucesso');
   })
 );
 
@@ -217,7 +238,7 @@ router.post('/knowledge-files',
     );
 
     if (updateError) return handleSupabaseError(res, updateError, 'Erro ao salvar arquivo da IA');
-    emitConfigUpdate(req.user.id, updatedConfig);
+    emitConfigUpdate(req.user.id, toPublicAIConfig(updatedConfig));
     success(res, knowledgeFile, 'Arquivo adicionado para consulta da IA');
   })
 );
@@ -253,7 +274,7 @@ router.delete('/knowledge-files/:id',
     if (removed.path && String(removed.path).startsWith(root)) {
       fs.promises.unlink(removed.path).catch(() => {});
     }
-    emitConfigUpdate(req.user.id, updatedConfig);
+    emitConfigUpdate(req.user.id, toPublicAIConfig(updatedConfig));
     success(res, { id: req.params.id }, 'Arquivo removido');
   })
 );
@@ -599,7 +620,7 @@ router.post('/enable',
         }])
     );
 
-    success(res, updatedConfig, 'IA habilitada com sucesso');
+    success(res, toPublicAIConfig(updatedConfig), 'IA habilitada com sucesso');
   })
 );
 
@@ -636,7 +657,7 @@ router.post('/disable',
         }])
     );
 
-    success(res, updatedConfig, 'IA desabilitada com sucesso');
+    success(res, toPublicAIConfig(updatedConfig), 'IA desabilitada com sucesso');
   })
 );
 

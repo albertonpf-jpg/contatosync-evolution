@@ -145,6 +145,10 @@ const sanitizeSensitiveData = (data) => {
     'icloud_password',
     'openai_api_key',
     'claude_api_key',
+    'dify_api_key',
+    'dify_app_id',
+    'dify_workspace_id',
+    'dify_provision_error',
     'api_key',
     'api_secret'
   ];

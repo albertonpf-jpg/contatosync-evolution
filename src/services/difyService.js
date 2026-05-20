@@ -15,36 +15,41 @@ function getDifyEndpoint(baseUrl = '') {
 }
 
 function getDifyConfig(config = {}) {
+  const envAgentProvider = String(process.env.AI_AGENT_PROVIDER || process.env.AI_PROVIDER || '').trim().toLowerCase();
+  const globalDifyDisabled = String(process.env.DIFY_GLOBAL_ENABLED || '').trim().toLowerCase() === 'false';
+  const allowGlobalAppFallback = String(process.env.DIFY_ALLOW_GLOBAL_APP_FALLBACK || '').trim().toLowerCase() === 'true';
+  const globalDifyEnabled = !globalDifyDisabled && (
+    envAgentProvider === 'dify'
+    || String(process.env.DIFY_ENABLED || '').trim().toLowerCase() === 'true'
+    || Boolean(process.env.DIFY_API_URL && process.env.DIFY_API_KEY)
+  );
+  const configApiUrl = cleanBaseUrl(config.dify_api_url || config.difyApiUrl || '');
+  const configApiKey = String(config.dify_api_key || config.difyApiKey || '').trim();
+  const configAppId = String(config.dify_app_id || config.difyAppId || '').trim();
   const apiUrl = cleanBaseUrl(
-    config.dify_api_url
-    || config.difyApiUrl
+    configApiUrl
     || process.env.DIFY_API_URL
     || process.env.DIFY_BASE_URL
     || ''
   );
   const apiKey = String(
-    config.dify_api_key
-    || config.difyApiKey
-    || process.env.DIFY_API_KEY
+    configApiKey
+    || (globalDifyEnabled && allowGlobalAppFallback ? process.env.DIFY_API_KEY : '')
     || ''
   ).trim();
-  const providerValue = String(
-    config.ai_provider
-    || config.provider
-    || process.env.AI_PROVIDER
-    || ''
-  ).trim().toLowerCase();
-  const providerIsDify = providerValue === 'dify';
-  const enabled = providerIsDify
+  const providerIsDify = globalDifyEnabled
     || config.dify_enabled === true
-    || String(process.env.DIFY_ENABLED || '').trim().toLowerCase() === 'true'
-    || Boolean(apiUrl && apiKey);
+    || Boolean(configApiUrl || configApiKey);
+  const enabled = providerIsDify
+    || Boolean(apiUrl && configApiKey);
 
   return {
     enabled,
     providerIsDify,
     apiUrl,
     apiKey,
+    appId: configAppId,
+    provisionStatus: String(config.dify_provision_status || '').trim(),
     endpoint: getDifyEndpoint(apiUrl),
     timeoutMs: Number(config.dify_timeout_ms || process.env.DIFY_TIMEOUT_MS || DEFAULT_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS,
     failoverToLocal: String(process.env.DIFY_FAILOVER_TO_LOCAL || 'true').trim().toLowerCase() !== 'false',

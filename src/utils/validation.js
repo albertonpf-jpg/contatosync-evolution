@@ -116,6 +116,7 @@ const messageSchemas = {
 const aiConfigSchemas = {
   update: Joi.object({
     enabled: Joi.boolean().optional(),
+    ai_provider: Joi.string().valid('openai', 'claude', 'gemini', 'openrouter', 'local').optional().allow(''),
     model: Joi.string().max(100).optional(),
     max_tokens: Joi.number().integer().min(1).max(4000).optional(),
     temperature: Joi.number().precision(2).min(0).max(2).optional(),

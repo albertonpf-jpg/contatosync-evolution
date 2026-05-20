@@ -10,6 +10,8 @@ npm-debug.log*
 
 # Logs
 logs
+!src/logs/
+!src/logs/**
 *.log
 
 # Arquivos temporários

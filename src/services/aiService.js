@@ -2676,10 +2676,6 @@ function getSearchTokens(value) {
       'quantos',
       'quanta',
       'quanto',
-      'tecido',
-      'tecidos',
-      'material',
-      'materiais',
       'estoque',
       'peca',
       'pecas',
@@ -3477,24 +3473,38 @@ function hasNegativeProductMatch(product, tokens = []) {
   return tokens.some(token => new RegExp(`\\b(?:nao|sem|acompanha|acompanham|acompanhar)\\b.{0,40}\\b${token}\\b|\\b${token}\\b.{0,40}\\b(?:nao|sem|acompanha|acompanham|acompanhar)\\b`, 'i').test(haystack));
 }
 
-function isPreviouslyShownProduct(product, excludedTitleKeys = []) {
-  if (!excludedTitleKeys.length) return false;
-  const title = normalizeSearchText(product?.title || '');
-  if (!title) return false;
-  return excludedTitleKeys.some(key => key && (title === key || title.includes(key) || key.includes(title)));
+function getProductIdentityKeys(product = {}) {
+  return [
+    product.id ? `id:${String(product.id).trim().toLowerCase()}` : '',
+    product.url ? `url:${String(product.url).trim().toLowerCase()}` : '',
+    product.title ? `title:${normalizeSearchText(product.title)}` : ''
+  ].filter(Boolean);
 }
 
-function preferNotPreviouslyShown(products = [], excludedTitleKeys = []) {
-  if (!excludedTitleKeys.length || products.length <= 1) return products;
-  const fresh = products.filter(product => !isPreviouslyShownProduct(product, excludedTitleKeys));
+function isPreviouslyShownProduct(product, excludedProductKeys = []) {
+  if (!excludedProductKeys.length) return false;
+  const identityKeys = getProductIdentityKeys(product);
+  if (identityKeys.some(key => excludedProductKeys.includes(key))) return true;
+  const title = normalizeSearchText(product?.title || '');
+  if (!title) return false;
+  return excludedProductKeys.some(key => {
+    const titleKey = String(key || '').startsWith('title:') ? String(key).slice(6) : String(key || '');
+    return titleKey && (title === titleKey || title.includes(titleKey) || titleKey.includes(title));
+  });
+}
+
+function preferNotPreviouslyShown(products = [], excludedProductKeys = []) {
+  if (!excludedProductKeys.length || products.length <= 1) return products;
+  const fresh = products.filter(product => !isPreviouslyShownProduct(product, excludedProductKeys));
   return fresh.length > 0 ? fresh : products;
 }
 
-function getPreviouslyShownProductTitleKeys(conversationHistory = [], conversation = {}) {
-  const keys = [
-    ...extractPreviouslyMentionedProductTitles(conversationHistory),
-    ...getRecentProductsMemory(conversation).map(product => product.title || '')
-  ].map(normalizeSearchText).filter(Boolean);
+function getPreviouslyShownProductKeys(conversationHistory = [], conversation = {}) {
+  const titleKeys = extractPreviouslyMentionedProductTitles(conversationHistory)
+    .map(title => `title:${normalizeSearchText(title)}`)
+    .filter(Boolean);
+  const memoryKeys = getRecentProductsMemory(conversation).flatMap(getProductIdentityKeys);
+  const keys = [...titleKeys, ...memoryKeys].filter(Boolean);
   return [...new Set(keys)];
 }
 
@@ -3503,9 +3513,10 @@ function getRelevantProducts(products, message, options = {}) {
   const specificTokens = getSpecificProductTokens(messageTokens);
   const colorTokens = getColorTokens(messageTokens);
   const requestedSizes = extractRequestedSizes(message);
-  const excludedTitleKeys = Array.isArray(options.excludeTitles)
-    ? options.excludeTitles.map(normalizeSearchText).filter(Boolean)
-    : [];
+  const excludedProductKeys = [
+    ...(Array.isArray(options.excludeProducts) ? options.excludeProducts : []),
+    ...(Array.isArray(options.excludeTitles) ? options.excludeTitles.map(title => `title:${normalizeSearchText(title)}`) : [])
+  ].map(String).filter(Boolean);
   const ragHintTitleKeys = Array.isArray(options.vectorProductHints)
     ? options.vectorProductHints.map(hint => normalizeSearchText(hint?.title || hint?.titleKey || '')).filter(Boolean)
     : [];
@@ -3542,7 +3553,7 @@ function getRelevantProducts(products, message, options = {}) {
         _hasStock: hasStock,
         _isRecommendable: productIsRecommendableForRequest(product, requestedSizes),
         _hasRequestedSizeInStock: hasRequestedSizeInStock,
-        _wasPreviouslyShown: isPreviouslyShownProduct(product, excludedTitleKeys),
+        _wasPreviouslyShown: isPreviouslyShownProduct(product, excludedProductKeys),
         _ragHintMatched: ragHintTitleKeys.includes(title),
         _titleMatches: countTokenMatches(title, messageTokens),
         _specificMatches: countTokenMatches(haystack, specificTokens),
@@ -3575,7 +3586,7 @@ function getRelevantProducts(products, message, options = {}) {
       .filter(product => product._hasRequestedSizeInStock || productIsRecommendableForRequest(product, requestedSizes))
       .sort((a, b) => Number(b._hasRequestedSizeInStock) - Number(a._hasRequestedSizeInStock) || b.score - a.score);
     if (sizeMatchedInStock.length > 0 && (messageTokens.length === 0 || specificTokens.length === 0)) {
-      return preferNotPreviouslyShown(sizeMatchedInStock, excludedTitleKeys).slice(0, 6);
+      return preferNotPreviouslyShown(sizeMatchedInStock, excludedProductKeys).slice(0, 6);
     }
     if (messageTokens.length === 0 || specificTokens.length === 0) {
       return [];
@@ -3583,7 +3594,7 @@ function getRelevantProducts(products, message, options = {}) {
   }
 
   if (messageTokens.length === 0) {
-    return preferNotPreviouslyShown(candidateProducts, excludedTitleKeys).slice(0, 6);
+    return preferNotPreviouslyShown(candidateProducts, excludedProductKeys).slice(0, 6);
   }
 
   const minSpecificMatches = specificTokens.length >= 2 ? specificTokens.length : specificTokens.length;
@@ -3602,9 +3613,9 @@ function getRelevantProducts(products, message, options = {}) {
   if (matched.length > 0) {
     const titleOrCategoryMatched = matched.filter(product => product._titleMatches > 0 || countTokenMatches(normalizeSearchText([product.category, product.categoryName, product.categoria_nome].join(' ')), specificTokens) > 0);
     if (specificTokens.length > 0 && titleOrCategoryMatched.length > 0) {
-      return preferNotPreviouslyShown(titleOrCategoryMatched, excludedTitleKeys).slice(0, 6);
+      return preferNotPreviouslyShown(titleOrCategoryMatched, excludedProductKeys).slice(0, 6);
     }
-    return preferNotPreviouslyShown(matched, excludedTitleKeys).slice(0, 6);
+    return preferNotPreviouslyShown(matched, excludedProductKeys).slice(0, 6);
   }
   return [];
 }
@@ -7441,8 +7452,8 @@ async function buildProductContextForConfig(message, config, conversationHistory
   const configuredSources = buildProductSourcesForConfig(config);
   if (config?.product_search_enabled === false && configuredSources.length === 0) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
   const shouldSearch = shouldUseConfiguredProductSources(searchText);
-  const excludeTitles = isCatalogFollowUpRequest(message)
-    ? getPreviouslyShownProductTitleKeys(conversationHistory, options.conversation)
+  const excludeProducts = isCatalogFollowUpRequest(message)
+    ? getPreviouslyShownProductKeys(conversationHistory, options.conversation)
     : [];
   const ragObservationQuery = String(options.ragObservationQuery || (isCatalogFollowUpRequest(message) ? searchText : message) || searchText || '').trim();
   const productPrefilterEnabled = shouldSearch && (options.forceRagPrefilter === true || getRagFlag(config, 'rag_product_prefilter_enabled', 'RAG_PRODUCT_PREFILTER_ENABLED', false));
@@ -7450,7 +7461,7 @@ async function buildProductContextForConfig(message, config, conversationHistory
     ? await getRagProductPrefilterHints(ragObservationQuery || searchText, config)
     : [];
   const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : [], {
-    excludeTitles,
+    excludeProducts,
     vectorProductHints,
     maxImagesPerProduct: isCatalogFollowUpRequest(message) ? 1 : 2
   });

@@ -2676,6 +2676,10 @@ function getSearchTokens(value) {
       'quantos',
       'quanta',
       'quanto',
+      'tecido',
+      'tecidos',
+      'material',
+      'materiais',
       'estoque',
       'peca',
       'pecas',
@@ -3486,6 +3490,14 @@ function preferNotPreviouslyShown(products = [], excludedTitleKeys = []) {
   return fresh.length > 0 ? fresh : products;
 }
 
+function getPreviouslyShownProductTitleKeys(conversationHistory = [], conversation = {}) {
+  const keys = [
+    ...extractPreviouslyMentionedProductTitles(conversationHistory),
+    ...getRecentProductsMemory(conversation).map(product => product.title || '')
+  ].map(normalizeSearchText).filter(Boolean);
+  return [...new Set(keys)];
+}
+
 function getRelevantProducts(products, message, options = {}) {
   const messageTokens = getSearchTokens(message);
   const specificTokens = getSpecificProductTokens(messageTokens);
@@ -3938,9 +3950,10 @@ async function fetchProductContext(message, sourceUrls = [], options = {}) {
 
   const displayedProducts = relevantProducts.slice(0, 6);
   const productContextProducts = displayedProducts.map((product, index) => buildProductContextProduct(product, index + 1));
+  const maxImagesPerProduct = Math.max(1, Math.min(2, Number(options.maxImagesPerProduct || 2)));
   const productCards = [];
   for (const product of displayedProducts) {
-    const images = (product.images || []).slice(0, 2);
+    const images = (product.images || []).slice(0, maxImagesPerProduct);
     for (let index = 0; index < images.length; index += 1) {
       const image = images[index];
       const suffix = images.length > 1 ? ` - foto ${index + 1}` : '';
@@ -6651,7 +6664,11 @@ function getLastProductSearchRequestMemory(conversation = {}) {
 function saveRecentProductsMemory(conversation = {}, products = []) {
   const key = getConversationMemoryKey(conversation);
   if (!key) return;
-  const safeProducts = dedupeRecentProductContext(normalizeRecentProductDataList(products));
+  const previous = getRecentProductsMemory(conversation);
+  const safeProducts = dedupeRecentProductContext([
+    ...previous,
+    ...normalizeRecentProductDataList(products)
+  ]);
   if (safeProducts.length === 0) return;
   recentProductsByConversation.set(key, {
     products: safeProducts,
@@ -7425,14 +7442,18 @@ async function buildProductContextForConfig(message, config, conversationHistory
   if (config?.product_search_enabled === false && configuredSources.length === 0) return { contextText: '', imageUrls: [], productCards: [], lookupAttempted: false };
   const shouldSearch = shouldUseConfiguredProductSources(searchText);
   const excludeTitles = isCatalogFollowUpRequest(message)
-    ? extractPreviouslyMentionedProductTitles(conversationHistory)
+    ? getPreviouslyShownProductTitleKeys(conversationHistory, options.conversation)
     : [];
   const ragObservationQuery = String(options.ragObservationQuery || (isCatalogFollowUpRequest(message) ? searchText : message) || searchText || '').trim();
   const productPrefilterEnabled = shouldSearch && (options.forceRagPrefilter === true || getRagFlag(config, 'rag_product_prefilter_enabled', 'RAG_PRODUCT_PREFILTER_ENABLED', false));
   const vectorProductHints = productPrefilterEnabled
     ? await getRagProductPrefilterHints(ragObservationQuery || searchText, config)
     : [];
-  const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : [], { excludeTitles, vectorProductHints });
+  const productContext = await fetchProductContext(searchText, shouldSearch ? configuredSources : [], {
+    excludeTitles,
+    vectorProductHints,
+    maxImagesPerProduct: isCatalogFollowUpRequest(message) ? 1 : 2
+  });
   if (shouldSearch) {
     queueRagProductIndexFromContext(productContext, config);
     if (productPrefilterEnabled) {

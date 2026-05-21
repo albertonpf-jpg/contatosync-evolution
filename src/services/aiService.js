@@ -7719,19 +7719,19 @@ function buildStockOnlyResultFromProductContext(customerIntent = {}, message = '
   };
 }
 
-async function resolveStockCalculationBeforeDify({ message, conversation, conversationHistory, productContext, apiKey, provider, effectiveConfig }) {
-  const customerIntent = await classifyCustomerIntent({
+async function resolveStockCalculationBeforeDify({ message, conversation, conversationHistory, productContext, apiKey, provider, effectiveConfig, customerIntent }) {
+  const resolvedIntent = customerIntent || await classifyCustomerIntent({
     apiKey,
     provider,
     message,
     conversationHistory,
     config: effectiveConfig
   });
-  if (!isStockCalculationIntent(customerIntent)) return null;
+  if (!isStockCalculationIntent(resolvedIntent)) return null;
 
   const selectedMemory = getSelectedProductMemory(conversation);
   if (selectedMemory?.product) {
-    const filters = filtersFromCustomerIntent(customerIntent, message);
+    const filters = filtersFromCustomerIntent(resolvedIntent, message);
     const selectedAnswer = answerSelectedProductQuestion(message, selectedMemory.product, filters);
     console.log('[STOCK ONLY SELECTED MEMORY] confidence=' + selectedAnswer.confidence);
     return {
@@ -7753,10 +7753,10 @@ async function resolveStockCalculationBeforeDify({ message, conversation, conver
     };
   }
 
-  const contextAnswer = buildStockOnlyResultFromProductContext(customerIntent, message, productContext);
+  const contextAnswer = buildStockOnlyResultFromProductContext(resolvedIntent, message, productContext);
   if (contextAnswer) return contextAnswer;
 
-  const recentAnswer = buildRecentProductStockAnswer(customerIntent, message, conversationHistory, conversation);
+  const recentAnswer = buildRecentProductStockAnswer(resolvedIntent, message, conversationHistory, conversation);
   if (!recentAnswer) return null;
   return {
     skipped: false,
@@ -8301,6 +8301,31 @@ async function runRetrievalGroundedAgent({ supabase, clientId, message, conversa
 
 async function runDifyAgent({ supabase, clientId, message, conversation, contact, effectiveConfig, conversationHistory, systemPrompt, apiKey, provider }) {
   const startedAt = Date.now();
+  const currentIntent = await classifyCustomerIntent({
+    apiKey,
+    provider,
+    message,
+    conversationHistory,
+    config: effectiveConfig
+  });
+  if (isStockCalculationIntent(currentIntent)) {
+    const stockMemoryResult = await resolveStockCalculationBeforeDify({
+      message,
+      conversation,
+      conversationHistory,
+      productContext: {},
+      apiKey,
+      provider,
+      effectiveConfig,
+      customerIntent: currentIntent
+    });
+    if (stockMemoryResult) {
+      return {
+        ...stockMemoryResult,
+        processing_time_ms: stockMemoryResult.processing_time_ms || (Date.now() - startedAt)
+      };
+    }
+  }
   let [productContext, operationalContext] = await Promise.all([
     buildProductContextForConfig(message, effectiveConfig, conversationHistory, { conversation }),
     buildOperationalContextForConfig(message, effectiveConfig, contact, conversation)
@@ -8327,7 +8352,8 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
     productContext,
     apiKey,
     provider,
-    effectiveConfig
+    effectiveConfig,
+    customerIntent: currentIntent
   });
   if (stockOnlyResult) {
     return {

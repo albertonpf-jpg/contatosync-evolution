@@ -1671,20 +1671,7 @@ function normalizeProductMediaResponse(text, productCards = []) {
       .trim();
   }
 
-  const asksPermission = /posso\s+(te\s+)?(mandar|enviar|mostrar)|quer\s+que\s+eu\s+(mande|envie|mostre)|quer\s+ver\s+(as\s+)?fotos|deseja\s+(que\s+eu\s+)?(ver|receber|as\s+fotos)/i.test(response);
-  if (asksPermission || !response) {
-    const first = productCards[0];
-    return [
-      `Encontrei ${first?.title || 'o produto'} na loja.`,
-      first?.description || '',
-      'Enviei as fotos do produto acima.'
-    ].filter(Boolean).join('\n');
-  }
-
-  return response
-    .replace(/(?:posso|quer que eu|deseja que eu)[^.!?\n]*(?:foto|imagem|imagens|fotos)[^.!?\n]*[.!?]?/gi, 'Enviei as fotos do produto acima.')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  return 'Separei estas opcoes no catalogo:';
 }
 
 function buildProductLookupEmptyResponse(searchText) {
@@ -3243,6 +3230,19 @@ function hasPositiveProductStock(product = {}) {
   const stock = getProductAvailableStock(product);
   return Number.isFinite(Number(stock)) && Number(stock) > 0;
 }
+
+const SEMANTIC_PRODUCT_TYPE_TERMS = [
+  'camiseta', 'camisa', 'blusa', 'blusinha', 'tshirt', 'cropped', 'body', 'moletom', 'moleton',
+  'casaco', 'jaqueta', 'sobretudo', 'conjunto', 'kit', 'pijama', 'camisola', 'vestido', 'saia',
+  'short', 'shorts', 'bermuda', 'calca', 'legging', 'macacao', 'macaquinho', 'jardineira',
+  'regata', 'top', 'colete', 'tenis', 'sandalia', 'papete', 'bolsa', 'mochila', 'oculos', 'laco'
+];
+
+const SEMANTIC_REQUEST_NOISE_TERMS = [
+  'site', 'voces', 'voce', 'busque', 'buscar', 'procure', 'procurar', 'mande', 'envie', 'enviar',
+  'mostre', 'mostrar', 'fotos', 'foto', 'opcao', 'opcoes', 'modelo', 'modelos', 'algo', 'nao',
+  'seja', 'nem', 'mais', 'outra', 'outras', 'tem', 'vi'
+];
 
 function productIsRecommendableForRequest(product = {}, requestedSizes = []) {
   if (!hasPositiveProductStock(product)) return false;
@@ -7054,21 +7054,22 @@ function getSemanticRequestProfile(customerIntent = {}, semanticQuery = '') {
     customerIntent.theme || ''
   ].join(' '));
   const productTypeTokens = getSpecificProductTokens(getSearchTokens(customerIntent.product_type || ''));
-  const explicitThemeTokens = getSpecificProductTokens(getSearchTokens(customerIntent.theme || customerIntent.entities?.theme || ''));
-  const queryThemeTokens = getSpecificProductTokens(getSearchTokens([
-    customerIntent.theme || '',
-    customerIntent.entities?.theme || '',
-    customerIntent.semantic_query || '',
-    customerIntent.search_query || '',
-    semanticQuery || ''
-  ].join(' '))).filter(token => !productTypeTokens.includes(token));
-  const requestedThemeTokens = [...new Set((explicitThemeTokens.length ? explicitThemeTokens : queryThemeTokens).filter(token => token.length >= 3))].slice(0, 8);
+  const explicitThemeTokens = getSpecificProductTokens(getSearchTokens(customerIntent.theme || customerIntent.entities?.theme || ''))
+    .filter(token => !SEMANTIC_PRODUCT_TYPE_TERMS.includes(token) && !SEMANTIC_REQUEST_NOISE_TERMS.includes(token));
+  const requestedThemeTokens = [...new Set(explicitThemeTokens.filter(token => token.length >= 3))].slice(0, 8);
+  const requestTokens = getSpecificProductTokens(getSearchTokens(requestText));
+  const wantsSet = requestTokens.includes('conjunto') || requestTokens.includes('kit');
+  const wantsWarmLayer = requestTokens.some(token => ['moletom', 'moleton', 'casaco', 'jaqueta', 'sobretudo', 'blusao'].includes(token));
   return {
     requestText,
-    wantsUpperPiece: hasAnySemanticTerm(requestText, ['camiseta', 'camisa', 'blusa', 't shirt', 'tshirt', 'cropped', 'body', 'moletom']),
+    requestTokens,
+    wantsSet,
+    wantsWarmLayer,
+    wantsUpperPiece: hasAnySemanticTerm(requestText, ['camiseta', 'camisa', 'blusa', 't shirt', 'tshirt', 'cropped', 'body']) && !wantsSet,
     hasRequestedTheme: requestedThemeTokens.length > 0,
     requestedThemeTokens,
-    upperPieceTerms: ['camiseta', 'camisa', 'blusa', 't shirt', 'tshirt', 'cropped', 'body', 'moletom', 'regata', 'top'],
+    upperPieceTerms: ['camiseta', 'camisa', 'blusa', 'blusinha', 't shirt', 'tshirt', 'cropped', 'body', 'regata', 'top'],
+    warmLayerTerms: ['moletom', 'moleton', 'casaco', 'jaqueta', 'sobretudo', 'blusao'],
     setTerms: ['conjunto', 'kit'],
     pajamaTerms: ['pijama', 'camisola'],
     isolatedBottomTerms: ['calca', 'saia', 'short', 'shorts', 'bermuda', 'legging', 'wide leg']
@@ -7079,6 +7080,7 @@ function evaluateSemanticProductFit(product = {}, requestProfile = {}) {
   const haystack = getSemanticProductHaystack(product);
   const hasRequestedTheme = hasAnySemanticTerm(haystack, requestProfile.requestedThemeTokens || []);
   const isUpperPiece = hasAnySemanticTerm(haystack, requestProfile.upperPieceTerms || []);
+  const isWarmLayer = hasAnySemanticTerm(haystack, requestProfile.warmLayerTerms || []);
   const isSet = hasAnySemanticTerm(haystack, requestProfile.setTerms || []);
   const isPajama = hasAnySemanticTerm(haystack, requestProfile.pajamaTerms || []);
   const isIsolatedBottom = hasAnySemanticTerm(haystack, requestProfile.isolatedBottomTerms || []);
@@ -7088,6 +7090,16 @@ function evaluateSemanticProductFit(product = {}, requestProfile = {}) {
   }
 
   let scoreAdjustment = 0;
+  if (requestProfile.wantsWarmLayer) {
+    if (isWarmLayer) scoreAdjustment += 16;
+    if (requestProfile.wantsSet && isSet) scoreAdjustment += 18;
+    if (isSet && isWarmLayer) scoreAdjustment += 10;
+    if (!isWarmLayer && !hasRequestedTheme) scoreAdjustment -= 14;
+  }
+  if (requestProfile.wantsSet) {
+    if (isSet) scoreAdjustment += 14;
+    if (!isSet && !hasRequestedTheme) scoreAdjustment -= 12;
+  }
   if (requestProfile.wantsUpperPiece) {
     if (isUpperPiece) scoreAdjustment += 12;
     if (isSet && hasRequestedTheme) scoreAdjustment += 7;
@@ -7427,8 +7439,10 @@ async function enrichProductContextWithSemanticSearch({
     allow_related_products: true,
     entities: {}
   };
-  const excludedKeys = getPreviouslyShownProductKeys(conversationHistory, conversation);
-  const freshCandidates = allProducts.filter(product => !isPreviouslyShownProduct(product, excludedKeys));
+  const requestProfile = getSemanticRequestProfile(customerIntent, semanticQuery);
+  const shouldPreferFresh = !requestProfile.wantsSet && !requestProfile.requestTokens.some(token => ['conjunto', 'kit'].includes(token));
+  const excludedKeys = shouldPreferFresh ? getPreviouslyShownProductKeys(conversationHistory, conversation) : [];
+  const freshCandidates = shouldPreferFresh ? allProducts.filter(product => !isPreviouslyShownProduct(product, excludedKeys)) : [];
   const candidates = freshCandidates.length > 0 ? freshCandidates : allProducts;
   const semanticResult = await semanticRankProducts(candidates, customerIntent, semanticQuery, apiKey, provider);
   if ((semanticResult.productCards || []).length === 0) return productContext;

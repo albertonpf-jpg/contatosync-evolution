@@ -7596,7 +7596,7 @@ function buildDifyKnowledgeContextForConfig(config = {}) {
 }
 
 function shouldForceSiteContextForDify(message, productContext = {}) {
-  const text = normalizeText(message);
+  const text = normalizeSearchText(message);
   const asksMoreEvidence = /\b(mais|outras?|opcoes|opcao|modelo|modelos|tem|existe|busca|procura|site|catalogo|loja)\b/i.test(text);
   const productLookupFailed = productContext.lookupAttempted === true
     && productContext.productsFound !== true

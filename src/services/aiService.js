@@ -8668,5 +8668,9 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
 
 }
 module.exports = {
-  generateAIResponse
+  generateAIResponse,
+  buildProductContextForConfig,
+  buildSiteContextForConfig,
+  buildDifyKnowledgeContextForConfig,
+  buildOperationalContextForConfig
 };

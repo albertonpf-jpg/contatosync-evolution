@@ -9,7 +9,7 @@ console.log('🚀 Iniciando ContatoSync Evolution...');
 
 // Declarar variáveis fora do try/catch
 let authRoutes, clientsRoutes, contactsRoutes, conversationsRoutes, messagesRoutes;
-let aiRoutes, activitiesRoutes, integrationsRoutes, sessionsRoutes, whatsappRoutes, webhooksRoutes;
+let aiRoutes, activitiesRoutes, integrationsRoutes, sessionsRoutes, whatsappRoutes, webhooksRoutes, difyToolsRoutes;
 let auth, socketAuth, initializeSocket;
 
 try {
@@ -34,6 +34,7 @@ try {
   sessionsRoutes = require('./src/routes/sessions');
   whatsappRoutes = require('./src/routes/whatsapp');
   webhooksRoutes = require('./src/routes/webhooks');
+  difyToolsRoutes = require('./src/routes/difyTools');
   ({ auth } = require('./src/middleware/auth'));
   socketAuth = require('./src/middleware/socketAuth');
   ({ initializeSocket } = require('./src/services/socketService'));
@@ -1376,6 +1377,7 @@ app.post('/internal/messages/process', async function(req, res) {
 // ========================
 app.use('/api/auth', authRoutes);
 app.use('/api/webhooks', webhooksRoutes);
+app.use('/api/dify-tools', difyToolsRoutes);
 
 // ========================
 // ROTAS PROTEGIDAS

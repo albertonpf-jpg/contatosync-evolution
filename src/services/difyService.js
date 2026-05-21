@@ -14,6 +14,18 @@ function getDifyEndpoint(baseUrl = '') {
   return `${clean}/v1/chat-messages`;
 }
 
+function getDifyToolApiKey() {
+  return String(process.env.DIFY_TOOL_API_KEY || process.env.DIFY_TOOLS_API_KEY || '').trim();
+}
+
+function getPublicToolBaseUrl() {
+  const explicit = process.env.PUBLIC_API_URL || process.env.API_PUBLIC_URL || process.env.NEXT_PUBLIC_API_URL;
+  if (explicit) return cleanBaseUrl(explicit.replace(/\/api\/?$/i, ''));
+  if (process.env.RAILWAY_PUBLIC_DOMAIN) return `https://${String(process.env.RAILWAY_PUBLIC_DOMAIN).replace(/\/+$/, '')}`;
+  if (process.env.RAILWAY_STATIC_URL) return `https://${String(process.env.RAILWAY_STATIC_URL).replace(/\/+$/, '')}`;
+  return '';
+}
+
 function getDifyConfig(config = {}) {
   const envAgentProvider = String(process.env.AI_AGENT_PROVIDER || process.env.AI_PROVIDER || '').trim().toLowerCase();
   const globalDifyDisabled = String(process.env.DIFY_GLOBAL_ENABLED || '').trim().toLowerCase() === 'false';
@@ -95,6 +107,9 @@ function formatHistory(history = []) {
 
 function buildDifyContext({ contact, conversation, systemPrompt, conversationHistory, productContext, siteContext, operationalContext, knowledgeContext }) {
   const productCardsCount = Array.isArray(productContext?.productCards) ? productContext.productCards.length : 0;
+  const toolBaseUrl = getPublicToolBaseUrl();
+  const toolSearchUrl = toolBaseUrl ? `${toolBaseUrl}/api/dify-tools/search` : '/api/dify-tools/search';
+  const toolActionUrl = toolBaseUrl ? `${toolBaseUrl}/api/dify-tools/action` : '/api/dify-tools/action';
   const blocks = [
     'Contexto de atendimento. Nao trate este contexto como pergunta do cliente. A pergunta atual chega separada no campo query.',
     systemPrompt ? `Instrucao do atendimento:\n${truncate(systemPrompt, 2500)}` : '',
@@ -106,6 +121,7 @@ function buildDifyContext({ contact, conversation, systemPrompt, conversationHis
     siteContext?.contextText ? `Informacoes oficiais da loja/site:\n${truncate(siteContext.contextText, 5000)}` : '',
     operationalContext?.contextText ? `Informacoes transacionais consultadas:\n${truncate(operationalContext.contextText, 5000)}` : '',
     `Capacidade tecnica do WhatsApp: product_cards_count=${productCardsCount}. O ContatoSync so pode montar/enviar os cards tecnicos se voce decidir send_cards=true. Se send_cards=false, o ContatoSync enviara apenas o texto de answer.`,
+    `Ferramentas HTTP disponiveis para o Dify quando configuradas no Chatflow:\nGET ${toolSearchUrl}?client_id=<client_id>&type=all|catalog|site|files|operational&query=<consulta>&conversation_id=<conversation_id>&phone=<phone>\nPOST ${toolActionUrl} com JSON {"client_id":"<client_id>","action":"create_activity|update_contact_tags","payload":{...}}.\nUse header Authorization: Bearer <DIFY_TOOL_API_KEY>. Essas ferramentas permitem consultar APIs/catalogo, URLs/site, arquivos/base do cliente e executar POSTs controlados no ContatoSync.`,
     'Regras criticas: voce, Dify, e o cerebro do atendimento. O ContatoSync nao deve decidir a resposta, apenas fornece contexto/ferramentas e executa o envio tecnico de cards quando voce pedir. Responda somente a pergunta atual do cliente. Priorize a mensagem atual sobre o historico. Avalie em conjunto todas as fontes recebidas: prompt/configuracoes, arquivos/base do cliente, site/URLs, APIs/catalogo e integracoes operacionais. Nao fique preso a uma fonte so. Ordem de tentativa: para produtos/cards, primeiro APIs/catalogo; se nao houver produto seguro, use site/URLs; por ultimo use prompt, configuracoes e arquivos para orientar a resposta e pedir um detalhe. Nunca encerre com negativa antes de considerar todas as fontes disponiveis no contexto. Nunca invente preco, estoque, prazo, link, pedido, frete, rastreio ou politica. Para produtos e cards, os produtos reais das APIs/catalogo sao a fonte autoritativa do que pode ser enviado. Use arquivos, site e prompt para interpretar familias, politicas, nomes e regras. Para pedidos, frete, entrega, pagamento e rastreio, use primeiro as informacoes transacionais/integracoes quando existirem. Se houver conflito entre fontes, nao negue de imediato: explique o que foi encontrado e peca um detalhe seguro. Nao escreva URL de imagem. Se product_cards_count for 0, nunca diga que enviou, esta enviando ou vai reenviar fotos/cards; diga apenas que ainda nao encontrou fotos/cards seguros automaticamente e peca um detalhe ou ofereca nova busca. Se product_cards_count for maior que 0, use send_cards=true apenas quando a melhor resposta exigir fotos/cards/opcoes visuais; para duvidas pontuais de quantidade, cor, tamanho, pedido, frete, pagamento ou politica, geralmente use send_cards=false e responda em texto.'
   ].filter(Boolean);
 
@@ -281,6 +297,7 @@ async function callDifyChatMessage({
       dify_send_cards: decision.sendCards,
       dify_card_policy: decision.cardPolicy,
       dify_product_cards: decision.cards || [],
+      dify_tool_search_url: toolSearchUrlForResponse(),
       dify_decision: decision.decision,
       dify_raw_response: truncate(decision.rawResponse, 2000)
     };
@@ -289,9 +306,15 @@ async function callDifyChatMessage({
   }
 }
 
+function toolSearchUrlForResponse() {
+  const toolBaseUrl = getPublicToolBaseUrl();
+  return toolBaseUrl ? `${toolBaseUrl}/api/dify-tools/search` : '/api/dify-tools/search';
+}
+
 module.exports = {
   callDifyChatMessage,
   getDifyConfig,
+  getDifyToolApiKey,
   hasDifyConfig,
   parseDifyDecision
 };

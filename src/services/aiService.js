@@ -8477,6 +8477,37 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
   let knowledgeContext = '';
   let toolResults = [];
 
+  const preflight = await executeDifyToolCalls({
+    calls: [{ tool: 'search', type: 'all', query: message }],
+    message,
+    conversation,
+    contact,
+    effectiveConfig,
+    conversationHistory,
+    apiKey,
+    provider,
+    supabase,
+    clientId
+  });
+  toolResults = preflight.toolResults;
+  productContext = mergeDifyProductContext(productContext, preflight.productContext);
+  siteContext = preflight.siteContext;
+  operationalContext = preflight.operationalContext;
+  knowledgeContext = preflight.knowledgeContext;
+  const preflightProducts = productContext.product_context_products || productContext.recent_products_data || [];
+  if (preflightProducts.length > 0) {
+    saveRecentProductsMemory(conversation, preflightProducts);
+  }
+  console.log('[DIFY TOOL PREFLIGHT] ' + JSON.stringify({
+    conversationId: conversation?.id || '',
+    query: String(message || '').slice(0, 180),
+    productCards: Array.isArray(productContext.productCards) ? productContext.productCards.length : 0,
+    productsFound: productContext.productsFound === true,
+    hasSite: Boolean(siteContext.contextText),
+    hasFiles: Boolean(knowledgeContext),
+    hasOperational: Boolean(operationalContext.contextText)
+  }));
+
   let result = await callDifyChatMessage({
     clientId,
     message,
@@ -8488,7 +8519,8 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
     productContext,
     siteContext,
     operationalContext,
-    knowledgeContext
+    knowledgeContext,
+    toolResults
   });
 
   if (Array.isArray(result.dify_tool_calls) && result.dify_tool_calls.length > 0) {
@@ -8506,9 +8538,9 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
     });
     toolResults = executed.toolResults;
     productContext = mergeDifyProductContext(productContext, executed.productContext);
-    siteContext = executed.siteContext;
-    operationalContext = executed.operationalContext;
-    knowledgeContext = executed.knowledgeContext;
+    siteContext = executed.siteContext?.contextText ? executed.siteContext : siteContext;
+    operationalContext = executed.operationalContext?.contextText ? executed.operationalContext : operationalContext;
+    knowledgeContext = executed.knowledgeContext || knowledgeContext;
 
     const productsFromTools = productContext.product_context_products || productContext.recent_products_data || [];
     if (productsFromTools.length > 0) {

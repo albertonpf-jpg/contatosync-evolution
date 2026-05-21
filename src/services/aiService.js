@@ -2192,6 +2192,7 @@ function buildOperationalSourcesForConfig(config = {}, message = '', contact = {
 function hasStrongProductIntent(message) {
   const text = normalizeSearchText(message);
   if (!text) return false;
+  if (isProductRecommendationRequest(text)) return true;
   const nonCatalogInfo = /\b(como comprar|forma de comprar|formas de comprar|passo a passo|pedido minimo|valor minimo|compra minima|aviso|avisos|regras|endereco|localizacao|onde fica|horario|funcionamento|telefone|contato|pagamento|pagar|pix|cartao|boleto|entrega|frete|retirada|troca|devolucao|status|rastreio|pedido)\b/i.test(text);
   const wantsMedia = /\b(foto|fotos|imagem|imagens|mostra|mostrar|mande|manda|envie|envia|ver)\b/i.test(text);
   const wantsProduct = /\b(quero|queria|procuro|procurando|busco|preciso|gostaria|tem|vende|vendem|trabalha|trabalham|possui|temos|custa|preco|valor|opcao|opcoes|modelos|mais|outra|outras|outro|outros)\b/i.test(text);
@@ -2209,6 +2210,14 @@ function hasStrongProductIntent(message) {
     || (productNoun && tokenCount <= 3)
     || extractRequestedSizes(message).length > 0;
 }
+
+function isProductRecommendationRequest(message = '') {
+  const text = normalizeSearchText(message);
+  if (!text) return false;
+  return /\b(produto|produtos|peca|pecas|roupa|roupas|catalogo|opcao|opcoes|modelo|modelos|look|looks|vestido|vestidos|conjunto|conjuntos|acessorio|acessorios)\b/i.test(text)
+    && /\b(mais vendidos|mais vendido|vendidos|vendido|mais procurados|mais procurado|mais pedidos|mais pedido|destaques|destaque|top vendas|campeoes de venda|campeao de venda|recomenda|recomendacao|recomendacoes|sugere|sugestao|sugestoes|novidades|novidade)\b/i.test(text);
+}
+
 function isMoreProductOptionsRequest(message) {
   const text = normalizeSearchText(message);
   return /\b(mais|outra|outras|outro|outros|novas|novos|diferentes|ver mais|mostrar mais|mande mais|manda mais|envie mais)\b/.test(text)
@@ -2217,7 +2226,8 @@ function isMoreProductOptionsRequest(message) {
 
 function isCatalogFollowUpRequest(message) {
   const text = normalizeSearchText(message);
-  return /\b(foto|fotos|imagem|imagens|manda|mande|envia|envie|ver|mostra|mostre|mais|outra|outras|outro|outros|opcao|opcoes|modelo|modelos)\b/i.test(text);
+  return isProductRecommendationRequest(text)
+    || /\b(foto|fotos|imagem|imagens|manda|mande|envia|envie|ver|mostra|mostre|mais|outra|outras|outro|outros|opcao|opcoes|modelo|modelos)\b/i.test(text);
 }
 
 function shouldUseConfiguredProductSources(message) {
@@ -4318,6 +4328,25 @@ function getRecentCustomerProductRequest(conversationHistory = [], conversation 
     || '';
 }
 
+function getRecentAssistantProductOffer(conversationHistory = []) {
+  const recentAssistantMessages = Array.isArray(conversationHistory)
+    ? conversationHistory
+      .filter(item => item && (item.direction === 'out' || item.is_from_ai))
+      .slice(-6)
+      .map(item => String(item.content || '').trim())
+      .filter(Boolean)
+    : [];
+  return [...recentAssistantMessages]
+    .reverse()
+    .find(item => {
+      const text = normalizeSearchText(item);
+      const offeredSend = /\b(quer|posso|vou|separei|separar|envio|enviar|mostrar|mostro|opcoes|opcao|fotos|cards|carrossel)\b/i.test(text);
+      const productScope = /\b(produto|produtos|roupa|roupas|catalogo|opcao|opcoes|modelo|modelos|vestido|vestidos|conjunto|conjuntos|acessorio|acessorios|look|looks|blusa|blusas)\b/i.test(text);
+      return offeredSend && productScope;
+    })
+    || '';
+}
+
 function extractPreviouslyMentionedProductTitles(conversationHistory = []) {
   if (!Array.isArray(conversationHistory)) return [];
   const ignored = /^(alberto|encontrei|enviei|no momento|infelizmente|posso|quer|temos|essas opcoes|opcoes|estoque atual|na loja|aqui estao)/i;
@@ -4344,11 +4373,16 @@ function extractPreviouslyMentionedProductTitles(conversationHistory = []) {
 function buildProductSearchText(message, conversationHistory = [], options = {}) {
   const current = String(message || '').trim();
   const normalizedCurrent = normalizeSearchText(current);
-  const currentIsFollowUp = isCatalogFollowUpRequest(normalizedCurrent) || isMoreProductOptionsRequest(current);
   const historyForBaseRequest = options.ignoreCurrentMessage
     ? (conversationHistory || []).filter(item => normalizeSearchText(item?.content || '') !== normalizeSearchText(current))
     : conversationHistory;
-  const lastProductRequest = String(options.baseProductRequest || '').trim() || getRecentCustomerProductRequest(historyForBaseRequest, options.conversation);
+  const assistantProductOffer = getRecentAssistantProductOffer(historyForBaseRequest);
+  const currentIsFollowUp = isCatalogFollowUpRequest(normalizedCurrent)
+    || isMoreProductOptionsRequest(current)
+    || (isShortContextualReply(current) && Boolean(assistantProductOffer));
+  const lastProductRequest = String(options.baseProductRequest || '').trim()
+    || getRecentCustomerProductRequest(historyForBaseRequest, options.conversation)
+    || assistantProductOffer;
   const currentForIntent = currentIsFollowUp && lastProductRequest ? `${lastProductRequest}\n${current}` : current;
   const currentShouldSearch = shouldUseConfiguredProductSources(currentForIntent);
   if (!currentShouldSearch) return currentForIntent;
@@ -7426,8 +7460,10 @@ async function enrichProductContextWithSemanticSearch({
 
   const historyWithoutCurrent = (conversationHistory || []).filter(item => normalizeSearchText(item?.content || '') !== normalizeSearchText(message));
   const lastProductRequest = getRecentCustomerProductRequest(historyWithoutCurrent, conversation);
+  const assistantProductOffer = getRecentAssistantProductOffer(historyWithoutCurrent);
   const semanticQuery = [
     lastProductRequest,
+    assistantProductOffer,
     productContext.searchText || '',
     message
   ].map(value => String(value || '').trim()).filter(Boolean).join('\n');

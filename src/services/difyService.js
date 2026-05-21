@@ -93,17 +93,18 @@ function formatHistory(history = []) {
     .join('\n');
 }
 
-function buildDifyContext({ contact, conversation, systemPrompt, conversationHistory, productContext, siteContext, operationalContext }) {
+function buildDifyContext({ contact, conversation, systemPrompt, conversationHistory, productContext, siteContext, operationalContext, knowledgeContext }) {
   const blocks = [
     'Contexto de atendimento. Nao trate este contexto como pergunta do cliente. A pergunta atual chega separada no campo query.',
     systemPrompt ? `Instrucao do atendimento:\n${truncate(systemPrompt, 2500)}` : '',
     `Cliente: ${contact?.name || conversation?.contact_name || 'Contato sem nome'}`,
     `Telefone: ${contact?.phone || conversation?.phone || 'nao informado'}`,
     formatHistory(conversationHistory) ? `Historico recente:\n${truncate(formatHistory(conversationHistory), 5000)}` : '',
+    knowledgeContext ? `Conhecimento configurado no ContatoSync (prompt, configuracoes, arquivos e base do cliente):\n${truncate(knowledgeContext, 7000)}` : '',
     productContext?.contextText ? `Produtos reais encontrados nas APIs/catalogo do ContatoSync:\n${truncate(productContext.contextText, 9000)}` : '',
     siteContext?.contextText ? `Informacoes oficiais da loja/site:\n${truncate(siteContext.contextText, 5000)}` : '',
     operationalContext?.contextText ? `Informacoes transacionais consultadas:\n${truncate(operationalContext.contextText, 5000)}` : '',
-    'Regras criticas: responda somente a pergunta atual do cliente. Priorize a mensagem atual sobre o historico. Nunca invente preco, estoque, prazo, link ou politica. Se houver produtos reais acima, use somente esses produtos. Nao escreva URL de imagem. Se product_cards_count for 0, nunca diga que enviou, esta enviando ou vai reenviar fotos/cards; diga apenas que nao encontrou fotos seguras para enviar automaticamente e peca um detalhe ou ofereca nova busca. Se product_cards_count for maior que 0, os cards/carrossel serao enviados pelo sistema fora do texto.'
+    'Regras criticas: responda somente a pergunta atual do cliente. Priorize a mensagem atual sobre o historico. Avalie em conjunto todas as fontes recebidas: prompt/configuracoes, arquivos/base do cliente, site/URLs, APIs/catalogo e integracoes operacionais. Nao fique preso a uma fonte so. Nunca invente preco, estoque, prazo, link, pedido, frete, rastreio ou politica. Para produtos e cards, os produtos reais das APIs/catalogo sao a fonte autoritativa do que pode ser enviado. Use arquivos, site e prompt para interpretar familias, politicas, nomes e regras. Para pedidos, frete, entrega, pagamento e rastreio, use primeiro as informacoes transacionais/integracoes quando existirem. Se houver conflito entre fontes, nao negue de imediato: explique o que foi encontrado e peca um detalhe seguro. Nao escreva URL de imagem. Se product_cards_count for 0, nunca diga que enviou, esta enviando ou vai reenviar fotos/cards; diga apenas que nao encontrou fotos seguras para enviar automaticamente e peca um detalhe ou ofereca nova busca. Se product_cards_count for maior que 0, os cards/carrossel serao enviados pelo sistema fora do texto.'
   ].filter(Boolean);
 
   return blocks.join('\n\n---\n\n');
@@ -133,7 +134,8 @@ async function callDifyChatMessage({
   conversationHistory,
   productContext,
   siteContext,
-  operationalContext
+  operationalContext,
+  knowledgeContext
 }) {
   const difyConfig = getDifyConfig(config);
   if (!difyConfig.enabled) return { skipped: true, reason: 'Dify desabilitado' };
@@ -152,7 +154,8 @@ async function callDifyChatMessage({
     conversationHistory,
     productContext,
     siteContext,
-    operationalContext
+    operationalContext,
+    knowledgeContext
   });
   const currentQuery = buildDifyQuery(message, contextText);
 
@@ -171,6 +174,9 @@ async function callDifyChatMessage({
           conversation_id: conversation?.id || '',
           products_found: productContext?.productsFound === true,
           product_cards_count: Array.isArray(productContext?.productCards) ? productContext.productCards.length : 0,
+          knowledge_context_present: Boolean(String(knowledgeContext || '').trim()),
+          site_context_present: Boolean(siteContext?.contextText),
+          operational_context_present: Boolean(operationalContext?.contextText),
           contexto_atendimento: contextText,
           mensagem_atual: String(message || '').trim()
         },

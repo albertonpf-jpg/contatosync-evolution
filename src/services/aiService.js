@@ -7573,12 +7573,39 @@ async function buildProductContextForConfig(message, config, conversationHistory
   return { ...productContext, lookupAttempted: shouldSearch, searchText };
 }
 
-async function buildSiteContextForConfig(message, config) {
+async function buildSiteContextForConfig(message, config, options = {}) {
   const configuredSources = buildKnowledgeSourcesForConfig(config);
-  const shouldSearch = shouldUseConfiguredSiteSources(message);
+  const shouldSearch = options.force === true || shouldUseConfiguredSiteSources(message);
   if (!shouldSearch) return { contextText: '', lookupAttempted: false };
   const siteContext = await fetchSiteInfoContext(message, configuredSources);
   return { ...siteContext, lookupAttempted: shouldSearch };
+}
+
+function buildDifyKnowledgeContextForConfig(config = {}) {
+  const fileContext = buildKnowledgeContextForConfig(config);
+  const fileText = typeof fileContext === 'string'
+    ? fileContext
+    : String(fileContext?.contextText || '');
+  const configPolicyText = collectClientConfigPolicyTexts(config)
+    .map(entry => `${entry.sourceName || 'Configuracao do cliente'}:\n${entry.text}`)
+    .join('\n\n---\n\n');
+  return [configPolicyText, fileText]
+    .filter(text => String(text || '').trim())
+    .join('\n\n---\n\n')
+    .trim();
+}
+
+function shouldForceSiteContextForDify(message, productContext = {}) {
+  const text = normalizeText(message);
+  const asksMoreEvidence = /\b(mais|outras?|opcoes|opcao|modelo|modelos|tem|existe|busca|procura|site|catalogo|loja)\b/i.test(text);
+  const productLookupFailed = productContext.lookupAttempted === true
+    && productContext.productsFound !== true
+    && !productContext.contextText;
+  const productLookupWeak = productContext.lookupAttempted === true
+    && Array.isArray(productContext.productCards)
+    && productContext.productCards.length <= 1
+    && asksMoreEvidence;
+  return productLookupFailed || productLookupWeak;
 }
 
 async function buildOperationalContextForConfig(message, config, contact, conversation) {
@@ -8143,9 +8170,8 @@ async function runRetrievalGroundedAgent({ supabase, clientId, message, conversa
 
 async function runDifyAgent({ supabase, clientId, message, conversation, contact, effectiveConfig, conversationHistory, systemPrompt, apiKey, provider }) {
   const startedAt = Date.now();
-  let [productContext, siteContext, operationalContext] = await Promise.all([
+  let [productContext, operationalContext] = await Promise.all([
     buildProductContextForConfig(message, effectiveConfig, conversationHistory, { conversation }),
-    buildSiteContextForConfig(message, effectiveConfig),
     buildOperationalContextForConfig(message, effectiveConfig, contact, conversation)
   ]);
   productContext = await enrichProductContextWithSemanticSearch({
@@ -8158,6 +8184,12 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
   });
   const products = productContext.product_context_products || productContext.recent_products_data || [];
   if (products.length > 0) saveRecentProductsMemory(conversation, products);
+  const [siteContext, knowledgeContext] = await Promise.all([
+    buildSiteContextForConfig(message, effectiveConfig, {
+      force: shouldForceSiteContextForDify(message, productContext)
+    }),
+    Promise.resolve(buildDifyKnowledgeContextForConfig(effectiveConfig))
+  ]);
 
   const result = await callDifyChatMessage({
     clientId,
@@ -8169,7 +8201,8 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
     conversationHistory,
     productContext,
     siteContext,
-    operationalContext
+    operationalContext,
+    knowledgeContext
   });
 
   return {

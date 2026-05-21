@@ -8475,38 +8475,7 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
   let siteContext = { contextText: '', lookupAttempted: false };
   let operationalContext = { contextText: '', lookupAttempted: false };
   let knowledgeContext = '';
-  let toolResults = [];
-
-  const preflight = await executeDifyToolCalls({
-    calls: [{ tool: 'search', type: 'all', query: message }],
-    message,
-    conversation,
-    contact,
-    effectiveConfig,
-    conversationHistory,
-    apiKey,
-    provider,
-    supabase,
-    clientId
-  });
-  toolResults = preflight.toolResults;
-  productContext = mergeDifyProductContext(productContext, preflight.productContext);
-  siteContext = preflight.siteContext;
-  operationalContext = preflight.operationalContext;
-  knowledgeContext = preflight.knowledgeContext;
-  const preflightProducts = productContext.product_context_products || productContext.recent_products_data || [];
-  if (preflightProducts.length > 0) {
-    saveRecentProductsMemory(conversation, preflightProducts);
-  }
-  console.log('[DIFY TOOL PREFLIGHT] ' + JSON.stringify({
-    conversationId: conversation?.id || '',
-    query: String(message || '').slice(0, 180),
-    productCards: Array.isArray(productContext.productCards) ? productContext.productCards.length : 0,
-    productsFound: productContext.productsFound === true,
-    hasSite: Boolean(siteContext.contextText),
-    hasFiles: Boolean(knowledgeContext),
-    hasOperational: Boolean(operationalContext.contextText)
-  }));
+  const toolResults = [];
 
   let result = await callDifyChatMessage({
     clientId,
@@ -8523,65 +8492,17 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
     toolResults
   });
 
-  if (Array.isArray(result.dify_tool_calls) && result.dify_tool_calls.length > 0) {
-    const executed = await executeDifyToolCalls({
-      calls: result.dify_tool_calls,
-      message,
-      conversation,
-      contact,
-      effectiveConfig,
-      conversationHistory,
-      apiKey,
-      provider,
-      supabase,
-      clientId
-    });
-    toolResults = executed.toolResults;
-    productContext = mergeDifyProductContext(productContext, executed.productContext);
-    siteContext = executed.siteContext?.contextText ? executed.siteContext : siteContext;
-    operationalContext = executed.operationalContext?.contextText ? executed.operationalContext : operationalContext;
-    knowledgeContext = executed.knowledgeContext || knowledgeContext;
-
-    const productsFromTools = productContext.product_context_products || productContext.recent_products_data || [];
-    if (productsFromTools.length > 0) {
-      saveRecentProductsMemory(conversation, productsFromTools);
-    }
-
-    console.log('[DIFY TOOL CALLS] ' + JSON.stringify({
-      conversationId: conversation?.id || '',
-      calls: result.dify_tool_calls.length,
-      results: toolResults.length,
-      productCards: Array.isArray(productContext.productCards) ? productContext.productCards.length : 0
-    }));
-
-    result = await callDifyChatMessage({
-      clientId,
-      message,
-      contact,
-      conversation,
-      config: effectiveConfig,
-      systemPrompt,
-      conversationHistory,
-      productContext,
-      siteContext,
-      operationalContext,
-      knowledgeContext,
-      toolResults
-    });
-  }
-
   const products = productContext.product_context_products || productContext.recent_products_data || [];
   const difyRequestedCards = result.dify_send_cards === true;
   const difyCards = normalizeDifyProductCards(result.dify_product_cards || []);
-  const fallbackCards = productContext.productCards || [];
-  const productCards = difyRequestedCards ? (difyCards.length > 0 ? difyCards : fallbackCards) : [];
-  const productImages = difyRequestedCards ? (productContext.imageUrls || []) : [];
+  const productCards = difyRequestedCards ? difyCards : [];
+  const productImages = productCards.map(card => card.imageUrl).filter(Boolean);
   console.log('[DIFY DECISION] ' + JSON.stringify({
     conversationId: conversation?.id || '',
     sendCards: result.dify_send_cards,
     cardPolicy: result.dify_card_policy || '',
     difyCards: difyCards.length,
-    availableCards: Array.isArray(productContext.productCards) ? productContext.productCards.length : 0,
+    availableCards: difyCards.length,
     sentCards: productCards.length
   }));
 

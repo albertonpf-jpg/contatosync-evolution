@@ -42,6 +42,33 @@ async function getClientConfig(clientId) {
   return data;
 }
 
+async function resolveClientId(req) {
+  const explicit = String(req.query.client_id || req.query.clientId || req.body?.client_id || req.body?.clientId || '').trim();
+  if (explicit) return explicit;
+
+  const bearer = getBearerToken(req);
+  if (bearer) {
+    const { data: matched } = await supabaseAdmin
+      .from('evolution_ai_config')
+      .select('client_id')
+      .eq('dify_api_key', bearer)
+      .limit(1);
+    if (matched && matched[0]?.client_id) return matched[0].client_id;
+  }
+
+  const envDefault = String(process.env.DIFY_DEFAULT_CLIENT_ID || '').trim();
+  if (envDefault) return envDefault;
+
+  const { data: enabledConfigs } = await supabaseAdmin
+    .from('evolution_ai_config')
+    .select('client_id')
+    .eq('dify_enabled', true)
+    .limit(2);
+  if ((enabledConfigs || []).length === 1) return enabledConfigs[0].client_id;
+
+  return '';
+}
+
 async function getConversationContext(clientId, conversationId, phone) {
   let conversation = null;
   let contact = null;
@@ -130,7 +157,7 @@ router.get('/manifest', asyncHandler(async (req, res) => {
 }));
 
 router.get('/search', asyncHandler(async (req, res) => {
-  const clientId = String(req.query.client_id || req.query.clientId || '').trim();
+  const clientId = await resolveClientId(req);
   const query = String(req.query.query || req.query.q || '').trim();
   const type = normalizeType(req.query.type);
   const conversationId = String(req.query.conversation_id || req.query.conversationId || '').trim();
@@ -196,7 +223,7 @@ router.get('/search', asyncHandler(async (req, res) => {
 }));
 
 router.post('/action', asyncHandler(async (req, res) => {
-  const clientId = String(req.body.client_id || req.body.clientId || '').trim();
+  const clientId = await resolveClientId(req);
   const action = String(req.body.action || '').trim();
   const payload = req.body.payload && typeof req.body.payload === 'object' ? req.body.payload : {};
   if (!clientId) return error(res, 'client_id e obrigatorio', 400);

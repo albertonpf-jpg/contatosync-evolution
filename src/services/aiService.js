@@ -1679,6 +1679,8 @@ function buildProductLookupEmptyResponse(searchText) {
     .filter(token => ![
       'nao',
       'não',
+      'nem',
+      'seja',
       'pedi',
       'pra',
       'pro',
@@ -2199,9 +2201,11 @@ function hasStrongProductIntent(message) {
   const hasSearchableCatalogTerm = productNoun || specificTokens.length > 0;
   if (nonCatalogInfo && !productNoun) return false;
   const tokenCount = text.split(' ').filter(Boolean).length;
+  const productChallenge = /\?|(^|\s)(nem|sem|nao seja|nÃ£o seja|diferente de|fora blusa|que nao seja|que nÃ£o seja)(\s|$)/i.test(text);
   return (wantsMedia && hasSearchableCatalogTerm)
     || (wantsProduct && hasSearchableCatalogTerm)
     || (productNoun && (productAttribute || wantsProduct))
+    || (productNoun && productChallenge)
     || (productNoun && tokenCount <= 3)
     || extractRequestedSizes(message).length > 0;
 }

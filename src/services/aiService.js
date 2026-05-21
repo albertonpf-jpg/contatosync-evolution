@@ -1,5 +1,5 @@
 const { v4: uuidv4 } = require('uuid');
-const { isWithinWorkingHours } = require('../utils/helpers');
+const { isWithinWorkingHours, formatActivity } = require('../utils/helpers');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -8311,32 +8311,173 @@ function normalizeDifyProductCards(cards = []) {
     .filter(card => card.title && card.imageUrl);
 }
 
+function emptyDifyToolProductContext() {
+  return {
+    contextText: '',
+    imageUrls: [],
+    productCards: [],
+    product_context_products: [],
+    recent_products_data: [],
+    lookupAttempted: false,
+    productsFound: false,
+    searchText: ''
+  };
+}
+
+function mergeDifyProductContext(base = emptyDifyToolProductContext(), next = {}) {
+  const products = [
+    ...(base.product_context_products || base.recent_products_data || []),
+    ...(next.product_context_products || next.recent_products_data || [])
+  ];
+  const cards = [...(base.productCards || []), ...(next.productCards || [])];
+  const images = [...(base.imageUrls || []), ...(next.imageUrls || [])];
+  const contexts = [base.contextText, next.contextText].filter(Boolean);
+  return {
+    contextText: contexts.join('\n\n'),
+    imageUrls: images,
+    productCards: cards,
+    product_context_products: products,
+    recent_products_data: products,
+    lookupAttempted: base.lookupAttempted === true || next.lookupAttempted === true,
+    productsFound: base.productsFound === true || next.productsFound === true || cards.length > 0 || products.length > 0,
+    searchText: next.searchText || base.searchText || ''
+  };
+}
+
+function normalizeDifyToolType(value = '') {
+  const type = String(value || 'all').trim().toLowerCase();
+  if (['catalog', 'products'].includes(type)) return 'catalog';
+  if (['site', 'files', 'knowledge', 'operational', 'api', 'all'].includes(type)) return type;
+  return 'all';
+}
+
+async function executeDifyToolCalls({ calls = [], message, conversation, contact, effectiveConfig, conversationHistory, apiKey, provider, supabase, clientId }) {
+  const toolResults = [];
+  let productContext = emptyDifyToolProductContext();
+  let siteContext = { contextText: '', lookupAttempted: false };
+  let operationalContext = { contextText: '', lookupAttempted: false };
+  let knowledgeContext = '';
+
+  for (const rawCall of (Array.isArray(calls) ? calls : []).slice(0, 5)) {
+    const tool = String(rawCall?.tool || rawCall?.name || 'search').trim().toLowerCase();
+    const type = normalizeDifyToolType(rawCall?.type || rawCall?.source);
+    const query = String(rawCall?.query || rawCall?.q || message || '').trim();
+
+    try {
+      if (tool === 'search') {
+        const result = { tool: 'search', type, query, sources: {} };
+
+        if (type === 'all' || type === 'catalog') {
+          let catalogContext = await buildProductContextForConfig(query, effectiveConfig, conversationHistory, { conversation });
+          catalogContext = await enrichProductContextWithSemanticSearch({
+            message: query,
+            productContext: catalogContext,
+            conversationHistory,
+            conversation,
+            apiKey,
+            provider
+          });
+          productContext = mergeDifyProductContext(productContext, catalogContext);
+          result.sources.catalog = {
+            lookup_attempted: catalogContext.lookupAttempted === true,
+            products_found: catalogContext.productsFound === true,
+            search_text: catalogContext.searchText || '',
+            context: truncateText(catalogContext.contextText || '', 12000),
+            cards: (catalogContext.productCards || []).slice(0, 12),
+            products: catalogContext.product_context_products || catalogContext.recent_products_data || []
+          };
+        }
+
+        if (type === 'all' || type === 'site') {
+          siteContext = await buildSiteContextForConfig(query, effectiveConfig, { force: true });
+          result.sources.site = {
+            lookup_attempted: siteContext.lookupAttempted === true,
+            context: truncateText(siteContext.contextText || '', 10000)
+          };
+        }
+
+        if (type === 'all' || type === 'files' || type === 'knowledge') {
+          knowledgeContext = buildDifyKnowledgeContextForConfig(effectiveConfig);
+          result.sources.files = {
+            context: truncateText(knowledgeContext, 12000)
+          };
+        }
+
+        if (type === 'all' || type === 'operational' || type === 'api') {
+          operationalContext = await buildOperationalContextForConfig(query, effectiveConfig, contact, conversation);
+          result.sources.operational = {
+            lookup_attempted: operationalContext.lookupAttempted === true,
+            context: truncateText(operationalContext.contextText || '', 10000)
+          };
+        }
+
+        toolResults.push(result);
+        continue;
+      }
+
+      if (tool === 'action') {
+        const action = String(rawCall?.action || '').trim();
+        const payload = rawCall?.payload && typeof rawCall.payload === 'object' ? rawCall.payload : {};
+        if (action === 'create_activity') {
+          const description = String(payload.description || payload.message || 'Atividade criada pelo Dify').trim().slice(0, 500);
+          const metadata = payload.metadata && typeof payload.metadata === 'object' ? payload.metadata : {};
+          const { data, error } = await supabase
+            .from('evolution_activities')
+            .insert([{
+              id: uuidv4(),
+              client_id: clientId,
+              ...formatActivity('dify_tool_activity', description, metadata)
+            }])
+            .select('*')
+            .single();
+          if (error) throw error;
+          toolResults.push({ tool: 'action', action, ok: true, data });
+          continue;
+        }
+
+        if (action === 'update_contact_tags') {
+          const contactId = String(payload.contact_id || payload.contactId || contact?.id || '').trim();
+          const phone = String(payload.phone || contact?.phone || '').trim();
+          const tags = Array.isArray(payload.tags) ? payload.tags.map(String).slice(0, 20) : [];
+          if (!contactId && !phone) throw new Error('contact_id ou phone e obrigatorio');
+          let queryBuilder = supabase
+            .from('evolution_contacts')
+            .update({ tags, updated_at: new Date().toISOString() })
+            .eq('client_id', clientId)
+            .select('*')
+            .single();
+          queryBuilder = contactId ? queryBuilder.eq('id', contactId) : queryBuilder.eq('phone', phone);
+          const { data, error } = await queryBuilder;
+          if (error) throw error;
+          toolResults.push({ tool: 'action', action, ok: true, data });
+          continue;
+        }
+
+        toolResults.push({ tool: 'action', action, ok: false, error: 'acao nao permitida' });
+      }
+    } catch (error) {
+      toolResults.push({
+        tool,
+        type,
+        query,
+        ok: false,
+        error: String(error?.message || error).slice(0, 500)
+      });
+    }
+  }
+
+  return { toolResults, productContext, siteContext, operationalContext, knowledgeContext };
+}
+
 async function runDifyAgent({ supabase, clientId, message, conversation, contact, effectiveConfig, conversationHistory, systemPrompt, apiKey, provider }) {
   const startedAt = Date.now();
-  let [productContext, operationalContext] = await Promise.all([
-    buildProductContextForConfig(message, effectiveConfig, conversationHistory, { conversation }),
-    buildOperationalContextForConfig(message, effectiveConfig, contact, conversation)
-  ]);
-  productContext = await enrichProductContextWithSemanticSearch({
-    message,
-    productContext,
-    conversationHistory,
-    conversation,
-    apiKey,
-    provider
-  });
-  const products = productContext.product_context_products || productContext.recent_products_data || [];
-  if (products.length > 0) {
-    saveRecentProductsMemory(conversation, products);
-  }
-  const [siteContext, knowledgeContext] = await Promise.all([
-    buildSiteContextForConfig(message, effectiveConfig, {
-      force: shouldForceSiteContextForDify(message, productContext)
-    }),
-    Promise.resolve(buildDifyKnowledgeContextForConfig(effectiveConfig))
-  ]);
+  let productContext = emptyDifyToolProductContext();
+  let siteContext = { contextText: '', lookupAttempted: false };
+  let operationalContext = { contextText: '', lookupAttempted: false };
+  let knowledgeContext = '';
+  let toolResults = [];
 
-  const result = await callDifyChatMessage({
+  let result = await callDifyChatMessage({
     clientId,
     message,
     contact,
@@ -8350,6 +8491,54 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
     knowledgeContext
   });
 
+  if (Array.isArray(result.dify_tool_calls) && result.dify_tool_calls.length > 0) {
+    const executed = await executeDifyToolCalls({
+      calls: result.dify_tool_calls,
+      message,
+      conversation,
+      contact,
+      effectiveConfig,
+      conversationHistory,
+      apiKey,
+      provider,
+      supabase,
+      clientId
+    });
+    toolResults = executed.toolResults;
+    productContext = mergeDifyProductContext(productContext, executed.productContext);
+    siteContext = executed.siteContext;
+    operationalContext = executed.operationalContext;
+    knowledgeContext = executed.knowledgeContext;
+
+    const productsFromTools = productContext.product_context_products || productContext.recent_products_data || [];
+    if (productsFromTools.length > 0) {
+      saveRecentProductsMemory(conversation, productsFromTools);
+    }
+
+    console.log('[DIFY TOOL CALLS] ' + JSON.stringify({
+      conversationId: conversation?.id || '',
+      calls: result.dify_tool_calls.length,
+      results: toolResults.length,
+      productCards: Array.isArray(productContext.productCards) ? productContext.productCards.length : 0
+    }));
+
+    result = await callDifyChatMessage({
+      clientId,
+      message,
+      contact,
+      conversation,
+      config: effectiveConfig,
+      systemPrompt,
+      conversationHistory,
+      productContext,
+      siteContext,
+      operationalContext,
+      knowledgeContext,
+      toolResults
+    });
+  }
+
+  const products = productContext.product_context_products || productContext.recent_products_data || [];
   const difyRequestedCards = result.dify_send_cards === true;
   const difyCards = normalizeDifyProductCards(result.dify_product_cards || []);
   const fallbackCards = productContext.productCards || [];
@@ -8374,7 +8563,8 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
     recent_products_data: products,
     product_lookup_attempted: productContext.lookupAttempted === true,
     product_search_text: productContext.searchText || '',
-    products_found: productContext.productsFound === true || Boolean(productContext.contextText)
+    products_found: productContext.productsFound === true || Boolean(productContext.contextText),
+    dify_tool_results: toolResults
   };
 }
 

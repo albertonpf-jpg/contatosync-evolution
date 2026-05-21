@@ -105,7 +105,7 @@ function formatHistory(history = []) {
     .join('\n');
 }
 
-function buildDifyContext({ contact, conversation, systemPrompt, conversationHistory, productContext, siteContext, operationalContext, knowledgeContext }) {
+function buildDifyContext({ contact, conversation, systemPrompt, conversationHistory, productContext, siteContext, operationalContext, knowledgeContext, toolResults }) {
   const productCardsCount = Array.isArray(productContext?.productCards) ? productContext.productCards.length : 0;
   const toolBaseUrl = getPublicToolBaseUrl();
   const toolSearchUrl = toolBaseUrl ? `${toolBaseUrl}/api/dify-tools/search` : '/api/dify-tools/search';
@@ -120,6 +120,7 @@ function buildDifyContext({ contact, conversation, systemPrompt, conversationHis
     productContext?.contextText ? `Produtos reais encontrados nas APIs/catalogo do ContatoSync:\n${truncate(productContext.contextText, 9000)}` : '',
     siteContext?.contextText ? `Informacoes oficiais da loja/site:\n${truncate(siteContext.contextText, 5000)}` : '',
     operationalContext?.contextText ? `Informacoes transacionais consultadas:\n${truncate(operationalContext.contextText, 5000)}` : '',
+    Array.isArray(toolResults) && toolResults.length > 0 ? `Resultados das ferramentas solicitadas por voce:\n${truncate(JSON.stringify(toolResults, null, 2), 12000)}` : '',
     `Capacidade tecnica do WhatsApp: product_cards_count=${productCardsCount}. O ContatoSync so pode montar/enviar os cards tecnicos se voce decidir send_cards=true. Se send_cards=false, o ContatoSync enviara apenas o texto de answer.`,
     `Ferramentas HTTP disponiveis para o Dify quando configuradas no Chatflow:\nGET ${toolSearchUrl}?client_id=<client_id>&type=all|catalog|site|files|operational&query=<consulta>&conversation_id=<conversation_id>&phone=<phone>\nPOST ${toolActionUrl} com JSON {"client_id":"<client_id>","action":"create_activity|update_contact_tags","payload":{...}}.\nUse header Authorization: Bearer <DIFY_TOOL_API_KEY>. Se essa variavel dedicada nao existir, o backend aceita a propria chave DIFY_API_KEY do app como token de ferramenta. Essas ferramentas permitem consultar APIs/catalogo, URLs/site, arquivos/base do cliente e executar POSTs controlados no ContatoSync.`,
     'Regras criticas: voce, Dify, e o cerebro do atendimento. O ContatoSync nao deve decidir a resposta, apenas fornece contexto/ferramentas e executa o envio tecnico de cards quando voce pedir. Responda somente a pergunta atual do cliente. Priorize a mensagem atual sobre o historico. Avalie em conjunto todas as fontes recebidas: prompt/configuracoes, arquivos/base do cliente, site/URLs, APIs/catalogo e integracoes operacionais. Nao fique preso a uma fonte so. Ordem de tentativa: para produtos/cards, primeiro APIs/catalogo; se nao houver produto seguro, use site/URLs; por ultimo use prompt, configuracoes e arquivos para orientar a resposta e pedir um detalhe. Nunca encerre com negativa antes de considerar todas as fontes disponiveis no contexto. Nunca invente preco, estoque, prazo, link, pedido, frete, rastreio ou politica. Para produtos e cards, os produtos reais das APIs/catalogo sao a fonte autoritativa do que pode ser enviado. Use arquivos, site e prompt para interpretar familias, politicas, nomes e regras. Para pedidos, frete, entrega, pagamento e rastreio, use primeiro as informacoes transacionais/integracoes quando existirem. Se houver conflito entre fontes, nao negue de imediato: explique o que foi encontrado e peca um detalhe seguro. Nao escreva URL de imagem. Se product_cards_count for 0, nunca diga que enviou, esta enviando ou vai reenviar fotos/cards; diga apenas que ainda nao encontrou fotos/cards seguros automaticamente e peca um detalhe ou ofereca nova busca. Se product_cards_count for maior que 0, use send_cards=true apenas quando a melhor resposta exigir fotos/cards/opcoes visuais; para duvidas pontuais de quantidade, cor, tamanho, pedido, frete, pagamento ou politica, geralmente use send_cards=false e responda em texto.'
@@ -134,12 +135,15 @@ function buildDifyQuery(message = '', contextText = '') {
     'Voce deve decidir a operacao. O ContatoSync nao vai decidir por voce.',
     'Retorne SOMENTE um JSON valido, sem markdown, sem texto fora do JSON.',
     'Schema obrigatorio:',
-    '{"answer":"texto curto para enviar ao cliente","send_cards":false,"card_policy":"none","cards":[],"handoff":false,"confidence":"high","reason":"motivo interno curto"}',
+    '{"answer":"texto curto para enviar ao cliente","send_cards":false,"card_policy":"none","cards":[],"tool_calls":[],"handoff":false,"confidence":"high","reason":"motivo interno curto"}',
     'Regras do JSON:',
     '- answer: mensagem final ao cliente.',
     '- send_cards: true somente se os cards encontrados devem ser enviados agora.',
     '- card_policy: "send_found_cards" quando send_cards=true; caso contrario "none".',
     '- cards: opcional. Se voce montar cards, use objetos com title, description, url e imageUrl. Se nao montar, deixe [] e o ContatoSync pode usar os cards tecnicos encontrados no contexto quando send_cards=true.',
+    '- tool_calls: quando precisar consultar antes de responder, devolva uma lista de ferramentas e deixe answer curto como "Vou verificar isso para voce.". O ContatoSync executara as ferramentas e chamara voce de novo com os resultados.',
+    '- Ferramentas permitidas em tool_calls: {"tool":"search","type":"catalog|site|files|operational|all","query":"consulta"} e {"tool":"action","action":"create_activity|update_contact_tags","payload":{}}.',
+    '- Na chamada final, depois de receber resultados de ferramentas, use tool_calls: [] e responda com answer/send_cards/cards.',
     '- Se a pergunta for sobre quantidade, cor, tamanho, preco especifico, frete, pedido, pagamento ou politica, responda em texto e use send_cards=false, salvo se o cliente pedir explicitamente fotos/opcoes.',
     '- Se o cliente pedir opcoes, modelos, fotos, catalogo, mais produtos ou alternativas visuais e product_cards_count for maior que 0, use send_cards=true.',
     '- Se product_cards_count for 0, use send_cards=false e nao prometa envio de fotos/cards.',
@@ -190,11 +194,17 @@ function parseDifyDecision(answer = '') {
         : Array.isArray(parsed.productCards)
           ? parsed.productCards
           : [];
+    const toolCalls = Array.isArray(parsed.tool_calls)
+      ? parsed.tool_calls
+      : Array.isArray(parsed.toolCalls)
+        ? parsed.toolCalls
+        : [];
     return {
       response,
       sendCards,
       cardPolicy: sendCards ? 'send_found_cards' : 'none',
       cards,
+      toolCalls,
       decision: parsed,
       rawResponse: raw
     };
@@ -220,7 +230,8 @@ async function callDifyChatMessage({
   productContext,
   siteContext,
   operationalContext,
-  knowledgeContext
+  knowledgeContext,
+  toolResults
 }) {
   const difyConfig = getDifyConfig(config);
   if (!difyConfig.enabled) return { skipped: true, reason: 'Dify desabilitado' };
@@ -240,7 +251,8 @@ async function callDifyChatMessage({
     productContext,
     siteContext,
     operationalContext,
-    knowledgeContext
+    knowledgeContext,
+    toolResults
   });
   const currentQuery = buildDifyQuery(message, contextText);
 
@@ -297,6 +309,7 @@ async function callDifyChatMessage({
       dify_send_cards: decision.sendCards,
       dify_card_policy: decision.cardPolicy,
       dify_product_cards: decision.cards || [],
+      dify_tool_calls: decision.toolCalls || [],
       dify_tool_search_url: toolSearchUrlForResponse(),
       dify_decision: decision.decision,
       dify_raw_response: truncate(decision.rawResponse, 2000)

@@ -101,4 +101,21 @@ describe('Dify service decision parsing', () => {
     expect(decision.cardPolicy).toBe('none');
     expect(decision.cards).toEqual([]);
   });
+
+  test('parses tool calls requested by Dify before the final answer', () => {
+    const decision = parseDifyDecision(JSON.stringify({
+      answer: 'Vou verificar isso para voce.',
+      send_cards: false,
+      card_policy: 'none',
+      tool_calls: [
+        { tool: 'search', type: 'catalog', query: 'moletom infantil' },
+        { tool: 'search', type: 'site', query: 'politica de frete' }
+      ],
+      confidence: 'medium'
+    }));
+
+    expect(decision.sendCards).toBe(false);
+    expect(decision.toolCalls).toHaveLength(2);
+    expect(decision.toolCalls[0].type).toBe('catalog');
+  });
 });

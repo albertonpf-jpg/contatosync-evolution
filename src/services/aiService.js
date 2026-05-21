@@ -4509,6 +4509,10 @@ ${recentHistory || '(sem histórico)'}
 
 Produtos enviados recentemente: ${recentProductsText}
 
+Regra de decisao final:
+- Se a mensagem atual pede quantidade, estoque, disponibilidade, cor ou tamanho de produto, retorne product_stock_followup e operation="calculate"; isso vale mesmo quando a mensagem cita produto, categoria, marca, cor ou tamanho.
+- Nao use product_search quando a operacao pedida e apenas consultar/calcular dado de estoque. product_search e para ver/receber/escolher opcoes ou fotos.
+
 Mensagem atual: "${message}"
 
 Responda SOMENTE com JSON (todos os campos obrigatórios):
@@ -6718,8 +6722,8 @@ function saveRecentProductsMemory(conversation = {}, products = []) {
   if (!key) return;
   const previous = getRecentProductsMemory(conversation);
   const safeProducts = dedupeRecentProductContext([
-    ...previous,
-    ...normalizeRecentProductDataList(products)
+    ...normalizeRecentProductDataList(products),
+    ...previous
   ]);
   if (safeProducts.length === 0) return;
   recentProductsByConversation.set(key, {
@@ -7682,6 +7686,97 @@ function buildOperationalContextText(operationalContext) {
   return `${operationalContext.contextText}\n\nEstas informacoes foram consultadas em integracoes ativas antes da resposta. Use esses dados para responder sobre pedido, status, envio, rastreio, estoque, cliente, pagamento ou entrega. Nao invente status, rastreio, estoque ou prazo. Se uma fonte retornou erro HTTP ou falha de acesso, diga que nao foi possivel consultar a integracao naquele momento, sem afirmar que o pedido nao existe. Se a integracao respondeu com dados mas o pedido/cliente solicitado nao apareceu, diga que nao encontrou essa informacao na integracao configurada.`;
 }
 
+function isStockCalculationIntent(intent = {}) {
+  return intent?.intent === 'product_stock_followup'
+    || intent?.question_type === 'stock_by_size_color'
+    || intent?.operation === 'calculate'
+    || (Array.isArray(intent?.sources_needed) && intent.sources_needed.includes('recent_products') && /stock|estoque|quant/i.test(String(intent.question_type || intent.semantic_query || intent.search_query || '')));
+}
+
+function buildStockOnlyResultFromProductContext(customerIntent = {}, message = '', productContext = {}) {
+  const products = productContext.product_context_products || productContext.recent_products_data || [];
+  if (!Array.isArray(products) || products.length === 0) return null;
+  const filters = filtersFromCustomerIntent(customerIntent, message);
+  const product = products[0];
+  const selectedAnswer = answerSelectedProductQuestion(message, product, filters);
+  console.log('[STOCK ONLY PRODUCT CONTEXT] product="' + String(product.title || '').replace(/"/g, '\\"') + '" confidence=' + selectedAnswer.confidence);
+  return {
+    skipped: false,
+    response: selectedAnswer.response,
+    provider: 'catalog',
+    model: 'product_stock_text_only',
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    processing_time_ms: 0,
+    product_images: [],
+    product_cards: [],
+    product_context_products: products,
+    recent_products_data: products,
+    product_lookup_attempted: productContext.lookupAttempted === true,
+    product_search_text: productContext.searchText || '',
+    products_found: productContext.productsFound === true || Boolean(productContext.contextText)
+  };
+}
+
+async function resolveStockCalculationBeforeDify({ message, conversation, conversationHistory, productContext, apiKey, provider, effectiveConfig }) {
+  const customerIntent = await classifyCustomerIntent({
+    apiKey,
+    provider,
+    message,
+    conversationHistory,
+    config: effectiveConfig
+  });
+  if (!isStockCalculationIntent(customerIntent)) return null;
+
+  const selectedMemory = getSelectedProductMemory(conversation);
+  if (selectedMemory?.product) {
+    const filters = filtersFromCustomerIntent(customerIntent, message);
+    const selectedAnswer = answerSelectedProductQuestion(message, selectedMemory.product, filters);
+    console.log('[STOCK ONLY SELECTED MEMORY] confidence=' + selectedAnswer.confidence);
+    return {
+      skipped: false,
+      response: selectedAnswer.response,
+      provider: 'catalog',
+      model: 'selected_product_stock_text_only',
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      processing_time_ms: 0,
+      product_images: [],
+      product_cards: [],
+      product_context_products: [selectedMemory.product],
+      recent_products_data: [selectedMemory.product],
+      product_lookup_attempted: false,
+      product_search_text: '',
+      products_found: true
+    };
+  }
+
+  const contextAnswer = buildStockOnlyResultFromProductContext(customerIntent, message, productContext);
+  if (contextAnswer) return contextAnswer;
+
+  const recentAnswer = buildRecentProductStockAnswer(customerIntent, message, conversationHistory, conversation);
+  if (!recentAnswer) return null;
+  return {
+    skipped: false,
+    response: recentAnswer.response,
+    provider: 'catalog',
+    model: recentAnswer.model || 'recent_product_stock_text_only',
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    total_tokens: 0,
+    processing_time_ms: 0,
+    product_images: [],
+    product_cards: [],
+    product_context_products: recentAnswer.product ? [recentAnswer.product] : [],
+    recent_products_data: recentAnswer.product ? [recentAnswer.product] : [],
+    product_lookup_attempted: false,
+    product_search_text: '',
+    products_found: Boolean(recentAnswer.product)
+  };
+}
+
 function buildSiteContextSummaryResponse(siteContext) {
   const text = String(siteContext?.contextText || '')
     .split('\n')
@@ -8219,7 +8314,27 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
     provider
   });
   const products = productContext.product_context_products || productContext.recent_products_data || [];
-  if (products.length > 0) saveRecentProductsMemory(conversation, products);
+  if (products.length > 0) {
+    saveRecentProductsMemory(conversation, products);
+    if (products.length === 1) {
+      saveSelectedProductMemory(conversation, products[0], 1, filtersFromCustomerIntent({}, message));
+    }
+  }
+  const stockOnlyResult = await resolveStockCalculationBeforeDify({
+    message,
+    conversation,
+    conversationHistory,
+    productContext,
+    apiKey,
+    provider,
+    effectiveConfig
+  });
+  if (stockOnlyResult) {
+    return {
+      ...stockOnlyResult,
+      processing_time_ms: stockOnlyResult.processing_time_ms || (Date.now() - startedAt)
+    };
+  }
   const [siteContext, knowledgeContext] = await Promise.all([
     buildSiteContextForConfig(message, effectiveConfig, {
       force: shouldForceSiteContextForDify(message, productContext)

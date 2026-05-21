@@ -94,6 +94,7 @@ function formatHistory(history = []) {
 }
 
 function buildDifyContext({ contact, conversation, systemPrompt, conversationHistory, productContext, siteContext, operationalContext, knowledgeContext }) {
+  const productCardsCount = Array.isArray(productContext?.productCards) ? productContext.productCards.length : 0;
   const blocks = [
     'Contexto de atendimento. Nao trate este contexto como pergunta do cliente. A pergunta atual chega separada no campo query.',
     systemPrompt ? `Instrucao do atendimento:\n${truncate(systemPrompt, 2500)}` : '',
@@ -104,7 +105,8 @@ function buildDifyContext({ contact, conversation, systemPrompt, conversationHis
     productContext?.contextText ? `Produtos reais encontrados nas APIs/catalogo do ContatoSync:\n${truncate(productContext.contextText, 9000)}` : '',
     siteContext?.contextText ? `Informacoes oficiais da loja/site:\n${truncate(siteContext.contextText, 5000)}` : '',
     operationalContext?.contextText ? `Informacoes transacionais consultadas:\n${truncate(operationalContext.contextText, 5000)}` : '',
-    'Regras criticas: responda somente a pergunta atual do cliente. Priorize a mensagem atual sobre o historico. Avalie em conjunto todas as fontes recebidas: prompt/configuracoes, arquivos/base do cliente, site/URLs, APIs/catalogo e integracoes operacionais. Nao fique preso a uma fonte so. Ordem de tentativa: para produtos/cards, primeiro APIs/catalogo; se nao houver produto seguro, use site/URLs; por ultimo use prompt, configuracoes e arquivos para orientar a resposta e pedir um detalhe. Nunca encerre com negativa antes de considerar todas as fontes disponiveis no contexto. Nunca invente preco, estoque, prazo, link, pedido, frete, rastreio ou politica. Para produtos e cards, os produtos reais das APIs/catalogo sao a fonte autoritativa do que pode ser enviado. Use arquivos, site e prompt para interpretar familias, politicas, nomes e regras. Para pedidos, frete, entrega, pagamento e rastreio, use primeiro as informacoes transacionais/integracoes quando existirem. Se houver conflito entre fontes, nao negue de imediato: explique o que foi encontrado e peca um detalhe seguro. Nao escreva URL de imagem. Se product_cards_count for 0, nunca diga que enviou, esta enviando ou vai reenviar fotos/cards; diga apenas que ainda nao encontrou fotos/cards seguros automaticamente e peca um detalhe ou ofereca nova busca. Se product_cards_count for maior que 0, os cards/carrossel serao enviados pelo sistema fora do texto.'
+    `Capacidade tecnica do WhatsApp: product_cards_count=${productCardsCount}. O ContatoSync so pode montar/enviar os cards tecnicos se voce decidir send_cards=true. Se send_cards=false, o ContatoSync enviara apenas o texto de answer.`,
+    'Regras criticas: voce, Dify, e o cerebro do atendimento. O ContatoSync nao deve decidir a resposta, apenas fornece contexto/ferramentas e executa o envio tecnico de cards quando voce pedir. Responda somente a pergunta atual do cliente. Priorize a mensagem atual sobre o historico. Avalie em conjunto todas as fontes recebidas: prompt/configuracoes, arquivos/base do cliente, site/URLs, APIs/catalogo e integracoes operacionais. Nao fique preso a uma fonte so. Ordem de tentativa: para produtos/cards, primeiro APIs/catalogo; se nao houver produto seguro, use site/URLs; por ultimo use prompt, configuracoes e arquivos para orientar a resposta e pedir um detalhe. Nunca encerre com negativa antes de considerar todas as fontes disponiveis no contexto. Nunca invente preco, estoque, prazo, link, pedido, frete, rastreio ou politica. Para produtos e cards, os produtos reais das APIs/catalogo sao a fonte autoritativa do que pode ser enviado. Use arquivos, site e prompt para interpretar familias, politicas, nomes e regras. Para pedidos, frete, entrega, pagamento e rastreio, use primeiro as informacoes transacionais/integracoes quando existirem. Se houver conflito entre fontes, nao negue de imediato: explique o que foi encontrado e peca um detalhe seguro. Nao escreva URL de imagem. Se product_cards_count for 0, nunca diga que enviou, esta enviando ou vai reenviar fotos/cards; diga apenas que ainda nao encontrou fotos/cards seguros automaticamente e peca um detalhe ou ofereca nova busca. Se product_cards_count for maior que 0, use send_cards=true apenas quando a melhor resposta exigir fotos/cards/opcoes visuais; para duvidas pontuais de quantidade, cor, tamanho, pedido, frete, pagamento ou politica, geralmente use send_cards=false e responda em texto.'
   ].filter(Boolean);
 
   return blocks.join('\n\n---\n\n');
@@ -113,6 +115,18 @@ function buildDifyContext({ contact, conversation, systemPrompt, conversationHis
 function buildDifyQuery(message = '', contextText = '') {
   return [
     'Responda somente esta mensagem atual do cliente no WhatsApp. Use portugues do Brasil, texto curto e natural.',
+    'Voce deve decidir a operacao. O ContatoSync nao vai decidir por voce.',
+    'Retorne SOMENTE um JSON valido, sem markdown, sem texto fora do JSON.',
+    'Schema obrigatorio:',
+    '{"answer":"texto curto para enviar ao cliente","send_cards":false,"card_policy":"none","cards":[],"handoff":false,"confidence":"high","reason":"motivo interno curto"}',
+    'Regras do JSON:',
+    '- answer: mensagem final ao cliente.',
+    '- send_cards: true somente se os cards encontrados devem ser enviados agora.',
+    '- card_policy: "send_found_cards" quando send_cards=true; caso contrario "none".',
+    '- cards: opcional. Se voce montar cards, use objetos com title, description, url e imageUrl. Se nao montar, deixe [] e o ContatoSync pode usar os cards tecnicos encontrados no contexto quando send_cards=true.',
+    '- Se a pergunta for sobre quantidade, cor, tamanho, preco especifico, frete, pedido, pagamento ou politica, responda em texto e use send_cards=false, salvo se o cliente pedir explicitamente fotos/opcoes.',
+    '- Se o cliente pedir opcoes, modelos, fotos, catalogo, mais produtos ou alternativas visuais e product_cards_count for maior que 0, use send_cards=true.',
+    '- Se product_cards_count for 0, use send_cards=false e nao prometa envio de fotos/cards.',
     'Use o contexto abaixo como fonte oficial. Nao trate o contexto como pergunta do cliente.',
     '',
     'Contexto oficial do ContatoSync:',
@@ -122,6 +136,61 @@ function buildDifyQuery(message = '', contextText = '') {
     '',
     String(message || '').trim()
   ].join('\n');
+}
+
+function extractJsonObject(text = '') {
+  const value = String(text || '').trim();
+  if (!value) return '';
+  const fenced = value.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1].trim() : value;
+  if (candidate.startsWith('{') && candidate.endsWith('}')) return candidate;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start >= 0 && end > start) return candidate.slice(start, end + 1);
+  return '';
+}
+
+function parseDifyDecision(answer = '') {
+  const raw = String(answer || '').trim();
+  const jsonText = extractJsonObject(raw);
+  if (!jsonText) {
+    return {
+      response: raw,
+      sendCards: null,
+      cardPolicy: 'legacy_text',
+      decision: null,
+      rawResponse: raw
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(jsonText);
+    const response = String(parsed.answer || parsed.message || parsed.response || '').trim() || raw;
+    const sendCards = parsed.send_cards === true || parsed.sendCards === true || parsed.card_policy === 'send_found_cards' || parsed.cardPolicy === 'send_found_cards';
+    const cards = Array.isArray(parsed.cards)
+      ? parsed.cards
+      : Array.isArray(parsed.product_cards)
+        ? parsed.product_cards
+        : Array.isArray(parsed.productCards)
+          ? parsed.productCards
+          : [];
+    return {
+      response,
+      sendCards,
+      cardPolicy: sendCards ? 'send_found_cards' : 'none',
+      cards,
+      decision: parsed,
+      rawResponse: raw
+    };
+  } catch (error) {
+    return {
+      response: raw,
+      sendCards: null,
+      cardPolicy: 'invalid_json',
+      decision: null,
+      rawResponse: raw
+    };
+  }
 }
 
 async function callDifyChatMessage({
@@ -196,18 +265,24 @@ async function callDifyChatMessage({
     if (difyConfig.keepConversation) setStoredConversationId(key, data?.conversation_id);
     const answer = String(data?.answer || '').trim();
     if (!answer) throw new Error('Dify nao retornou answer na resposta');
+    const decision = parseDifyDecision(answer);
 
     const usage = data?.metadata?.usage || {};
     return {
       skipped: false,
-      response: answer,
+      response: decision.response,
       provider: 'dify',
       model: data?.metadata?.model || config?.dify_model || 'dify_chatflow',
       prompt_tokens: usage.prompt_tokens || usage.promptTokens || 0,
       completion_tokens: usage.completion_tokens || usage.completionTokens || 0,
       total_tokens: usage.total_tokens || usage.totalTokens || usage.total || 0,
       processing_time_ms: Date.now() - startedAt,
-      dify_conversation_id: data?.conversation_id || ''
+      dify_conversation_id: data?.conversation_id || '',
+      dify_send_cards: decision.sendCards,
+      dify_card_policy: decision.cardPolicy,
+      dify_product_cards: decision.cards || [],
+      dify_decision: decision.decision,
+      dify_raw_response: truncate(decision.rawResponse, 2000)
     };
   } finally {
     clearTimeout(timeout);
@@ -217,5 +292,6 @@ async function callDifyChatMessage({
 module.exports = {
   callDifyChatMessage,
   getDifyConfig,
-  hasDifyConfig
+  hasDifyConfig,
+  parseDifyDecision
 };

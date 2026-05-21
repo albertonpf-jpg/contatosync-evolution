@@ -8299,33 +8299,20 @@ async function runRetrievalGroundedAgent({ supabase, clientId, message, conversa
   };
 }
 
+function normalizeDifyProductCards(cards = []) {
+  if (!Array.isArray(cards)) return [];
+  return cards
+    .map(card => ({
+      title: String(card?.title || card?.name || '').trim(),
+      description: String(card?.description || card?.body || '').trim(),
+      url: String(card?.url || card?.link || '').trim(),
+      imageUrl: String(card?.imageUrl || card?.image_url || card?.image || '').trim()
+    }))
+    .filter(card => card.title && card.imageUrl);
+}
+
 async function runDifyAgent({ supabase, clientId, message, conversation, contact, effectiveConfig, conversationHistory, systemPrompt, apiKey, provider }) {
   const startedAt = Date.now();
-  const currentIntent = await classifyCustomerIntent({
-    apiKey,
-    provider,
-    message,
-    conversationHistory,
-    config: effectiveConfig
-  });
-  if (isStockCalculationIntent(currentIntent)) {
-    const stockMemoryResult = await resolveStockCalculationBeforeDify({
-      message,
-      conversation,
-      conversationHistory,
-      productContext: {},
-      apiKey,
-      provider,
-      effectiveConfig,
-      customerIntent: currentIntent
-    });
-    if (stockMemoryResult) {
-      return {
-        ...stockMemoryResult,
-        processing_time_ms: stockMemoryResult.processing_time_ms || (Date.now() - startedAt)
-      };
-    }
-  }
   let [productContext, operationalContext] = await Promise.all([
     buildProductContextForConfig(message, effectiveConfig, conversationHistory, { conversation }),
     buildOperationalContextForConfig(message, effectiveConfig, contact, conversation)
@@ -8341,25 +8328,6 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
   const products = productContext.product_context_products || productContext.recent_products_data || [];
   if (products.length > 0) {
     saveRecentProductsMemory(conversation, products);
-    if (products.length === 1) {
-      saveSelectedProductMemory(conversation, products[0], 1, filtersFromCustomerIntent({}, message));
-    }
-  }
-  const stockOnlyResult = await resolveStockCalculationBeforeDify({
-    message,
-    conversation,
-    conversationHistory,
-    productContext,
-    apiKey,
-    provider,
-    effectiveConfig,
-    customerIntent: currentIntent
-  });
-  if (stockOnlyResult) {
-    return {
-      ...stockOnlyResult,
-      processing_time_ms: stockOnlyResult.processing_time_ms || (Date.now() - startedAt)
-    };
   }
   const [siteContext, knowledgeContext] = await Promise.all([
     buildSiteContextForConfig(message, effectiveConfig, {
@@ -8382,12 +8350,26 @@ async function runDifyAgent({ supabase, clientId, message, conversation, contact
     knowledgeContext
   });
 
+  const difyRequestedCards = result.dify_send_cards === true;
+  const difyCards = normalizeDifyProductCards(result.dify_product_cards || []);
+  const fallbackCards = productContext.productCards || [];
+  const productCards = difyRequestedCards ? (difyCards.length > 0 ? difyCards : fallbackCards) : [];
+  const productImages = difyRequestedCards ? (productContext.imageUrls || []) : [];
+  console.log('[DIFY DECISION] ' + JSON.stringify({
+    conversationId: conversation?.id || '',
+    sendCards: result.dify_send_cards,
+    cardPolicy: result.dify_card_policy || '',
+    difyCards: difyCards.length,
+    availableCards: Array.isArray(productContext.productCards) ? productContext.productCards.length : 0,
+    sentCards: productCards.length
+  }));
+
   return {
     ...result,
-    response: normalizeProductMediaResponse(result.response, productContext.productCards || []),
+    response: normalizeProductMediaResponse(result.response, productCards),
     processing_time_ms: result.processing_time_ms || (Date.now() - startedAt),
-    product_images: productContext.imageUrls || [],
-    product_cards: productContext.productCards || [],
+    product_images: productImages,
+    product_cards: productCards,
     product_context_products: products,
     recent_products_data: products,
     product_lookup_attempted: productContext.lookupAttempted === true,

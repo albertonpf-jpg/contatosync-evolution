@@ -1,4 +1,4 @@
-const { getDifyConfig } = require('../src/services/difyService');
+const { getDifyConfig, parseDifyDecision } = require('../src/services/difyService');
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -61,5 +61,44 @@ describe('Dify service configuration', () => {
     process.env.DIFY_ALLOW_GLOBAL_APP_FALLBACK = 'true';
     const allowed = getDifyConfig({});
     expect(allowed.apiKey).toBe('app-global');
+  });
+});
+
+describe('Dify service decision parsing', () => {
+  test('parses structured card decision from Dify', () => {
+    const decision = parseDifyDecision(JSON.stringify({
+      answer: 'Separei algumas opcoes para voce.',
+      send_cards: true,
+      card_policy: 'send_found_cards',
+      cards: [
+        {
+          title: 'Moletom exemplo',
+          description: 'Tamanho 4',
+          url: 'https://loja.test/produto',
+          imageUrl: 'https://loja.test/foto.jpg'
+        }
+      ],
+      confidence: 'high'
+    }));
+
+    expect(decision.response).toBe('Separei algumas opcoes para voce.');
+    expect(decision.sendCards).toBe(true);
+    expect(decision.cardPolicy).toBe('send_found_cards');
+    expect(decision.cards).toHaveLength(1);
+  });
+
+  test('keeps stock or policy answers as text-only when Dify does not request cards', () => {
+    const decision = parseDifyDecision(JSON.stringify({
+      answer: 'Esse modelo tem 2 unidades na cor nude.',
+      send_cards: false,
+      card_policy: 'none',
+      cards: [],
+      confidence: 'high'
+    }));
+
+    expect(decision.response).toBe('Esse modelo tem 2 unidades na cor nude.');
+    expect(decision.sendCards).toBe(false);
+    expect(decision.cardPolicy).toBe('none');
+    expect(decision.cards).toEqual([]);
   });
 });

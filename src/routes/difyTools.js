@@ -13,17 +13,57 @@ const { getDifyToolApiKey } = require('../services/difyService');
 
 const router = express.Router();
 
-function getBearerToken(req) {
-  const header = String(req.headers.authorization || '');
-  if (/^bearer\s+/i.test(header)) return header.replace(/^bearer\s+/i, '').trim();
-  return String(req.headers['x-dify-tool-key'] || req.query.tool_key || '').trim();
+function normalizeAuthToken(value = '') {
+  let token = String(value || '').trim();
+  if (/^bearer\s+/i.test(token)) token = token.replace(/^bearer\s+/i, '').trim();
+  return token.replace(/^["']|["']$/g, '').trim();
 }
 
-function requireDifyToolAuth(req, res, next) {
+function getBearerToken(req) {
+  return normalizeAuthToken(
+    req.headers.authorization
+      || req.headers['x-dify-tool-key']
+      || req.headers.apikey
+      || req.headers['api-key']
+      || req.query.tool_key
+      || req.query.apikey
+      || req.body?.tool_key
+      || req.body?.apikey
+      || ''
+  );
+}
+
+async function isClientDifyToken(clientId, token) {
+  if (!clientId || !token) return false;
+  const { data } = await supabaseAdmin
+    .from('evolution_ai_config')
+    .select('client_id')
+    .eq('client_id', clientId)
+    .eq('dify_api_key', token)
+    .limit(1);
+  return Boolean(data && data[0]?.client_id);
+}
+
+async function requireDifyToolAuth(req, res, next) {
   const configured = getDifyToolApiKey();
+  const token = getBearerToken(req);
+  const explicitClientId = String(req.query.client_id || req.query.clientId || req.body?.client_id || req.body?.clientId || '').trim();
   if (!configured) return error(res, 'DIFY_TOOL_API_KEY nao configurado no servidor', 503);
-  if (getBearerToken(req) !== configured) return error(res, 'Nao autorizado', 401);
-  next();
+  if (token === configured || await isClientDifyToken(explicitClientId, token)) return next();
+
+  console.warn('[DIFY TOOL AUTH] denied ' + JSON.stringify({
+    path: req.originalUrl,
+    hasToken: Boolean(token),
+    tokenPrefix: token ? `${token.slice(0, 8)}...` : '',
+    clientId: explicitClientId || null,
+    hasConfigured: Boolean(configured)
+  }));
+
+  return error(res, 'Nao autorizado', 401);
+}
+
+function requireDifyToolAuthHandler(req, res, next) {
+  requireDifyToolAuth(req, res, next).catch(next);
 }
 
 function normalizeType(value = '') {
@@ -123,7 +163,7 @@ function compactProductCards(cards = []) {
   }));
 }
 
-router.use(requireDifyToolAuth);
+router.use(requireDifyToolAuthHandler);
 
 router.get('/manifest', asyncHandler(async (req, res) => {
   const baseUrl = String(req.protocol + '://' + req.get('host')).replace(/\/+$/, '');

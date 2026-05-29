@@ -10,6 +10,7 @@ const { emitConfigUpdate, emitAIResponse } = require('../services/socketService'
 const { generateAIResponse } = require('../services/aiService');
 const { hasDifyConfig } = require('../services/difyService');
 const { createStoredFile, mediaRoot } = require('../utils/mediaStore');
+const { getSendPolicySnapshot } = require('../services/whatsappSendPolicy');
 
 const router = express.Router();
 const upload = multer({
@@ -654,6 +655,7 @@ router.get('/operations',
         difyResponses: difyLogs.length,
         averageLocalProcessingMs: avgMs
       },
+      sendPolicy: getSendPolicySnapshot(),
       recentLogs: logs
     }, 'Operacao de IA recuperada');
   })

@@ -5,6 +5,7 @@ const { executeWithRLS } = require('../config/supabase');
 const { success, error, notFound, asyncHandler, handleSupabaseError } = require('../utils/response');
 const { formatActivity } = require('../utils/helpers');
 const { buildConnectionIsolation } = require('../services/connectionIsolationService');
+const { waitForSendSlot } = require('../services/whatsappSendPolicy');
 
 const router = express.Router();
 
@@ -360,6 +361,7 @@ router.post('/send-message', asyncHandler(async (req, res) => {
   }
 
   try {
+    await waitForSendSlot({ clientId: req.user.id, sessionName: evolutionSessionName, source: 'whatsapp_send_message' });
     const sendResult = await baileysService.sendTextMessage(evolutionSessionName, phone, message);
     const now = new Date().toISOString();
     const jid = `${phone.replace(/\D/g, '')}@s.whatsapp.net`;

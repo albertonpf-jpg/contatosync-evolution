@@ -8,6 +8,7 @@ const { success, error, notFound, asyncHandler, handleSupabaseError, paginated }
 const { emitConversationUpdate, emitNewMessage } = require('../services/socketService');
 const { createStoredFile, sanitizeFileName } = require('../utils/mediaStore');
 const { parseCarouselCommand } = require('../utils/carouselCommand');
+const { waitForSendSlot } = require('../services/whatsappSendPolicy');
 
 const router = express.Router();
 const upload = multer({
@@ -368,6 +369,7 @@ router.post('/send',
           originalName: req.file.originalname
         });
         console.log('[MESSAGE SEND] stored media path=' + storedMedia.path + ' public=' + storedMedia.publicPath + ' size=' + storedMedia.size + ' mime=' + storedMedia.mimetype + ' session=' + activeSessionName);
+        await waitForSendSlot({ clientId: req.user.id, sessionName: activeSessionName, source: 'manual_media' });
         sendResult = await baileysService.sendMediaMessage(activeSessionName, jidToSend, {
           path: storedMedia.path,
           mimetype: storedMedia.mimetype,
@@ -378,8 +380,10 @@ router.post('/send',
           ptt: outgoingType === 'audio'
         });
       } else if (carouselCommand) {
+        await waitForSendSlot({ clientId: req.user.id, sessionName: activeSessionName, source: 'manual_carousel' });
         sendResult = await baileysService.sendCarouselMessage(activeSessionName, jidToSend, carouselCommand);
       } else {
+        await waitForSendSlot({ clientId: req.user.id, sessionName: activeSessionName, source: 'manual_text' });
         sendResult = await baileysService.sendTextMessage(activeSessionName, jidToSend, messageContent);
       }
       const finalContent = carouselCommand

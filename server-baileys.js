@@ -4,6 +4,7 @@ const http = require('http');
 const socketIo = require('socket.io');
 const { mediaRoot } = require('./src/utils/mediaStore');
 const { createResponseRegistry } = require('./src/whatsapp/response-registry');
+const { waitForSendSlot, getSendPolicySnapshot } = require('./src/services/whatsappSendPolicy');
 
 console.log('🚀 Iniciando ContatoSync Evolution...');
 
@@ -73,6 +74,33 @@ function toPublicMediaUrl(mediaUrl) {
   if (!mediaUrl || /^https?:\/\//i.test(mediaUrl) || mediaUrl.startsWith('data:')) return mediaUrl || '';
   const baseUrl = getPublicBaseUrl();
   return baseUrl ? baseUrl + (mediaUrl.startsWith('/') ? mediaUrl : '/' + mediaUrl) : mediaUrl;
+}
+
+function debugAccessEnabled(req) {
+  if (process.env.DEBUG_ENDPOINTS_ENABLED === 'true') return true;
+  const expectedToken = process.env.DEBUG_ENDPOINT_TOKEN;
+  if (!expectedToken) return false;
+  const providedToken = req.header('x-debug-token') || req.query.debug_token || '';
+  return providedToken === expectedToken;
+}
+
+function requireDebugAccess(req, res, next) {
+  if (debugAccessEnabled(req)) return next();
+  return res.status(404).json({ error: 'Not found' });
+}
+
+function internalAccessEnabled(req) {
+  const expectedToken = process.env.INTERNAL_ENDPOINT_TOKEN;
+  const providedToken = req.header('x-internal-token') || '';
+  if (expectedToken && providedToken === expectedToken) return true;
+
+  const remoteAddress = req.socket?.remoteAddress || req.ip || '';
+  return ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(remoteAddress);
+}
+
+function requireInternalAccess(req, res, next) {
+  if (internalAccessEnabled(req)) return next();
+  return res.status(404).json({ error: 'Not found' });
 }
 
 function getResponseRegistryKey(payload = {}) {
@@ -201,6 +229,7 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
 
   var sendResult = null;
   var sendType = hasProductCards ? 'carousel' : 'text';
+  await waitForSendSlot({ clientId, sessionName, source: 'ai_auto_reply' });
   if (hasProductCards) {
     try {
       sendResult = await baileysService.sendCarouselMessage(sessionName, jid, {
@@ -475,6 +504,8 @@ const io = socketIo(server, {
 app.use(cors({ origin: "*", credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use('/debug', requireDebugAccess);
+app.use('/internal', requireInternalAccess);
 app.use('/media', express.static(mediaRoot(), {
   maxAge: '7d',
   setHeaders: function(res, filePath) {
@@ -912,7 +943,10 @@ app.get('/debug/baileys', function(req, res) {
 });
 
 app.get('/debug/ai-queue', function(req, res) {
-  res.json(getAIAutoReplyQueueSnapshot());
+  res.json({
+    aiQueue: getAIAutoReplyQueueSnapshot(),
+    sendPolicy: getSendPolicySnapshot()
+  });
 });
 
 // ========================

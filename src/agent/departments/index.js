@@ -1,4 +1,5 @@
 const sourceDecision = require('../../router/source-decision');
+const { getDepartmentSettings } = require('../department-config');
 
 function clonePlan(plan = {}) {
   return {
@@ -91,9 +92,15 @@ const departmentAgents = {
   }
 };
 
-function selectDepartmentAgent(route = {}) {
+function selectDepartmentAgent(route = {}, config = {}) {
   const intent = route.intent || 'unknown';
-  return Object.values(departmentAgents).find(agent => agent.intents.includes(intent)) || departmentAgents.support;
+  const selected = Object.values(departmentAgents).find(agent => agent.intents.includes(intent)) || departmentAgents.support;
+  const settings = getDepartmentSettings(config, selected.id);
+  if (settings.enabled === false && selected.id !== 'support') return departmentAgents.support;
+  return {
+    ...selected,
+    settings
+  };
 }
 
 module.exports = {

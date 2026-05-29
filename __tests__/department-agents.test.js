@@ -14,6 +14,16 @@ describe('Department agents', () => {
     expect(selectDepartmentAgent({ intent }).id).toBe(expectedDepartment);
   });
 
+  test('falls back to support when selected department is disabled', () => {
+    const agent = selectDepartmentAgent({ intent: 'product' }, {
+      department_agent_config: {
+        sales: { enabled: false }
+      }
+    });
+
+    expect(agent.id).toBe('support');
+  });
+
   test('sales department keeps catalog before static knowledge', () => {
     const agent = selectDepartmentAgent({
       intent: 'product',

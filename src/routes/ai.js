@@ -38,6 +38,16 @@ function toPublicAIConfig(config) {
   return publicConfig;
 }
 
+function buildDefaultDepartmentConfig() {
+  return {
+    sales: { enabled: true, name: 'Vendas', objective: 'Responder sobre produtos, catalogo, disponibilidade, preco e envio de cards.' },
+    support: { enabled: true, name: 'Atendimento', objective: 'Responder politicas, prazos, entrega, troca e duvidas gerais.' },
+    billing: { enabled: true, name: 'Financeiro', objective: 'Consultar pedidos, pagamentos, cobrancas e rastreio quando houver integracao.' },
+    scheduling: { enabled: true, name: 'Agenda', objective: 'Tratar horarios, retiradas agendadas e disponibilidade operacional.' },
+    handoff: { enabled: true, name: 'Encaminhamento', objective: 'Encaminhar somente quando o cliente pedir humano explicitamente.' }
+  };
+}
+
 function normalizeSourceUrls(value) {
   const items = Array.isArray(value) ? value : [];
   const seen = new Set();
@@ -112,6 +122,14 @@ router.get('/config',
         daily_limit: 50,
         reply_delay_seconds: 8,
         monthly_limit: 1500,
+        ai_engine: 'local_multi_agent',
+        department_agents_enabled: true,
+        department_agent_config: buildDefaultDepartmentConfig(),
+        queue_settings: {
+          max_parallel_per_client: 1,
+          max_parallel_per_session: 1,
+          idle_collapse_seconds: 8
+        },
         product_catalog_url: '',
         product_source_urls: [],
         knowledge_files: [],
@@ -571,6 +589,73 @@ router.get('/stats',
     };
 
     success(res, stats, 'Estatísticas de IA recuperadas');
+  })
+);
+
+/**
+ * GET /api/ai/operations
+ * Estado operacional do motor local multiagente.
+ */
+router.get('/operations',
+  asyncHandler(async (req, res) => {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const [{ data: config }, { data: recentLogs }, { count: successCount }, { count: errorCount }] = await Promise.all([
+      executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_ai_config')
+          .select('enabled, ai_engine, department_agents_enabled, queue_settings, department_agent_config')
+          .eq('client_id', req.user.id)
+          .single()
+      ),
+      executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_ai_log')
+          .select('provider, model, status, response_time_ms, processing_time_ms, created_at')
+          .eq('client_id', req.user.id)
+          .gte('created_at', since)
+          .order('created_at', { ascending: false })
+          .limit(20)
+      ),
+      executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_ai_log')
+          .select('*', { count: 'exact', head: true })
+          .eq('client_id', req.user.id)
+          .eq('status', 'success')
+          .gte('created_at', since)
+      ),
+      executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_ai_log')
+          .select('*', { count: 'exact', head: true })
+          .eq('client_id', req.user.id)
+          .eq('status', 'error')
+          .gte('created_at', since)
+      )
+    ]);
+
+    const logs = recentLogs || [];
+    const localAgentLogs = logs.filter(log => log.provider === 'local_multi_agent');
+    const difyLogs = logs.filter(log => log.provider === 'dify');
+    const avgMs = localAgentLogs.length
+      ? Math.round(localAgentLogs.reduce((sum, log) => sum + Number(log.processing_time_ms || log.response_time_ms || 0), 0) / localAgentLogs.length)
+      : 0;
+
+    success(res, {
+      engine: config?.ai_engine || 'local_multi_agent',
+      enabled: config?.enabled === true,
+      departmentAgentsEnabled: config?.department_agents_enabled !== false,
+      queueSettings: config?.queue_settings || {},
+      departments: config?.department_agent_config || buildDefaultDepartmentConfig(),
+      last24h: {
+        success: successCount || 0,
+        errors: errorCount || 0,
+        localAgentResponses: localAgentLogs.length,
+        difyResponses: difyLogs.length,
+        averageLocalProcessingMs: avgMs
+      },
+      recentLogs: logs
+    }, 'Operacao de IA recuperada');
   })
 );
 

@@ -231,6 +231,11 @@ class ApiService {
     return response.data.data;
   }
 
+  async getAIOperations() {
+    const response = await this.api.get('/ai/operations');
+    return response.data.data;
+  }
+
   async testAI(data: { message: string; phone?: string }) {
     const response = await this.api.post('/ai/test', data);
     return response.data.data;

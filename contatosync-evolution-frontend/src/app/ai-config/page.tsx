@@ -8,6 +8,10 @@ import { Bot, CheckCircle2, FileText, KeyRound, Loader2, Plus, RefreshCw, Save, 
 
 interface AIConfig {
   enabled: boolean;
+  ai_engine?: 'local_multi_agent' | 'dify' | 'hybrid';
+  department_agents_enabled?: boolean;
+  department_agent_config?: Record<string, DepartmentConfig>;
+  queue_settings?: QueueSettings;
   model: string;
   max_tokens: number;
   temperature: number;
@@ -28,6 +32,33 @@ interface AIConfig {
   fallback_message: string;
   trigger_keywords: string[];
   blacklist_keywords: string[];
+}
+
+interface DepartmentConfig {
+  enabled?: boolean;
+  name?: string;
+  objective?: string;
+}
+
+interface QueueSettings {
+  max_parallel_per_client?: number;
+  max_parallel_per_session?: number;
+  idle_collapse_seconds?: number;
+}
+
+interface AIOperations {
+  engine: string;
+  enabled: boolean;
+  departmentAgentsEnabled: boolean;
+  departments: Record<string, DepartmentConfig>;
+  queueSettings: QueueSettings;
+  last24h: {
+    success: number;
+    errors: number;
+    localAgentResponses: number;
+    difyResponses: number;
+    averageLocalProcessingMs: number;
+  };
 }
 
 interface Integration {
@@ -140,6 +171,7 @@ function formatFileSize(value?: number) {
 export default function AIConfigPage() {
   const [config, setConfig] = useState<AIConfig | null>(null);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
+  const [operations, setOperations] = useState<AIOperations | null>(null);
   const [integrationTypes, setIntegrationTypes] = useState<IntegrationType[]>([]);
   const [integrationForm, setIntegrationForm] = useState(defaultIntegrationForm);
   const [showIntegrationForm, setShowIntegrationForm] = useState(false);
@@ -174,6 +206,7 @@ export default function AIConfigPage() {
         apiService.getIntegrations(),
         apiService.getIntegrationTypes()
       ]);
+      apiService.getAIOperations().then(setOperations).catch(() => setOperations(null));
       setConfig(aiConfig);
       setTriggerText(listToText(aiConfig.trigger_keywords));
       setBlacklistText(listToText(aiConfig.blacklist_keywords));
@@ -200,6 +233,10 @@ export default function AIConfigPage() {
       setError(null);
       const updated = await apiService.updateAIConfig({
         ...config,
+        ai_engine: 'local_multi_agent',
+        department_agents_enabled: config.department_agents_enabled !== false,
+        department_agent_config: config.department_agent_config || operations?.departments || {},
+        queue_settings: config.queue_settings || operations?.queueSettings || {},
         product_catalog_url: (config.product_catalog_url || '').trim(),
         product_source_urls: textToList(productSourceText),
         working_days: [1, 2, 3, 4, 5, 6, 7],
@@ -369,6 +406,67 @@ export default function AIConfigPage() {
                 <input type="checkbox" checked={config.enabled} onChange={event => updateConfigField('enabled', event.target.checked)} className="h-4 w-4" />
                 Ativa
               </label>
+            </div>
+
+            <div className="grid gap-3 rounded-lg border border-blue-100 bg-blue-50 p-4 md:grid-cols-4">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-blue-700">Motor</p>
+                <p className="mt-1 text-sm font-semibold text-blue-950">{operations?.engine || config.ai_engine || 'local_multi_agent'}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-blue-700">Departamentos</p>
+                <p className="mt-1 text-sm font-semibold text-blue-950">{config.department_agents_enabled === false ? 'Inativos' : 'Ativos'}</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-blue-700">Respostas 24h</p>
+                <p className="mt-1 text-sm font-semibold text-blue-950">{operations?.last24h.localAgentResponses ?? 0} local / {operations?.last24h.difyResponses ?? 0} Dify</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-blue-700">Tempo medio</p>
+                <p className="mt-1 text-sm font-semibold text-blue-950">{operations?.last24h.averageLocalProcessingMs ?? 0} ms</p>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 p-4">
+              <div className="mb-3 flex items-center justify-between">
+                <h3 className="text-sm font-semibold text-gray-900">Agentes por departamento</h3>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={config.department_agents_enabled !== false}
+                    onChange={event => updateConfigField('department_agents_enabled', event.target.checked)}
+                    className="h-4 w-4"
+                  />
+                  Ativos
+                </label>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                {Object.entries(config.department_agent_config || operations?.departments || {}).map(([id, department]) => (
+                  <div key={id} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-gray-900">{department.name || id}</p>
+                      <input
+                        type="checkbox"
+                        checked={department.enabled !== false}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, enabled: event.target.checked }
+                        })}
+                        className="h-4 w-4"
+                      />
+                    </div>
+                    <textarea
+                      value={department.objective || ''}
+                      onChange={event => updateConfigField('department_agent_config', {
+                        ...(config.department_agent_config || operations?.departments || {}),
+                        [id]: { ...department, objective: event.target.value }
+                      })}
+                      rows={3}
+                      className="mt-2 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                    />
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="grid gap-4 md:grid-cols-2">

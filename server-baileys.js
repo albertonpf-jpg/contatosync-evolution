@@ -51,6 +51,14 @@ const server = http.createServer(app);
 const PORT = process.env.PORT || 3003;
 const FALLBACK_PUBLIC_BASE_URL = 'https://web-production-50297.up.railway.app';
 const aiReplyTimers = new Map();
+const aiReplyProcessingQueues = new Map();
+const aiReplyQueueMetrics = {
+  enqueued: 0,
+  processed: 0,
+  failed: 0,
+  lastError: '',
+  lastProcessedAt: null
+};
 const responseRegistry = createResponseRegistry();
 const AI_PAUSED_TAG = 'ai_paused';
 
@@ -336,7 +344,7 @@ function enqueueAIAutoReply(payload) {
     return;
   }
 
-  var key = payload.clientId + ':' + payload.conversation.id;
+  var key = [payload.clientId, payload.sessionName || 'session', payload.conversation.id].join(':');
   var existing = aiReplyTimers.get(key);
   var nextContent = String(payload.inboundContent || '').trim();
   if (existing) {
@@ -370,13 +378,89 @@ function enqueueAIAutoReply(payload) {
         incomingMessageId: existing.incomingMessageIds.filter(Boolean).join('|') || existing.payload.incomingMessageId,
         media: existing.media
       };
-      sendAIAutoReply(finalPayload).catch(function(aiError) {
-        console.error('[AI AUTO] Erro ao responder conversa ' + payload.conversation.id + ':', aiError.message);
-      });
+      enqueueAIAutoReplyProcessing(finalPayload);
     }, delayMs);
   }).catch(function(error) {
     console.error('[AI AUTO] Erro ao calcular delay:', error.message);
   });
+}
+
+function getProcessingQueueKey(payload = {}) {
+  return [payload.clientId || 'client', payload.sessionName || 'session'].join(':');
+}
+
+function enqueueAIAutoReplyProcessing(payload) {
+  var queueKey = getProcessingQueueKey(payload);
+  var queue = aiReplyProcessingQueues.get(queueKey);
+  if (!queue) {
+    queue = { running: false, jobs: [], lastStartedAt: null, lastFinishedAt: null };
+    aiReplyProcessingQueues.set(queueKey, queue);
+  }
+  queue.jobs.push({
+    id: [Date.now(), Math.random().toString(16).slice(2)].join('-'),
+    payload,
+    createdAt: new Date().toISOString()
+  });
+  aiReplyQueueMetrics.enqueued += 1;
+  console.log('[AI QUEUE] ' + JSON.stringify({
+    queueKey,
+    queued: queue.jobs.length,
+    conversationId: payload.conversation?.id || '',
+    sessionName: payload.sessionName || ''
+  }));
+  drainAIAutoReplyQueue(queueKey);
+}
+
+function drainAIAutoReplyQueue(queueKey) {
+  var queue = aiReplyProcessingQueues.get(queueKey);
+  if (!queue || queue.running) return;
+  var job = queue.jobs.shift();
+  if (!job) return;
+
+  queue.running = true;
+  queue.lastStartedAt = new Date().toISOString();
+  sendAIAutoReply(job.payload)
+    .then(function() {
+      aiReplyQueueMetrics.processed += 1;
+      aiReplyQueueMetrics.lastProcessedAt = new Date().toISOString();
+    })
+    .catch(function(aiError) {
+      aiReplyQueueMetrics.failed += 1;
+      aiReplyQueueMetrics.lastError = String(aiError?.message || aiError).slice(0, 500);
+      console.error('[AI AUTO] Erro ao responder conversa ' + job.payload.conversation.id + ':', aiError.message);
+    })
+    .finally(function() {
+      queue.running = false;
+      queue.lastFinishedAt = new Date().toISOString();
+      if (queue.jobs.length === 0 && !queue.running) {
+        aiReplyProcessingQueues.delete(queueKey);
+        return;
+      }
+      drainAIAutoReplyQueue(queueKey);
+    });
+}
+
+function getAIAutoReplyQueueSnapshot() {
+  return {
+    timers: Array.from(aiReplyTimers.entries()).map(function(entry) {
+      return {
+        key: entry[0],
+        messages: entry[1].messages.length,
+        version: entry[1].version,
+        incomingMessageIds: entry[1].incomingMessageIds.length
+      };
+    }),
+    processingQueues: Array.from(aiReplyProcessingQueues.entries()).map(function(entry) {
+      return {
+        key: entry[0],
+        running: entry[1].running,
+        queued: entry[1].jobs.length,
+        lastStartedAt: entry[1].lastStartedAt,
+        lastFinishedAt: entry[1].lastFinishedAt
+      };
+    }),
+    metrics: { ...aiReplyQueueMetrics }
+  };
 }
 
 // Socket.IO com CORS
@@ -825,6 +909,10 @@ app.get('/debug/baileys', function(req, res) {
     memoryUsage: process.memoryUsage(),
     uptime: process.uptime()
   });
+});
+
+app.get('/debug/ai-queue', function(req, res) {
+  res.json(getAIAutoReplyQueueSnapshot());
 });
 
 // ========================

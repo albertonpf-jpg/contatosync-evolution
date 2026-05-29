@@ -4,6 +4,7 @@ const baileysService = require('../services/baileysService');
 const { executeWithRLS } = require('../config/supabase');
 const { success, error, notFound, asyncHandler, handleSupabaseError } = require('../utils/response');
 const { formatActivity } = require('../utils/helpers');
+const { buildConnectionIsolation } = require('../services/connectionIsolationService');
 
 const router = express.Router();
 
@@ -103,6 +104,18 @@ router.post('/sessions', asyncHandler(async (req, res) => {
   }
 
   const webhookUrl = `${process.env.FRONTEND_URL || 'http://localhost:3003'}/api/webhooks/evolution`;
+  const { data: aiConfig } = await executeWithRLS(clientId, (client) =>
+    client
+      .from('evolution_ai_config')
+      .select('isolation_settings')
+      .eq('client_id', clientId)
+      .single()
+  );
+  const isolation = buildConnectionIsolation({
+    clientId,
+    sessionName: evolutionSessionName,
+    config: aiConfig || {}
+  });
 
   const sessionData = {
     id: uuidv4(),
@@ -110,6 +123,9 @@ router.post('/sessions', asyncHandler(async (req, res) => {
     session_name: evolutionSessionName,
     status: 'qr_pending',
     webhook_url: webhookUrl,
+    isolation_mode: isolation.mode,
+    isolation_status: isolation.status,
+    isolation_metadata: isolation,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };

@@ -8270,7 +8270,8 @@ async function runRetrievalGroundedAgent({ supabase, clientId, message, conversa
     text: message,
     conversation,
     contact,
-    conversationHistory
+    conversationHistory,
+    effectiveConfig
   }, {
     adapters: buildGroundedAgentAdapters({
       clientId,
@@ -8295,6 +8296,7 @@ async function runRetrievalGroundedAgent({ supabase, clientId, message, conversa
     product_images: [],
     product_cards: result.product_cards || [],
     department: result.department || '',
+    department_settings: result.department_settings || null,
     route: result.route,
     retrieval_plan: result.retrievalPlan,
     confidence_guardrail: result.validation

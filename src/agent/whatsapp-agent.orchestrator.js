@@ -21,6 +21,7 @@ async function normalize(rawMessage = {}) {
     conversation: rawMessage.conversation || null,
     contact: rawMessage.contact || null,
     conversationHistory: Array.isArray(rawMessage.conversationHistory) ? rawMessage.conversationHistory : [],
+    effectiveConfig: rawMessage.effectiveConfig || rawMessage.config || {},
     createdAt: rawMessage.createdAt || new Date().toISOString()
   });
 }
@@ -51,7 +52,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     decision: route.reason
   }, logger);
 
-  const departmentAgent = selectDepartmentAgent(route);
+  const departmentAgent = selectDepartmentAgent(route, normalizedMessage.effectiveConfig);
   logAgentStep({
     conversationId: normalizedMessage.conversationId,
     step: 'department_router',
@@ -59,7 +60,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     outputSummary: departmentAgent.id,
     confidence: route.confidence,
     sourcesUsed: route.requiredSources,
-    decision: departmentAgent.label
+    decision: departmentAgent.settings?.objective || departmentAgent.label
   }, logger);
 
   if (route.intent === 'human_request' && route.explicitHumanRequest === true) {
@@ -82,6 +83,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
       response: handoff.response,
       handoff,
       department: departmentAgent.id,
+      department_settings: departmentAgent.settings,
       route,
       product_cards: []
     };
@@ -177,6 +179,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
       action: 'send',
       response: validation.finalAnswer,
       department: departmentAgent.id,
+      department_settings: departmentAgent.settings,
       route,
       retrievalPlan,
       evidence: rankedEvidence,
@@ -199,6 +202,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
       action: 'clarify',
       response: validation.clarificationQuestion,
       department: departmentAgent.id,
+      department_settings: departmentAgent.settings,
       route,
       retrievalPlan,
       evidence: rankedEvidence,
@@ -221,6 +225,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
       action: 'continue_discovery',
       response: validation.discoveryQuestion,
       department: departmentAgent.id,
+      department_settings: departmentAgent.settings,
       route,
       retrievalPlan,
       evidence: rankedEvidence,
@@ -241,6 +246,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
       action: 'handoff',
       response: handoff.response,
       department: departmentAgent.id,
+      department_settings: departmentAgent.settings,
       route,
       handoff,
       product_cards: []
@@ -251,6 +257,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     action: 'continue_discovery',
     response: 'Me passa mais um detalhe para eu conseguir te ajudar melhor?',
     department: departmentAgent.id,
+    department_settings: departmentAgent.settings,
     route,
     retrievalPlan,
     evidence: rankedEvidence,

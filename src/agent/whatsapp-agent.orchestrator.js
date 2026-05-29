@@ -1,11 +1,11 @@
 const messageTypes = require('../types/message.types');
 const lightweightRouter = require('../router/lightweight-router');
-const sourceDecision = require('../router/source-decision');
 const queryRewriter = require('../retrieval/query-rewriter');
 const retrievalOrchestrator = require('../retrieval/retrieval-orchestrator');
 const evidenceRanker = require('../retrieval/evidence-ranker');
 const answerComposer = require('./answer-composer');
 const confidenceGuardrail = require('./confidence-guardrail');
+const { selectDepartmentAgent } = require('./departments');
 const humanHandoff = require('../handoff/human-handoff.service');
 const { logAgentStep } = require('../utils/structured-logger');
 
@@ -51,6 +51,17 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     decision: route.reason
   }, logger);
 
+  const departmentAgent = selectDepartmentAgent(route);
+  logAgentStep({
+    conversationId: normalizedMessage.conversationId,
+    step: 'department_router',
+    inputSummary: route.intent,
+    outputSummary: departmentAgent.id,
+    confidence: route.confidence,
+    sourcesUsed: route.requiredSources,
+    decision: departmentAgent.label
+  }, logger);
+
   if (route.intent === 'human_request' && route.explicitHumanRequest === true) {
     const handoff = humanHandoff.create({
       message: normalizedMessage,
@@ -70,12 +81,13 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
       action: 'handoff',
       response: handoff.response,
       handoff,
+      department: departmentAgent.id,
       route,
       product_cards: []
     };
   }
 
-  const retrievalPlan = await sourceDecision.build({
+  const retrievalPlan = await departmentAgent.buildRetrievalPlan({
     message: normalizedMessage,
     route
   });
@@ -164,6 +176,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     return {
       action: 'send',
       response: validation.finalAnswer,
+      department: departmentAgent.id,
       route,
       retrievalPlan,
       evidence: rankedEvidence,
@@ -185,6 +198,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     return {
       action: 'clarify',
       response: validation.clarificationQuestion,
+      department: departmentAgent.id,
       route,
       retrievalPlan,
       evidence: rankedEvidence,
@@ -206,6 +220,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     return {
       action: 'continue_discovery',
       response: validation.discoveryQuestion,
+      department: departmentAgent.id,
       route,
       retrievalPlan,
       evidence: rankedEvidence,
@@ -225,6 +240,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     return {
       action: 'handoff',
       response: handoff.response,
+      department: departmentAgent.id,
       route,
       handoff,
       product_cards: []
@@ -234,6 +250,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
   return {
     action: 'continue_discovery',
     response: 'Me passa mais um detalhe para eu conseguir te ajudar melhor?',
+    department: departmentAgent.id,
     route,
     retrievalPlan,
     evidence: rankedEvidence,

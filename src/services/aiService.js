@@ -8,6 +8,7 @@ const { promisify } = require('util');
 const { execFile } = require('child_process');
 const retrievalGroundedAgent = require('../agent/whatsapp-agent.orchestrator');
 const { callDifyChatMessage, getDifyConfig } = require('./difyService');
+const { resolveAIEngine } = require('./aiEngineSelector');
 
 const execFileAsync = promisify(execFile);
 const RECENT_PRODUCTS_MEMORY_TTL_MS = 30 * 60 * 1000;
@@ -8285,14 +8286,15 @@ async function runRetrievalGroundedAgent({ supabase, clientId, message, conversa
   return {
     skipped: false,
     response: result.response,
-    provider: 'grounded_agent',
-    model: 'retrieval_grounded_whatsapp_agent',
+    provider: 'local_multi_agent',
+    model: 'contatosync_department_multi_agent',
     prompt_tokens: 0,
     completion_tokens: 0,
     total_tokens: 0,
     processing_time_ms: Date.now() - startedAt,
     product_images: [],
     product_cards: result.product_cards || [],
+    department: result.department || '',
     route: result.route,
     retrieval_plan: result.retrievalPlan,
     confidence_guardrail: result.validation
@@ -8644,7 +8646,16 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
 
   try {
     const difyConfig = getDifyConfig(effectiveConfig);
-    if (difyConfig.providerIsDify && (!difyConfig.endpoint || !difyConfig.apiKey)) {
+    const engineDecision = resolveAIEngine({ config: effectiveConfig, difyConfig });
+    console.log('[AI ENGINE] ' + JSON.stringify({
+      conversationId: conversation?.id || '',
+      clientId,
+      engine: engineDecision.engine,
+      useDify: engineDecision.useDify === true,
+      reason: engineDecision.reason
+    }));
+
+    if (engineDecision.useDify && difyConfig.providerIsDify && (!difyConfig.endpoint || !difyConfig.apiKey)) {
       const missingConfigResult = {
         skipped: false,
         response: 'A IA esta configurada para usar Dify, mas a conexao do Dify ainda nao foi configurada no servidor.',
@@ -8669,7 +8680,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
       return missingConfigResult;
     }
 
-    if (difyConfig.enabled) {
+    if (engineDecision.useDify && difyConfig.enabled) {
       try {
         const difyResult = await runDifyAgent({
           supabase,
@@ -8710,7 +8721,7 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
           status: 'error',
           error_message: difyError.message
         });
-        if (!difyConfig.failoverToLocal || difyConfig.providerIsDify) {
+        if (!engineDecision.allowLocalFallback || !difyConfig.failoverToLocal || difyConfig.providerIsDify) {
           return {
             skipped: false,
             response: buildAIProviderErrorResponse(effectiveConfig),

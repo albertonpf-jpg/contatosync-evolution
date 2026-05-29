@@ -38,6 +38,10 @@ interface DepartmentConfig {
   enabled?: boolean;
   name?: string;
   objective?: string;
+  sourcePriority?: string[];
+  responseRules?: string[];
+  handoffKeywords?: string[];
+  maxEvidence?: number;
 }
 
 interface QueueSettings {
@@ -52,6 +56,18 @@ interface AIOperations {
   departmentAgentsEnabled: boolean;
   departments: Record<string, DepartmentConfig>;
   queueSettings: QueueSettings;
+  aiQueue?: {
+    timers?: Array<{ key: string; messages: number; version: number; incomingMessageIds: number }>;
+    processingQueues?: Array<{ key: string; running: number; queued: number; settings?: QueueSettings; lastStartedAt?: string; lastFinishedAt?: string }>;
+    clientConcurrency?: Array<{ clientId: string; running: number }>;
+    metrics?: {
+      enqueued: number;
+      processed: number;
+      failed: number;
+      lastError?: string;
+      lastProcessedAt?: string | null;
+    };
+  };
   last24h: {
     success: number;
     errors: number;
@@ -192,6 +208,9 @@ export default function AIConfigPage() {
   const requiresToken = selectedIntegrationType?.fields.includes('api_key') ?? true;
   const requiresSecret = selectedIntegrationType?.fields.includes('api_secret') ?? false;
   const supportsEndpointConfig = (selectedIntegrationType?.config_fields || []).length > 0;
+  const queueTimers = operations?.aiQueue?.timers?.length ?? 0;
+  const queuedJobs = operations?.aiQueue?.processingQueues?.reduce((sum, queue) => sum + (queue.queued || 0), 0) ?? 0;
+  const runningJobs = operations?.aiQueue?.processingQueues?.reduce((sum, queue) => sum + (queue.running || 0), 0) ?? 0;
 
   useEffect(() => {
     void loadPage();
@@ -408,7 +427,7 @@ export default function AIConfigPage() {
               </label>
             </div>
 
-            <div className="grid gap-3 rounded-lg border border-blue-100 bg-blue-50 p-4 md:grid-cols-4">
+            <div className="grid gap-3 rounded-lg border border-blue-100 bg-blue-50 p-4 md:grid-cols-5">
               <div>
                 <p className="text-xs font-medium uppercase tracking-wide text-blue-700">Motor</p>
                 <p className="mt-1 text-sm font-semibold text-blue-950">{operations?.engine || config.ai_engine || 'local_multi_agent'}</p>
@@ -424,6 +443,10 @@ export default function AIConfigPage() {
               <div>
                 <p className="text-xs font-medium uppercase tracking-wide text-blue-700">Tempo medio</p>
                 <p className="mt-1 text-sm font-semibold text-blue-950">{operations?.last24h.averageLocalProcessingMs ?? 0} ms</p>
+              </div>
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wide text-blue-700">Fila agora</p>
+                <p className="mt-1 text-sm font-semibold text-blue-950">{runningJobs} rodando / {queuedJobs + queueTimers} aguardando</p>
               </div>
             </div>
 
@@ -464,6 +487,29 @@ export default function AIConfigPage() {
                       rows={3}
                       className="mt-2 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
                     />
+                    <div className="mt-2 grid gap-2 sm:grid-cols-[90px_1fr]">
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        value={department.maxEvidence || 5}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, maxEvidence: Number(event.target.value) }
+                        })}
+                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                        aria-label={`Evidencias maximas para ${department.name || id}`}
+                      />
+                      <input
+                        value={listToText(department.sourcePriority)}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, sourcePriority: textToList(event.target.value) }
+                        })}
+                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                        aria-label={`Prioridade de fontes para ${department.name || id}`}
+                      />
+                    </div>
                   </div>
                 ))}
               </div>
@@ -497,6 +543,78 @@ export default function AIConfigPage() {
                 <input type="number" min="1" max="60" value={config.reply_delay_seconds || 8} onChange={event => updateConfigField('reply_delay_seconds', Number(event.target.value))} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
                 <FieldHelp>Tempo que a IA espera antes de responder. Se o cliente mandar duas ou mais mensagens seguidas nesse intervalo, o sistema junta tudo e gera uma unica resposta. Use 6 a 12 segundos para atendimento natural.</FieldHelp>
               </label>
+            </div>
+
+            <div className="rounded-lg border border-gray-200 p-4">
+              <h3 className="text-sm font-semibold text-gray-900">Fila e worker da IA</h3>
+              <div className="mt-3 grid gap-4 md:grid-cols-3">
+                <label className="text-sm font-medium text-gray-700">
+                  Paralelo por cliente
+                  <input
+                    type="number"
+                    min="1"
+                    max="5"
+                    value={config.queue_settings?.max_parallel_per_client || 1}
+                    onChange={event => updateConfigField('queue_settings', {
+                      ...(config.queue_settings || {}),
+                      max_parallel_per_client: Number(event.target.value)
+                    })}
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"
+                  />
+                  <FieldHelp>Limite global de respostas de IA processadas ao mesmo tempo para a mesma conta.</FieldHelp>
+                </label>
+                <label className="text-sm font-medium text-gray-700">
+                  Paralelo por sessao
+                  <input
+                    type="number"
+                    min="1"
+                    max="3"
+                    value={config.queue_settings?.max_parallel_per_session || 1}
+                    onChange={event => updateConfigField('queue_settings', {
+                      ...(config.queue_settings || {}),
+                      max_parallel_per_session: Number(event.target.value)
+                    })}
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"
+                  />
+                  <FieldHelp>Limite de respostas simultaneas dentro da mesma sessao WhatsApp.</FieldHelp>
+                </label>
+                <label className="text-sm font-medium text-gray-700">
+                  Janela de agrupamento
+                  <input
+                    type="number"
+                    min="1"
+                    max="60"
+                    value={config.queue_settings?.idle_collapse_seconds || config.reply_delay_seconds || 8}
+                    onChange={event => updateConfigField('queue_settings', {
+                      ...(config.queue_settings || {}),
+                      idle_collapse_seconds: Number(event.target.value)
+                    })}
+                    className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2"
+                  />
+                  <FieldHelp>Tempo para juntar mensagens seguidas do mesmo contato antes de gerar a resposta.</FieldHelp>
+                </label>
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-4">
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-xs font-medium uppercase text-gray-500">Timers</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-900">{queueTimers}</p>
+                </div>
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-xs font-medium uppercase text-gray-500">Em execucao</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-900">{runningJobs}</p>
+                </div>
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-xs font-medium uppercase text-gray-500">Aguardando</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-900">{queuedJobs}</p>
+                </div>
+                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                  <p className="text-xs font-medium uppercase text-gray-500">Falhas</p>
+                  <p className="mt-1 text-lg font-semibold text-gray-900">{operations?.aiQueue?.metrics?.failed ?? 0}</p>
+                </div>
+              </div>
+              {operations?.aiQueue?.metrics?.lastError && (
+                <p className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-xs text-red-700">{operations.aiQueue.metrics.lastError}</p>
+              )}
             </div>
 
             <div className="grid gap-4 md:grid-cols-[1fr_auto] md:items-start">

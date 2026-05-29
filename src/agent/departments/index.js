@@ -36,6 +36,23 @@ function buildPlanWithPriority({ message, route, priority, reason }) {
   };
 }
 
+function applyDepartmentSettingsToPlan(plan = {}, settings = {}) {
+  const sourcePriority = Array.isArray(settings.sourcePriority) && settings.sourcePriority.length > 0
+    ? settings.sourcePriority
+    : [];
+  const next = sourcePriority.length > 0 ? orderSources(plan, sourcePriority) : clonePlan(plan);
+  return {
+    ...next,
+    departmentSettings: {
+      name: settings.name,
+      objective: settings.objective,
+      sourcePriority,
+      responseRules: settings.responseRules || [],
+      maxEvidence: settings.maxEvidence
+    }
+  };
+}
+
 const departmentAgents = {
   sales: {
     id: 'sales',
@@ -94,12 +111,14 @@ const departmentAgents = {
 
 function selectDepartmentAgent(route = {}, config = {}) {
   const intent = route.intent || 'unknown';
-  const selected = Object.values(departmentAgents).find(agent => agent.intents.includes(intent)) || departmentAgents.support;
-  const settings = getDepartmentSettings(config, selected.id);
-  if (settings.enabled === false && selected.id !== 'support') return departmentAgents.support;
+  const initial = Object.values(departmentAgents).find(agent => agent.intents.includes(intent)) || departmentAgents.support;
+  const initialSettings = getDepartmentSettings(config, initial.id);
+  const selected = initialSettings.enabled === false && initial.id !== 'support' ? departmentAgents.support : initial;
+  const settings = selected.id === initial.id ? initialSettings : getDepartmentSettings(config, selected.id);
   return {
     ...selected,
-    settings
+    settings,
+    buildRetrievalPlan: async (args) => applyDepartmentSettingsToPlan(await selected.buildRetrievalPlan(args), settings)
   };
 }
 

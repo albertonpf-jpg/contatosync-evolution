@@ -133,6 +133,10 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     route,
     evidenceBundle
   });
+  if (Number.isFinite(Number(departmentAgent.settings?.maxEvidence))) {
+    const limit = Math.max(1, Math.min(10, Number(departmentAgent.settings.maxEvidence)));
+    rankedEvidence.topEvidence = (rankedEvidence.topEvidence || []).slice(0, limit);
+  }
   logAgentStep({
     conversationId: normalizedMessage.conversationId,
     step: 'ranker',

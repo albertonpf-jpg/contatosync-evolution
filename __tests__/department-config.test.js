@@ -26,6 +26,8 @@ describe('Department config', () => {
     expect(config.sales.name).toBe('Vendas consultivas');
     expect(config.sales.handoffKeywords).toEqual(['desconto', 'gerente']);
     expect(config.sales.maxEvidence).toBe(10);
+    expect(config.sales.sourcePriority).toContain('catalog');
+    expect(config.sales.responseRules.length).toBeGreaterThan(0);
   });
 
   test('gets one department settings with fallback to support', () => {

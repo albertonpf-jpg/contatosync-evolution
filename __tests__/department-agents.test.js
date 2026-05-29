@@ -24,7 +24,7 @@ describe('Department agents', () => {
     expect(agent.id).toBe('support');
   });
 
-  test('sales department keeps catalog before static knowledge', () => {
+  test('sales department keeps catalog before static knowledge', async () => {
     const agent = selectDepartmentAgent({
       intent: 'product',
       needsCatalog: true,
@@ -35,7 +35,7 @@ describe('Department agents', () => {
       blockedSources: []
     });
 
-    const plan = agent.buildRetrievalPlan({
+    const plan = await agent.buildRetrievalPlan({
       message: { text: 'Tem vestido vermelho?' },
       route: {
         intent: 'product',
@@ -50,5 +50,31 @@ describe('Department agents', () => {
 
     expect(plan.executeSources[0]).toBe('catalog');
     expect(plan.departmentReason).toMatch(/vendas/i);
+  });
+
+  test('department source priority can be customized per client', async () => {
+    const agent = selectDepartmentAgent({ intent: 'product' }, {
+      department_agent_config: {
+        sales: {
+          sourcePriority: ['site', 'catalog', 'rag']
+        }
+      }
+    });
+
+    const plan = await agent.buildRetrievalPlan({
+      message: { text: 'Tem vestido vermelho?' },
+      route: {
+        intent: 'product',
+        needsCatalog: true,
+        needsRag: true,
+        needsSite: true,
+        needsFiles: false,
+        needsConversationMemory: false,
+        blockedSources: []
+      }
+    });
+
+    expect(plan.executeSources[0]).toBe('site');
+    expect(plan.departmentSettings.sourcePriority).toEqual(['site', 'catalog', 'rag']);
   });
 });

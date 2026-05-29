@@ -5,6 +5,8 @@ const socketIo = require('socket.io');
 const { mediaRoot } = require('./src/utils/mediaStore');
 const { createResponseRegistry } = require('./src/whatsapp/response-registry');
 const { waitForSendSlot, getSendPolicySnapshot } = require('./src/services/whatsappSendPolicy');
+const { normalizeAIQueueSettings } = require('./src/services/aiAutoReplyQueueSettings');
+const { registerAIAutoReplyQueueSnapshotProvider } = require('./src/services/aiAutoReplyQueueState');
 
 console.log('🚀 Iniciando ContatoSync Evolution...');
 
@@ -53,6 +55,7 @@ const PORT = process.env.PORT || 3003;
 const FALLBACK_PUBLIC_BASE_URL = 'https://web-production-50297.up.railway.app';
 const aiReplyTimers = new Map();
 const aiReplyProcessingQueues = new Map();
+const aiReplyClientConcurrency = new Map();
 const aiReplyQueueMetrics = {
   enqueued: 0,
   processed: 0,
@@ -352,18 +355,21 @@ async function sendAIAutoReply({ sessionName, clientId, conversation, contact, j
 }
 
 async function getAIReplyDelayMs(clientId) {
+  const settings = await getAIAutoReplySettings(clientId);
+  return settings.idle_collapse_seconds * 1000;
+}
+
+async function getAIAutoReplySettings(clientId) {
   try {
     var { supabaseAdmin } = require('./src/config/supabase');
     var { data: config } = await supabaseAdmin
       .from('evolution_ai_config')
-      .select('reply_delay_seconds')
+      .select('reply_delay_seconds, queue_settings')
       .eq('client_id', clientId)
       .single();
-    var seconds = Number(config?.reply_delay_seconds);
-    if (!Number.isFinite(seconds)) seconds = 8;
-    return Math.max(1, Math.min(60, seconds)) * 1000;
+    return normalizeAIQueueSettings(config?.queue_settings, config?.reply_delay_seconds);
   } catch (error) {
-    return 8000;
+    return normalizeAIQueueSettings();
   }
 }
 
@@ -407,7 +413,14 @@ function enqueueAIAutoReply(payload) {
         incomingMessageId: existing.incomingMessageIds.filter(Boolean).join('|') || existing.payload.incomingMessageId,
         media: existing.media
       };
-      enqueueAIAutoReplyProcessing(finalPayload);
+      getAIAutoReplySettings(payload.clientId)
+        .then(function(settings) {
+          enqueueAIAutoReplyProcessing(finalPayload, settings);
+        })
+        .catch(function(error) {
+          console.error('[AI AUTO] Erro ao carregar configuracao da fila:', error.message);
+          enqueueAIAutoReplyProcessing(finalPayload, normalizeAIQueueSettings());
+        });
     }, delayMs);
   }).catch(function(error) {
     console.error('[AI AUTO] Erro ao calcular delay:', error.message);
@@ -418,16 +431,18 @@ function getProcessingQueueKey(payload = {}) {
   return [payload.clientId || 'client', payload.sessionName || 'session'].join(':');
 }
 
-function enqueueAIAutoReplyProcessing(payload) {
+function enqueueAIAutoReplyProcessing(payload, settings) {
   var queueKey = getProcessingQueueKey(payload);
   var queue = aiReplyProcessingQueues.get(queueKey);
   if (!queue) {
-    queue = { running: false, jobs: [], lastStartedAt: null, lastFinishedAt: null };
+    queue = { running: 0, jobs: [], lastStartedAt: null, lastFinishedAt: null, settings: normalizeAIQueueSettings(settings) };
     aiReplyProcessingQueues.set(queueKey, queue);
   }
+  queue.settings = normalizeAIQueueSettings(settings || queue.settings);
   queue.jobs.push({
     id: [Date.now(), Math.random().toString(16).slice(2)].join('-'),
     payload,
+    settings: queue.settings,
     createdAt: new Date().toISOString()
   });
   aiReplyQueueMetrics.enqueued += 1;
@@ -442,31 +457,59 @@ function enqueueAIAutoReplyProcessing(payload) {
 
 function drainAIAutoReplyQueue(queueKey) {
   var queue = aiReplyProcessingQueues.get(queueKey);
-  if (!queue || queue.running) return;
-  var job = queue.jobs.shift();
-  if (!job) return;
+  if (!queue) return;
 
-  queue.running = true;
-  queue.lastStartedAt = new Date().toISOString();
-  sendAIAutoReply(job.payload)
-    .then(function() {
-      aiReplyQueueMetrics.processed += 1;
-      aiReplyQueueMetrics.lastProcessedAt = new Date().toISOString();
-    })
-    .catch(function(aiError) {
-      aiReplyQueueMetrics.failed += 1;
-      aiReplyQueueMetrics.lastError = String(aiError?.message || aiError).slice(0, 500);
-      console.error('[AI AUTO] Erro ao responder conversa ' + job.payload.conversation.id + ':', aiError.message);
-    })
-    .finally(function() {
-      queue.running = false;
-      queue.lastFinishedAt = new Date().toISOString();
-      if (queue.jobs.length === 0 && !queue.running) {
-        aiReplyProcessingQueues.delete(queueKey);
-        return;
-      }
-      drainAIAutoReplyQueue(queueKey);
-    });
+  while (queue.jobs.length > 0) {
+    var nextSettings = normalizeAIQueueSettings(queue.jobs[0].settings || queue.settings);
+    var clientId = String(queue.jobs[0].payload?.clientId || 'client');
+    var activeForClient = aiReplyClientConcurrency.get(clientId) || 0;
+    if (queue.running >= nextSettings.max_parallel_per_session) return;
+    if (activeForClient >= nextSettings.max_parallel_per_client) return;
+
+    var job = queue.jobs.shift();
+    queue.running += 1;
+    queue.lastStartedAt = new Date().toISOString();
+    aiReplyClientConcurrency.set(clientId, activeForClient + 1);
+
+    (function(currentJob, currentClientId) {
+      sendAIAutoReply(currentJob.payload)
+        .then(function() {
+          aiReplyQueueMetrics.processed += 1;
+          aiReplyQueueMetrics.lastProcessedAt = new Date().toISOString();
+        })
+        .catch(function(aiError) {
+          aiReplyQueueMetrics.failed += 1;
+          aiReplyQueueMetrics.lastError = String(aiError?.message || aiError).slice(0, 500);
+          console.error('[AI AUTO] Erro ao responder conversa ' + currentJob.payload.conversation.id + ':', aiError.message);
+        })
+        .finally(function() {
+          var finalQueue = aiReplyProcessingQueues.get(queueKey);
+          if (finalQueue) {
+            finalQueue.running = Math.max(0, finalQueue.running - 1);
+            finalQueue.lastFinishedAt = new Date().toISOString();
+          }
+          var currentClientActive = aiReplyClientConcurrency.get(currentClientId) || 0;
+          if (currentClientActive <= 1) aiReplyClientConcurrency.delete(currentClientId);
+          else aiReplyClientConcurrency.set(currentClientId, currentClientActive - 1);
+
+          if (finalQueue && finalQueue.jobs.length === 0 && finalQueue.running === 0) {
+            aiReplyProcessingQueues.delete(queueKey);
+          } else {
+            drainAIAutoReplyQueue(queueKey);
+          }
+          drainAIAutoReplyQueuesForClient(currentClientId, queueKey);
+        });
+    })(job, clientId);
+  }
+}
+
+function drainAIAutoReplyQueuesForClient(clientId, exceptQueueKey) {
+  var prefix = String(clientId || 'client') + ':';
+  for (var key of aiReplyProcessingQueues.keys()) {
+    if (key !== exceptQueueKey && key.startsWith(prefix)) {
+      drainAIAutoReplyQueue(key);
+    }
+  }
 }
 
 function getAIAutoReplyQueueSnapshot() {
@@ -484,13 +527,19 @@ function getAIAutoReplyQueueSnapshot() {
         key: entry[0],
         running: entry[1].running,
         queued: entry[1].jobs.length,
+        settings: entry[1].settings,
         lastStartedAt: entry[1].lastStartedAt,
         lastFinishedAt: entry[1].lastFinishedAt
       };
     }),
+    clientConcurrency: Array.from(aiReplyClientConcurrency.entries()).map(function(entry) {
+      return { clientId: entry[0], running: entry[1] };
+    }),
     metrics: { ...aiReplyQueueMetrics }
   };
 }
+
+registerAIAutoReplyQueueSnapshotProvider(getAIAutoReplyQueueSnapshot);
 
 // Socket.IO com CORS
 const io = socketIo(server, {

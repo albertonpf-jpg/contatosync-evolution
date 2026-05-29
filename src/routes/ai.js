@@ -11,6 +11,8 @@ const { generateAIResponse } = require('../services/aiService');
 const { hasDifyConfig } = require('../services/difyService');
 const { createStoredFile, mediaRoot } = require('../utils/mediaStore');
 const { getSendPolicySnapshot } = require('../services/whatsappSendPolicy');
+const { getAIAutoReplyQueueSnapshot } = require('../services/aiAutoReplyQueueState');
+const { DEFAULT_DEPARTMENTS } = require('../agent/department-config');
 
 const router = express.Router();
 const upload = multer({
@@ -40,13 +42,7 @@ function toPublicAIConfig(config) {
 }
 
 function buildDefaultDepartmentConfig() {
-  return {
-    sales: { enabled: true, name: 'Vendas', objective: 'Responder sobre produtos, catalogo, disponibilidade, preco e envio de cards.' },
-    support: { enabled: true, name: 'Atendimento', objective: 'Responder politicas, prazos, entrega, troca e duvidas gerais.' },
-    billing: { enabled: true, name: 'Financeiro', objective: 'Consultar pedidos, pagamentos, cobrancas e rastreio quando houver integracao.' },
-    scheduling: { enabled: true, name: 'Agenda', objective: 'Tratar horarios, retiradas agendadas e disponibilidade operacional.' },
-    handoff: { enabled: true, name: 'Encaminhamento', objective: 'Encaminhar somente quando o cliente pedir humano explicitamente.' }
-  };
+  return JSON.parse(JSON.stringify(DEFAULT_DEPARTMENTS));
 }
 
 function normalizeSourceUrls(value) {
@@ -655,6 +651,7 @@ router.get('/operations',
         difyResponses: difyLogs.length,
         averageLocalProcessingMs: avgMs
       },
+      aiQueue: getAIAutoReplyQueueSnapshot(),
       sendPolicy: getSendPolicySnapshot(),
       recentLogs: logs
     }, 'Operacao de IA recuperada');

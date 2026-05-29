@@ -426,7 +426,10 @@ export default function ConversationsPage() {
       if (!payload?.id || !Array.isArray(payload.tags)) return;
       aiPauseTagsByContact.current.set(payload.id, payload.tags);
       setConversations(prev => applyContactTagOverrides(prev));
-      setSelectedConv(prev => (prev?.contact_id === payload.id ? applyContactTagOverrides([prev])[0] : prev));
+      setSelectedConv(prev => {
+        if (!prev || prev.contact_id !== payload.id) return prev;
+        return applyContactTagOverrides([prev])[0] || prev;
+      });
     };
 
     on('new_message', handleNewMessage);

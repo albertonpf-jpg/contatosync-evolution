@@ -942,12 +942,12 @@ app.get('/health', function(req, res) {
 
 app.get('/healthz', function(req, res) {
   console.log('🏥 Health check: /healthz');
-  res.status(200).text('OK');
+  res.status(200).send('OK');
 });
 
 app.get('/ready', function(req, res) {
   console.log('🏥 Health check: /ready');
-  res.status(200).text('READY');
+  res.status(200).send('READY');
 });
 
 // DEBUG: Teste criação sessão sem auth

@@ -68,6 +68,82 @@ function getCatalogCards(evidence = []) {
   return cards;
 }
 
+function getLineValue(text = '', pattern) {
+  return String(text || '').match(pattern)?.[1]?.trim() || '';
+}
+
+function digitsOnly(value = '') {
+  return String(value || '').replace(/\D/g, '');
+}
+
+function phoneMatches(left = '', right = '') {
+  const a = digitsOnly(left);
+  const b = digitsOnly(right);
+  if (!a || !b) return false;
+  return a.endsWith(b.slice(-10)) || b.endsWith(a.slice(-10)) || a.endsWith(b.slice(-11)) || b.endsWith(a.slice(-11));
+}
+
+function extractEvidencePhones(text = '') {
+  return String(text || '')
+    .split('\n')
+    .filter(line => /(?:whatsapp|telefone|phone|celular)/i.test(line))
+    .filter(line => !/https?:\/\//i.test(line))
+    .map(line => digitsOnly(line))
+    .filter(value => value.length >= 8);
+}
+
+function buildSafeOrderStatusText(content = '', message = {}) {
+  const text = String(content || '');
+  const explicitOrderSentence = String(text.match(/\bpedido\s*#?\s*\d+[^\n]*/i)?.[0] || '').trim();
+  const messageHasOrderRef = /\b(?:pedido|ordem|compra)\s*#?\s*\d+/i.test(message.text || '');
+  const customerPhone = message.customerPhone || message.contact?.phone || message.conversation?.phone || '';
+  const evidencePhones = extractEvidencePhones(text);
+  const orderCode = getLineValue(text, /^-\s*(?:codigo|pedido|numero_pedido|order_id):\s*([^\n]+)/im)
+    || getLineValue(text, /\n(?:codigo|pedido|numero_pedido|order_id):\s*([^\n]+)/i);
+  const trackingCode = getLineValue(text, /(?:rastreio|codigo_rastreio|tracking(?:_code)?):\s*([^\n]+)/i);
+  const paymentStatus = getLineValue(text, /pagamentos:\s*status:\s*([^\n]+)/i)
+    || getLineValue(text, /(?:pagamento_status|status_pagamento):\s*([^\n]+)/i);
+  const total = getLineValue(text, /^-\s*total:\s*([^\n]+)/im) || getLineValue(text, /\ntotal:\s*([^\n]+)/i);
+  const deliveryMethod = getLineValue(text, /forma_entrega:\s*nome:\s*([^\n]+)/i);
+  const paid = /status_pago:\s*true/i.test(text) || /pagamentos:\s*status:\s*pago/i.test(text);
+  const preparing = /status_em_separacao:\s*true/i.test(text);
+  const separated = /status_separado:\s*true/i.test(text);
+  const shipped = /status_despachado:\s*true/i.test(text);
+  const delivered = /status_entregue:\s*true/i.test(text);
+  const hasOrderSignal = Boolean(orderCode || trackingCode || paymentStatus || total || deliveryMethod
+    || paid || preparing || separated || shipped || delivered);
+  const hasMatchingPhone = customerPhone && evidencePhones.some(phone => phoneMatches(phone, customerPhone));
+
+  if (!messageHasOrderRef && !orderCode && !hasMatchingPhone) return '';
+
+  if (!hasOrderSignal) {
+    return explicitOrderSentence && !/cliente:\s*(nome|whatsapp|telefone|email|cpf|cnpj)/i.test(explicitOrderSentence)
+      ? explicitOrderSentence
+      : '';
+  }
+
+  const currentStatus = delivered
+    ? 'entregue'
+    : shipped
+      ? 'despachado/enviado'
+      : separated
+        ? 'separado'
+        : preparing
+          ? 'em separacao'
+          : paid || /pago/i.test(paymentStatus)
+            ? 'pagamento confirmado, aguardando separacao/envio'
+            : 'localizado na integracao';
+
+  return [
+    orderCode ? `Encontrei o pedido ${orderCode} na integracao.` : 'Encontrei o pedido na integracao.',
+    total ? `Total: ${total}.` : '',
+    deliveryMethod ? `Entrega: ${deliveryMethod}.` : '',
+    trackingCode ? `Rastreio: ${trackingCode}.` : '',
+    `Status atual: ${currentStatus}.`,
+    paymentStatus || paid ? `Pagamento: ${paid || /pago/i.test(paymentStatus) ? 'pago/confirmado' : paymentStatus}.` : ''
+  ].filter(Boolean).join('\n');
+}
+
 function parseJsonObject(value = '') {
   const text = String(value || '').trim();
   if (!text) return null;
@@ -291,9 +367,18 @@ async function compose({ message = {}, route = {}, evidence = {} } = {}) {
   if (route.intent === 'order_status') {
     const apiEvidence = firstUsefulEvidence(ranked, ['api']);
     if (apiEvidence && !apiEvidence.metadata?.error) {
-      const text = cleanEvidenceText(apiEvidence.content);
+      const text = buildSafeOrderStatusText(apiEvidence.content, message);
+      if (!text) {
+        return {
+          text: '',
+          confidence: 'low',
+          grounded: false,
+          missingInfo: 'order_number',
+          product_cards: []
+        };
+      }
       return {
-        text: text || 'Encontrei dados do pedido na integracao configurada.',
+        text,
         confidence: 'high',
         grounded: true,
         product_cards: []

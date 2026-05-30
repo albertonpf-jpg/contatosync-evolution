@@ -91,6 +91,83 @@ describe('Agent answer composer', () => {
     expect(result.grounded).toBe(true);
   });
 
+  test('does not expose raw customer records for order status without order data', async () => {
+    const result = await answerComposer.compose({
+      message: { text: 'Ja paguei no pix, meu pedido foi liberado?' },
+      route: { intent: 'order_status' },
+      evidence: {
+        topEvidence: [{
+          sourceType: 'api',
+          content: [
+            'Informacoes operacionais coletadas das integracoes:',
+            '- data: cliente: nome: Maria Teste',
+            '- data: cliente: whatsapp: 11999999999',
+            '- data: cliente: whatsapp_e164: +5511999999999'
+          ].join('\n'),
+          score: 0.85
+        }],
+        departmentSettings: { systemPrompt: 'Agente financeiro' }
+      }
+    });
+
+    expect(result.text).toBe('');
+    expect(result.missingInfo).toBe('order_number');
+    expect(result.grounded).toBe(false);
+  });
+
+  test('summarizes safe order status fields without customer PII', async () => {
+    const result = await answerComposer.compose({
+      message: { text: 'Meu pedido 123 foi liberado?' },
+      route: { intent: 'order_status' },
+      evidence: {
+        topEvidence: [{
+          sourceType: 'api',
+          content: [
+            '- codigo: 123',
+            '- cliente: nome: Maria Teste',
+            '- total: 129,90',
+            '- pagamentos: status: pago',
+            '- status_pago: true',
+            '- status_em_separacao: true'
+          ].join('\n'),
+          score: 0.85
+        }],
+        departmentSettings: { systemPrompt: 'Agente financeiro' }
+      }
+    });
+
+    expect(result.text).toMatch(/pedido 123/i);
+    expect(result.text).toMatch(/pagamento/i);
+    expect(result.text).not.toMatch(/Maria Teste/);
+    expect(result.grounded).toBe(true);
+  });
+
+  test('blocks order status when API phone does not match WhatsApp contact and no order number was provided', async () => {
+    const result = await answerComposer.compose({
+      message: {
+        text: 'Ja paguei no pix, meu pedido foi liberado?',
+        customerPhone: '5599999999999'
+      },
+      route: { intent: 'order_status' },
+      evidence: {
+        topEvidence: [{
+          sourceType: 'api',
+          content: [
+            '- cliente: whatsapp_e164: +5511965169866',
+            '- status_pago: true',
+            '- status_em_separacao: true'
+          ].join('\n'),
+          score: 0.85
+        }],
+        departmentSettings: { systemPrompt: 'Agente financeiro' }
+      }
+    });
+
+    expect(result.text).toBe('');
+    expect(result.missingInfo).toBe('order_number');
+    expect(result.grounded).toBe(false);
+  });
+
   test('scopes integrations, URLs and files by department bindings', () => {
     const scoped = scopeConfigForDepartment({
       product_integrations: [

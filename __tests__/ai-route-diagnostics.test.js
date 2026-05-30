@@ -1,4 +1,8 @@
-const { buildAIRouteDiagnosis, runAIRouteDiagnosticsSuite } = require('../src/services/aiRouteDiagnostics');
+const {
+  buildAIRouteDiagnosis,
+  buildAISourceReadiness,
+  runAIRouteDiagnosticsSuite
+} = require('../src/services/aiRouteDiagnostics');
 
 describe('AI route diagnostics', () => {
   test('explains semantic intent, selected agent and allowed sources', async () => {
@@ -96,5 +100,77 @@ describe('AI route diagnostics', () => {
     expect(suite.score).toBe(100);
     expect(suite.results[0].diagnosis.department.id).toBe('billing');
     expect(suite.results[0].checks.every(check => check.passed)).toBe(true);
+  });
+
+  test('reports missing operational sources per configured agent', () => {
+    const readiness = buildAISourceReadiness({
+      department_agent_config: {
+        billing: {
+          name: 'Financeiro',
+          allowedSources: ['api', 'file'],
+          sourcePriority: ['api', 'file']
+        }
+      }
+    });
+
+    expect(readiness.summary.errors).toBeGreaterThanOrEqual(1);
+    expect(readiness.departments.billing.issues[0]).toMatchObject({
+      severity: 'error',
+      source: 'api'
+    });
+  });
+
+  test('accepts API source when an enabled integration is configured', () => {
+    const readiness = buildAISourceReadiness({
+      product_integrations: [
+        {
+          id: 'facilzap-main',
+          integration_type: 'facilzap',
+          api_endpoint: 'https://api.facilzap.app.br',
+          enabled: true
+        }
+      ],
+      department_agent_config: {
+        billing: {
+          name: 'Financeiro',
+          allowedSources: ['api'],
+          sourcePriority: ['api']
+        }
+      }
+    });
+
+    expect(readiness.departments.billing.issues).toEqual([]);
+    expect(readiness.availability.api.ready).toBe(true);
+  });
+
+  test('includes selected agent source readiness in route diagnosis', async () => {
+    const diagnosis = await buildAIRouteDiagnosis({
+      message: 'Ja paguei no pix, meu pedido foi liberado?',
+      config: {
+        semantic_intent_enabled: true,
+        _intentRuntimeContext: {
+          classifyIntent: async () => ({
+            intent: 'billing',
+            departmentId: 'billing',
+            confidence: 0.92,
+            reason: 'pagamento e liberacao de pedido'
+          })
+        },
+        department_agent_config: {
+          billing: {
+            name: 'Financeiro',
+            allowedSources: ['api'],
+            sourcePriority: ['api']
+          }
+        }
+      }
+    });
+
+    expect(diagnosis.department.id).toBe('billing');
+    expect(diagnosis.sourceReadiness.department.id).toBe('billing');
+    expect(diagnosis.sourceReadiness.issues[0]).toMatchObject({
+      severity: 'error',
+      source: 'api'
+    });
   });
 });

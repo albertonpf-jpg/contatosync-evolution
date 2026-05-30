@@ -12,7 +12,7 @@ const { hasDifyConfig } = require('../services/difyService');
 const { createStoredFile, mediaRoot } = require('../utils/mediaStore');
 const { getSendPolicySnapshot } = require('../services/whatsappSendPolicy');
 const { getAIAutoReplyQueueSnapshot } = require('../services/aiAutoReplyQueueState');
-const { buildAIRouteDiagnosis, runAIRouteDiagnosticsSuite } = require('../services/aiRouteDiagnostics');
+const { buildAIRouteDiagnosis, buildAISourceReadiness, runAIRouteDiagnosticsSuite } = require('../services/aiRouteDiagnostics');
 const { DEFAULT_DEPARTMENTS, normalizeDepartmentConfig } = require('../agent/department-config');
 const { getDepartmentRoutingMap } = require('../agent/departments');
 
@@ -698,13 +698,19 @@ router.get('/stats',
 router.get('/operations',
   asyncHandler(async (req, res) => {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const [{ data: config }, { data: recentLogs }, { count: successCount }, { count: errorCount }] = await Promise.all([
+    const [{ data: config }, { data: integrations }, { data: recentLogs }, { count: successCount }, { count: errorCount }] = await Promise.all([
       executeWithRLS(req.user.id, (client) =>
         client
           .from('evolution_ai_config')
-          .select('enabled, ai_engine, semantic_intent_enabled, intent_classifier_model, intent_confidence_threshold, department_agents_enabled, queue_settings, department_agent_config')
+          .select('enabled, ai_engine, semantic_intent_enabled, intent_classifier_model, intent_confidence_threshold, department_agents_enabled, queue_settings, department_agent_config, product_catalog_url, product_source_urls, knowledge_files, site_url, store_url, knowledge_base_url, site_urls, knowledge_source_urls, source_urls, system_prompt, greeting_message, fallback_message')
           .eq('client_id', req.user.id)
           .single()
+      ),
+      executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_integrations')
+          .select('id, integration_type, integration_name, api_endpoint, enabled, status, config')
+          .eq('client_id', req.user.id)
       ),
       executeWithRLS(req.user.id, (client) =>
         client
@@ -734,6 +740,20 @@ router.get('/operations',
     ]);
 
     const logs = recentLogs || [];
+    const effectiveConfig = {
+      ...(config || {}),
+      product_integrations: (integrations || [])
+        .filter(integration => integration?.api_endpoint)
+        .map(integration => ({
+          id: integration.id,
+          integration_type: integration.integration_type,
+          integration_name: integration.integration_name,
+          api_endpoint: integration.api_endpoint,
+          enabled: integration.enabled !== false,
+          status: integration.status,
+          config: integration.config || {}
+        }))
+    };
     const localAgentLogs = logs.filter(log => log.provider === 'local_multi_agent');
     const difyLogs = logs.filter(log => log.provider === 'dify');
     const avgMs = localAgentLogs.length
@@ -748,8 +768,9 @@ router.get('/operations',
       intentClassifierModel: config?.intent_classifier_model || config?.model || 'gpt-4o-mini',
       intentConfidenceThreshold: Number(config?.intent_confidence_threshold || 0.68),
       queueSettings: config?.queue_settings || {},
-      departments: normalizeDepartmentConfig(config || {}),
-      departmentRouting: getDepartmentRoutingMap(config || {}),
+      departments: normalizeDepartmentConfig(effectiveConfig),
+      departmentRouting: getDepartmentRoutingMap(effectiveConfig),
+      sourceReadiness: buildAISourceReadiness(effectiveConfig),
       last24h: {
         success: successCount || 0,
         errors: errorCount || 0,

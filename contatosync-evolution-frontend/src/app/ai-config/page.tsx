@@ -65,6 +65,35 @@ interface QueueSettings {
   idle_collapse_seconds?: number;
 }
 
+interface SourceReadinessIssue {
+  severity: 'error' | 'warning';
+  source: string;
+  message: string;
+  departmentId?: string;
+}
+
+interface SourceReadinessDepartment {
+  id: string;
+  name: string;
+  enabled: boolean;
+  sources: string[];
+  issues: SourceReadinessIssue[];
+}
+
+interface SourceReadiness {
+  availability?: Record<string, {
+    ready: boolean;
+    count: number;
+    detail: string;
+  }>;
+  departments?: Record<string, SourceReadinessDepartment>;
+  issues: SourceReadinessIssue[];
+  summary: {
+    errors: number;
+    warnings: number;
+  };
+}
+
 interface AIOperations {
   engine: string;
   enabled: boolean;
@@ -79,6 +108,7 @@ interface AIOperations {
     intents: string[];
     triggerSummary: string;
   }>;
+  sourceReadiness?: SourceReadiness;
   queueSettings: QueueSettings;
   aiQueue?: {
     timers?: Array<{ key: string; messages: number; version: number; incomingMessageIds: number }>;
@@ -156,6 +186,11 @@ interface AIRouteDiagnosis {
     allowedKnowledgeFileIds: string[];
     sourceUseRules: string[];
     responseRules: string[];
+  };
+  sourceReadiness?: {
+    department?: SourceReadinessDepartment | null;
+    availability?: SourceReadiness['availability'];
+    issues: SourceReadinessIssue[];
   };
   safety: {
     willHandoff: boolean;
@@ -327,6 +362,8 @@ export default function AIConfigPage() {
   const queueTimers = operations?.aiQueue?.timers?.length ?? 0;
   const queuedJobs = operations?.aiQueue?.processingQueues?.reduce((sum, queue) => sum + (queue.queued || 0), 0) ?? 0;
   const runningJobs = operations?.aiQueue?.processingQueues?.reduce((sum, queue) => sum + (queue.running || 0), 0) ?? 0;
+  const sourceReadinessIssues = operations?.sourceReadiness?.issues || [];
+  const sourceReadinessSummary = operations?.sourceReadiness?.summary || { errors: 0, warnings: 0 };
 
   useEffect(() => {
     void loadPage();
@@ -600,6 +637,33 @@ export default function AIConfigPage() {
               </div>
             </div>
 
+            <div className={`rounded-lg border p-4 ${sourceReadinessSummary.errors ? 'border-red-200 bg-red-50' : sourceReadinessSummary.warnings ? 'border-amber-200 bg-amber-50' : 'border-green-100 bg-green-50'}`}>
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className={`text-sm font-semibold ${sourceReadinessSummary.errors ? 'text-red-950' : sourceReadinessSummary.warnings ? 'text-amber-950' : 'text-green-950'}`}>Prontidao das fontes por agente</h3>
+                  <p className={`mt-1 text-sm ${sourceReadinessSummary.errors ? 'text-red-800' : sourceReadinessSummary.warnings ? 'text-amber-800' : 'text-green-800'}`}>
+                    {sourceReadinessSummary.errors || sourceReadinessSummary.warnings
+                      ? `${sourceReadinessSummary.errors} erro(s) e ${sourceReadinessSummary.warnings} alerta(s) em fontes priorizadas.`
+                      : 'Todos os agentes estao ligados a fontes operacionais visiveis.'}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-red-700">{sourceReadinessSummary.errors} erros</span>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-700">{sourceReadinessSummary.warnings} alertas</span>
+                </div>
+              </div>
+              {sourceReadinessIssues.length > 0 && (
+                <div className="mt-3 grid gap-2">
+                  {sourceReadinessIssues.slice(0, 4).map((issue, index) => (
+                    <div key={`${issue.departmentId || 'agent'}-${issue.source}-${index}`} className="rounded-lg border border-white/70 bg-white px-3 py-2 text-xs text-gray-700">
+                      <span className={`mr-2 font-semibold ${issue.severity === 'error' ? 'text-red-700' : 'text-amber-700'}`}>{issue.severity === 'error' ? 'Erro' : 'Alerta'}</span>
+                      {issue.message}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-4">
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
@@ -749,6 +813,13 @@ export default function AIConfigPage() {
                         ))}
                       </div>
                       {routeDiagnosis.safety.needsClarificationLikely && <p className="mt-2 text-xs text-amber-700">Pode pedir mais detalhes</p>}
+                      {(routeDiagnosis.sourceReadiness?.issues || []).length > 0 && (
+                        <div className="mt-2 grid gap-1">
+                          {(routeDiagnosis.sourceReadiness?.issues || []).slice(0, 2).map((issue, index) => (
+                            <p key={`${issue.source}-${index}`} className={`text-xs ${issue.severity === 'error' ? 'text-red-700' : 'text-amber-700'}`}>{issue.message}</p>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div className="rounded-lg border border-slate-200 bg-white p-3 md:col-span-3">
                       <p className="text-xs font-medium uppercase text-slate-500">Por que decidiu assim</p>

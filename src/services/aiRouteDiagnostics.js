@@ -89,8 +89,10 @@ async function buildAIRouteDiagnosis({ message = '', config = {}, client = {}, c
       fallbackIntent: route.fallbackIntent,
       inferredDepartmentId: route.inferredDepartmentId,
       semanticDepartmentId: route.semanticDepartmentId,
+      configuredDepartmentId: route.configuredDepartmentId,
       routingConflict: route.routingConflict === true,
       semantic: route.semantic,
+      configured: route.configured,
       semanticSkippedReason: route.semanticSkippedReason,
       explicitHumanRequest: route.explicitHumanRequest === true,
       requiredSources: route.requiredSources || []

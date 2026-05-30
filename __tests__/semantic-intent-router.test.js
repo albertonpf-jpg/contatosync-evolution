@@ -26,7 +26,7 @@ describe('Semantic intent router', () => {
     expect(route.needsApi).toBe(true);
   });
 
-  test('falls back to rules when semantic confidence is low', async () => {
+  test('falls back to configured agent profile when semantic confidence is low', async () => {
     const route = await lightweightRouter.route({
       text: 'Tem vestido azul tamanho 4?',
       effectiveConfig: {
@@ -43,7 +43,45 @@ describe('Semantic intent router', () => {
     });
 
     expect(route.intent).toBe('product');
-    expect(route.routerMode).toBe('rules_after_low_confidence_semantic');
+    expect(route.routerMode).toBe('configured_after_low_confidence_semantic');
+    expect(route.configuredDepartmentId).toBe('sales');
+  });
+
+  test('uses configured agent examples when semantic classifier is unavailable', async () => {
+    const route = await lightweightRouter.route({
+      text: 'Estou procurando algo para presente de menina de 2 anos',
+      effectiveConfig: {
+        semantic_intent_enabled: true
+      }
+    });
+
+    expect(route.intent).toBe('product');
+    expect(route.routerMode).toBe('configured_after_semantic_skipped');
+    expect(route.configuredDepartmentId).toBe('sales');
+    expect(route.needsCatalog).toBe(true);
+  });
+
+  test('asks for clarification when configured fallback cannot separate departments', async () => {
+    const route = await lightweightRouter.route({
+      text: 'preciso resolver uma situacao',
+      effectiveConfig: {
+        semantic_intent_enabled: true,
+        department_agent_config: {
+          sales: {
+            semanticDescription: 'resolver situacao do cliente',
+            activationExamples: ['preciso resolver uma situacao']
+          },
+          support: {
+            semanticDescription: 'resolver situacao do cliente',
+            activationExamples: ['preciso resolver uma situacao']
+          }
+        }
+      }
+    });
+
+    expect(route.intent).toBe('unknown');
+    expect(route.routerMode).toBe('clarify_after_semantic_skipped');
+    expect(route.configured.ambiguity).toContain('ambigua');
   });
 
   test('normalizes per-agent semantic contract fields', () => {

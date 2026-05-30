@@ -1,5 +1,6 @@
 const { ROUTER_INTENTS, SOURCE_TYPES } = require('../types/agent.types');
 const { classifyIntentSemantically, getSemanticThreshold, resolveDepartmentIdForIntent } = require('./semantic-intent-classifier');
+const { classifyByConfiguredAgents } = require('./configured-agent-classifier');
 
 const HUMAN_REQUEST_PATTERNS = [
   /\b(quero|preciso|pode|poderia|me)\s+(falar|fala|passa|passar|transferir|transfere|encaminhar|encaminha)\s+(com|para|pra)?\s*(um|uma)?\s*(atendente|pessoa|humano|suporte humano)\b/i,
@@ -84,37 +85,71 @@ function buildSourceFlags(intent, explicitHumanRequest) {
   return flags;
 }
 
+function shouldKeepRuleFallback(fallbackInferred = {}, configuredResult = {}) {
+  if (!fallbackInferred.intent || fallbackInferred.intent === 'unknown') return false;
+  if (!configuredResult || !configuredResult.intent || configuredResult.intent === fallbackInferred.intent) return false;
+  if (configuredResult.ambiguity) return fallbackInferred.confidence >= 0.7;
+  return Number(fallbackInferred.confidence || 0) >= 0.75
+    && Number(configuredResult.confidence || 0) <= Number(fallbackInferred.confidence || 0) + 0.04;
+}
+
 async function route(normalizedMessage = {}) {
   const text = normalizedMessage.text || normalizedMessage.content || '';
+  const effectiveConfig = normalizedMessage.effectiveConfig || {};
   const fallbackInferred = inferIntent(text, normalizedMessage);
   let inferred = fallbackInferred;
   let semanticResult = null;
+  let configuredResult = null;
   let routerMode = 'rules';
 
   if (fallbackInferred.intent !== 'human_request') {
     try {
       semanticResult = await classifyIntentSemantically(normalizedMessage);
-      const threshold = getSemanticThreshold(normalizedMessage.effectiveConfig || {});
+      const threshold = getSemanticThreshold(effectiveConfig);
       if (!semanticResult.skipped && semanticResult.classification?.confidence >= threshold) {
         inferred = semanticResult.classification;
         routerMode = 'semantic';
       } else if (!semanticResult.skipped) {
-        routerMode = 'rules_after_low_confidence_semantic';
+        configuredResult = classifyByConfiguredAgents({ text, config: effectiveConfig, fallbackIntent: fallbackInferred.intent });
+        if (shouldKeepRuleFallback(fallbackInferred, configuredResult)) {
+          inferred = fallbackInferred;
+          routerMode = 'rules_after_low_confidence_semantic';
+        } else {
+          inferred = configuredResult;
+          routerMode = configuredResult.ambiguity ? 'clarify_after_low_confidence_semantic' : 'configured_after_low_confidence_semantic';
+        }
+      } else {
+        configuredResult = classifyByConfiguredAgents({ text, config: effectiveConfig, fallbackIntent: fallbackInferred.intent });
+        if (shouldKeepRuleFallback(fallbackInferred, configuredResult)) {
+          inferred = fallbackInferred;
+          routerMode = 'rules_after_semantic_skipped';
+        } else {
+          inferred = configuredResult;
+          routerMode = configuredResult.ambiguity ? 'clarify_after_semantic_skipped' : 'configured_after_semantic_skipped';
+        }
       }
     } catch (error) {
       semanticResult = { skipped: true, reason: String(error?.message || error) };
-      routerMode = 'rules_after_semantic_error';
+      configuredResult = classifyByConfiguredAgents({ text, config: effectiveConfig, fallbackIntent: fallbackInferred.intent });
+      if (shouldKeepRuleFallback(fallbackInferred, configuredResult)) {
+        inferred = fallbackInferred;
+        routerMode = 'rules_after_semantic_error';
+      } else {
+        inferred = configuredResult;
+        routerMode = configuredResult.ambiguity ? 'clarify_after_semantic_error' : 'configured_after_semantic_error';
+      }
     }
   }
 
   const intent = ROUTER_INTENTS.includes(inferred.intent) ? inferred.intent : 'unknown';
   const explicitHumanRequest = intent === 'human_request';
   const semanticDepartmentId = semanticResult && !semanticResult.skipped
-    ? (semanticResult.classification.departmentId || resolveDepartmentIdForIntent(intent, normalizedMessage.effectiveConfig || {}))
+    ? (semanticResult.classification.departmentId || resolveDepartmentIdForIntent(intent, effectiveConfig))
     : '';
-  const inferredDepartmentId = semanticDepartmentId || resolveDepartmentIdForIntent(intent, normalizedMessage.effectiveConfig || {});
+  const configuredDepartmentId = configuredResult?.departmentId || '';
+  const inferredDepartmentId = semanticDepartmentId || configuredDepartmentId || resolveDepartmentIdForIntent(intent, effectiveConfig);
   const routingConflict = semanticResult && !semanticResult.skipped && semanticResult.classification.departmentId
-    ? semanticResult.classification.departmentId !== resolveDepartmentIdForIntent(intent, normalizedMessage.effectiveConfig || {})
+    ? semanticResult.classification.departmentId !== resolveDepartmentIdForIntent(intent, effectiveConfig)
     : false;
   const flags = buildSourceFlags(intent, explicitHumanRequest);
 
@@ -164,8 +199,22 @@ async function route(normalizedMessage = {}) {
       nextBestDepartments: semanticResult.classification.nextBestDepartments || []
     } : null,
     semanticSkippedReason: semanticResult?.skipped ? semanticResult.reason : '',
+    configured: configuredResult ? {
+      intent: configuredResult.intent,
+      departmentId: configuredResult.departmentId,
+      confidence: configuredResult.confidence,
+      reason: configuredResult.reason,
+      ambiguity: configuredResult.ambiguity || '',
+      nextBestDepartments: configuredResult.nextBestDepartments || [],
+      scores: (configuredResult.scores || []).slice(0, 5).map(item => ({
+        id: item.id,
+        intent: item.intent,
+        score: Number(item.score || 0)
+      }))
+    } : null,
     fallbackIntent: fallbackInferred.intent,
     semanticDepartmentId,
+    configuredDepartmentId,
     inferredDepartmentId,
     routingConflict
   };

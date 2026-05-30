@@ -110,6 +110,7 @@ interface AIRouteDiagnosis {
     fallbackIntent?: string;
     inferredDepartmentId?: string;
     semanticDepartmentId?: string;
+    configuredDepartmentId?: string;
     routingConflict?: boolean;
     semantic?: {
       intent: string;
@@ -119,6 +120,15 @@ interface AIRouteDiagnosis {
       missingInfo?: string[];
       ambiguity?: string;
       nextBestDepartments?: string[];
+    } | null;
+    configured?: {
+      intent: string;
+      departmentId?: string;
+      confidence: number;
+      reason: string;
+      ambiguity?: string;
+      nextBestDepartments?: string[];
+      scores?: Array<{ id: string; intent: string; score: number }>;
     } | null;
     semanticSkippedReason?: string;
     explicitHumanRequest?: boolean;
@@ -717,13 +727,16 @@ export default function AIConfigPage() {
                       {routeDiagnosis.route.semantic && (
                         <p className="mt-2 text-xs text-emerald-700">Semantico: {routeDiagnosis.route.semantic.intent} ({Math.round(routeDiagnosis.route.semantic.confidence * 100)}%)</p>
                       )}
+                      {routeDiagnosis.route.configured && (
+                        <p className="mt-2 text-xs text-blue-700">Config: {routeDiagnosis.route.configured.intent} ({Math.round(routeDiagnosis.route.configured.confidence * 100)}%)</p>
+                      )}
                     </div>
                     <div className="rounded-lg border border-slate-200 bg-white p-3">
                       <p className="text-xs font-medium uppercase text-slate-500">Agente</p>
                       <p className="mt-1 text-sm font-semibold text-slate-950">{routeDiagnosis.department.name}</p>
                       <p className="mt-1 text-xs text-slate-600">{routeDiagnosis.department.model || 'modelo global'} · temp {routeDiagnosis.department.temperature ?? 'global'}</p>
-                      {(routeDiagnosis.route.semanticDepartmentId || routeDiagnosis.route.inferredDepartmentId) && (
-                        <p className="mt-1 text-xs text-slate-600">Decisao: {routeDiagnosis.route.semanticDepartmentId || routeDiagnosis.route.inferredDepartmentId}</p>
+                      {(routeDiagnosis.route.semanticDepartmentId || routeDiagnosis.route.configuredDepartmentId || routeDiagnosis.route.inferredDepartmentId) && (
+                        <p className="mt-1 text-xs text-slate-600">Decisao: {routeDiagnosis.route.semanticDepartmentId || routeDiagnosis.route.configuredDepartmentId || routeDiagnosis.route.inferredDepartmentId}</p>
                       )}
                       {routeDiagnosis.safety.willHandoff && <p className="mt-2 text-xs font-medium text-amber-700">Encaminha para humano</p>}
                       {routeDiagnosis.route.routingConflict && <p className="mt-2 text-xs font-medium text-amber-700">Conflito entre intencao e setor</p>}
@@ -742,6 +755,9 @@ export default function AIConfigPage() {
                       <p className="mt-1 text-sm text-slate-700">{routeDiagnosis.route.reason}</p>
                       {routeDiagnosis.route.semantic?.ambiguity && (
                         <p className="mt-2 text-xs text-amber-700">Ambiguidade: {routeDiagnosis.route.semantic.ambiguity}</p>
+                      )}
+                      {routeDiagnosis.route.configured?.ambiguity && (
+                        <p className="mt-2 text-xs text-amber-700">Fallback configurado: {routeDiagnosis.route.configured.ambiguity}</p>
                       )}
                       <div className="mt-3 grid gap-3 md:grid-cols-2">
                         <div>

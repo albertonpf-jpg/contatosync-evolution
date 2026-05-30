@@ -8099,7 +8099,7 @@ async function getAISetup(supabase, clientId) {
       .single(),
     supabase
       .from('evolution_integrations')
-      .select('integration_type, integration_name, api_endpoint, api_key, api_secret, config, enabled, is_active, status')
+      .select('id, integration_type, integration_name, api_endpoint, api_key, api_secret, config, enabled, is_active, status')
       .eq('client_id', clientId)
       .in('integration_type', ['facilzap', 'ecommerce', 'crm'])
       .or('enabled.eq.true,is_active.eq.true')
@@ -8177,6 +8177,61 @@ function mapRagResultsToEvidence(results = []) {
   }));
 }
 
+function normalizeScopeSet(values) {
+  const list = normalizeList(values).map(item => item.toLowerCase());
+  return list.length > 0 ? new Set(list) : null;
+}
+
+function sourceUrlKey(value = '') {
+  return String(value || '').trim().replace(/\/+$/, '').toLowerCase();
+}
+
+function integrationScopeKey(integration = {}) {
+  return String(integration.id || integration.integration_id || integration.integration_name || '').trim().toLowerCase();
+}
+
+function knowledgeFileScopeKey(file = {}) {
+  return String(file.id || file.path || file.originalName || file.fileName || '').trim().toLowerCase();
+}
+
+function scopeConfigForDepartment(config = {}, settings = {}) {
+  if (!settings || typeof settings !== 'object') return config;
+  const integrationTypes = normalizeScopeSet(settings.allowedIntegrationTypes);
+  const integrationIds = normalizeScopeSet(settings.allowedIntegrationIds);
+  const sourceUrls = normalizeScopeSet((settings.allowedSourceUrls || []).map(sourceUrlKey));
+  const knowledgeFileIds = normalizeScopeSet(settings.allowedKnowledgeFileIds);
+
+  if (!integrationTypes && !integrationIds && !sourceUrls && !knowledgeFileIds) return config;
+
+  const scoped = { ...config };
+  if (Array.isArray(config.product_integrations) && (integrationTypes || integrationIds)) {
+    scoped.product_integrations = config.product_integrations.filter(integration => {
+      const type = String(integration.integration_type || integration.type || '').toLowerCase();
+      const id = integrationScopeKey(integration);
+      return (!integrationTypes || integrationTypes.has(type))
+        && (!integrationIds || integrationIds.has(id));
+    });
+  }
+
+  if (sourceUrls) {
+    const keepUrl = value => sourceUrls.has(sourceUrlKey(value));
+    scoped.product_source_urls = Array.isArray(config.product_source_urls) ? config.product_source_urls.filter(keepUrl) : [];
+    scoped.site_urls = Array.isArray(config.site_urls) ? config.site_urls.filter(keepUrl) : [];
+    scoped.knowledge_source_urls = Array.isArray(config.knowledge_source_urls) ? config.knowledge_source_urls.filter(keepUrl) : [];
+    scoped.source_urls = Array.isArray(config.source_urls) ? config.source_urls.filter(keepUrl) : [];
+    if (config.product_catalog_url && !keepUrl(config.product_catalog_url)) scoped.product_catalog_url = '';
+    if (config.site_url && !keepUrl(config.site_url)) scoped.site_url = '';
+    if (config.store_url && !keepUrl(config.store_url)) scoped.store_url = '';
+    if (config.knowledge_base_url && !keepUrl(config.knowledge_base_url)) scoped.knowledge_base_url = '';
+  }
+
+  if (Array.isArray(config.knowledge_files) && knowledgeFileIds) {
+    scoped.knowledge_files = config.knowledge_files.filter(file => knowledgeFileIds.has(knowledgeFileScopeKey(file)));
+  }
+
+  return scoped;
+}
+
 function buildGroundedAgentAdapters({ clientId, effectiveConfig, conversationHistory, contact, conversation, supabase }) {
   const runtimeContext = {
     clientId,
@@ -8191,17 +8246,24 @@ function buildGroundedAgentAdapters({ clientId, effectiveConfig, conversationHis
   };
 
   return {
-    async rag({ query }) {
+    async rag({ query, retrievalPlan }) {
+      const scopedConfig = scopeConfigForDepartment(effectiveConfig, retrievalPlan?.departmentSettings);
       const ragResult = await searchRagKnowledge(clientId, query, {
-        topK: effectiveConfig.rag_top_k || 5,
-        minScore: effectiveConfig.rag_score_threshold || 0.25
-      }, runtimeContext);
+        topK: scopedConfig.rag_top_k || 5,
+        minScore: scopedConfig.rag_score_threshold || 0.25,
+        knowledgeFileIds: retrievalPlan?.departmentSettings?.allowedKnowledgeFileIds || []
+      }, {
+        ...runtimeContext,
+        effectiveConfig: scopedConfig,
+        config: scopedConfig
+      });
       return mapRagResultsToEvidence(ragResult.results || []);
     },
-    async file({ query }) {
-      const fileContext = buildKnowledgeContextForConfig(effectiveConfig);
+    async file({ query, retrievalPlan }) {
+      const scopedConfig = scopeConfigForDepartment(effectiveConfig, retrievalPlan?.departmentSettings);
+      const fileContext = buildKnowledgeContextForConfig(scopedConfig);
       const fileText = typeof fileContext === 'string' ? fileContext : String(fileContext?.contextText || '');
-      const configPolicyText = collectClientConfigPolicyTexts(effectiveConfig)
+      const configPolicyText = collectClientConfigPolicyTexts(scopedConfig)
         .map(entry => `${entry.sourceName || 'Configuracao do cliente'}:\n${entry.text}`)
         .join('\n\n---\n\n');
       const content = [configPolicyText, fileText].filter(text => String(text || '').trim()).join('\n\n---\n\n').trim();
@@ -8215,8 +8277,9 @@ function buildGroundedAgentAdapters({ clientId, effectiveConfig, conversationHis
         isDynamic: false
       }];
     },
-    async site({ query }) {
-      const siteContext = await buildSiteContextForConfig(query, effectiveConfig);
+    async site({ query, retrievalPlan }) {
+      const scopedConfig = scopeConfigForDepartment(effectiveConfig, retrievalPlan?.departmentSettings);
+      const siteContext = await buildSiteContextForConfig(query, scopedConfig);
       if (!siteContext?.contextText && siteContext?.lookupAttempted !== true) return [];
       return [{
         sourceType: 'site',
@@ -8227,8 +8290,9 @@ function buildGroundedAgentAdapters({ clientId, effectiveConfig, conversationHis
         isDynamic: false
       }];
     },
-    async catalog({ query, message }) {
-      const catalogContext = await buildProductContextForConfig(query || message.text, effectiveConfig, conversationHistory, {
+    async catalog({ query, message, retrievalPlan }) {
+      const scopedConfig = scopeConfigForDepartment(effectiveConfig, retrievalPlan?.departmentSettings);
+      const catalogContext = await buildProductContextForConfig(query || message.text, scopedConfig, conversationHistory, {
         conversation
       });
       const products = catalogContext.product_context_products || catalogContext.recent_products_data || [];
@@ -8248,8 +8312,9 @@ function buildGroundedAgentAdapters({ clientId, effectiveConfig, conversationHis
         isDynamic: true
       }];
     },
-    async api({ query }) {
-      const operationalContext = await buildOperationalContextForConfig(query, effectiveConfig, contact, conversation);
+    async api({ query, retrievalPlan }) {
+      const scopedConfig = scopeConfigForDepartment(effectiveConfig, retrievalPlan?.departmentSettings);
+      const operationalContext = await buildOperationalContextForConfig(query, scopedConfig, contact, conversation);
       if (!operationalContext?.contextText && operationalContext?.lookupAttempted !== true) return [];
       return [{
         sourceType: 'api',
@@ -8546,6 +8611,8 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     product_integrations: (integrations || [])
       .filter(integration => integration?.api_endpoint)
       .map(integration => ({
+        id: integration.id,
+        integration_id: integration.id,
         integration_type: integration.integration_type,
         integration_name: integration.integration_name,
         api_endpoint: integration.api_endpoint,
@@ -8573,6 +8640,12 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     apiKey: client?.openai_api_key
   };
   effectiveConfig._intentRuntimeContext = {
+    clientId,
+    client_id: clientId,
+    openaiApiKey: client?.openai_api_key,
+    claudeApiKey: client?.claude_api_key
+  };
+  effectiveConfig._answerRuntimeContext = {
     clientId,
     client_id: clientId,
     openaiApiKey: client?.openai_api_key,
@@ -8834,5 +8907,6 @@ module.exports = {
   buildProductContextForConfig,
   buildSiteContextForConfig,
   buildDifyKnowledgeContextForConfig,
-  buildOperationalContextForConfig
+  buildOperationalContextForConfig,
+  scopeConfigForDepartment
 };

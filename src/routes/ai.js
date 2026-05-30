@@ -608,7 +608,7 @@ router.get('/operations',
       executeWithRLS(req.user.id, (client) =>
         client
           .from('evolution_ai_config')
-          .select('enabled, ai_engine, department_agents_enabled, queue_settings, department_agent_config')
+          .select('enabled, ai_engine, semantic_intent_enabled, intent_classifier_model, intent_confidence_threshold, department_agents_enabled, queue_settings, department_agent_config')
           .eq('client_id', req.user.id)
           .single()
       ),

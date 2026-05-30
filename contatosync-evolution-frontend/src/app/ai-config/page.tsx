@@ -48,6 +48,10 @@ interface DepartmentConfig {
   model?: string;
   temperature?: number | null;
   allowedSources?: string[];
+  allowedIntegrationTypes?: string[];
+  allowedIntegrationIds?: string[];
+  allowedSourceUrls?: string[];
+  allowedKnowledgeFileIds?: string[];
   sourceUseRules?: string[];
   sourcePriority?: string[];
   responseRules?: string[];
@@ -681,6 +685,60 @@ export default function AIConfigPage() {
                           className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
                         />
                         <p className="mt-1 text-[11px] normal-case text-gray-500">{sourceOptions.join(', ')}</p>
+                      </label>
+                    </div>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      <label className="text-xs font-medium uppercase text-gray-500">
+                        Tipos de integracao permitidos
+                        <input
+                          value={listToText(department.allowedIntegrationTypes)}
+                          onChange={event => updateConfigField('department_agent_config', {
+                            ...(config.department_agent_config || operations?.departments || {}),
+                            [id]: { ...department, allowedIntegrationTypes: textToList(event.target.value) }
+                          })}
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                          placeholder="facilzap, ecommerce, crm"
+                        />
+                      </label>
+                      <label className="text-xs font-medium uppercase text-gray-500">
+                        IDs/nomes de integracoes
+                        <input
+                          value={listToText(department.allowedIntegrationIds)}
+                          onChange={event => updateConfigField('department_agent_config', {
+                            ...(config.department_agent_config || operations?.departments || {}),
+                            [id]: { ...department, allowedIntegrationIds: textToList(event.target.value) }
+                          })}
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                          placeholder="vazio permite todas"
+                        />
+                      </label>
+                    </div>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      <label className="text-xs font-medium uppercase text-gray-500">
+                        URLs permitidas
+                        <textarea
+                          value={(department.allowedSourceUrls || []).join('\n')}
+                          onChange={event => updateConfigField('department_agent_config', {
+                            ...(config.department_agent_config || operations?.departments || {}),
+                            [id]: { ...department, allowedSourceUrls: textToList(event.target.value) }
+                          })}
+                          rows={3}
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                          placeholder="vazio permite todas as URLs configuradas"
+                        />
+                      </label>
+                      <label className="text-xs font-medium uppercase text-gray-500">
+                        IDs/nomes de arquivos permitidos
+                        <textarea
+                          value={(department.allowedKnowledgeFileIds || []).join('\n')}
+                          onChange={event => updateConfigField('department_agent_config', {
+                            ...(config.department_agent_config || operations?.departments || {}),
+                            [id]: { ...department, allowedKnowledgeFileIds: textToList(event.target.value) }
+                          })}
+                          rows={3}
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                          placeholder="vazio permite todos os arquivos"
+                        />
                       </label>
                     </div>
                     <label className="mt-3 block text-xs font-medium uppercase text-gray-500">

@@ -137,6 +137,7 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     const limit = Math.max(1, Math.min(10, Number(departmentAgent.settings.maxEvidence)));
     rankedEvidence.topEvidence = (rankedEvidence.topEvidence || []).slice(0, limit);
   }
+  rankedEvidence.departmentSettings = departmentAgent.settings;
   logAgentStep({
     conversationId: normalizedMessage.conversationId,
     step: 'ranker',

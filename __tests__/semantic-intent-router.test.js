@@ -51,6 +51,10 @@ describe('Semantic intent router', () => {
           semanticDescription: 'mensagens de compra',
           activationExamples: 'quero comprar, me mostra opcoes',
           allowedSources: 'catalog, api',
+          allowedIntegrationTypes: 'facilzap, ecommerce',
+          allowedIntegrationIds: 'catalogo-principal',
+          allowedSourceUrls: 'https://loja.example.com/catalogo',
+          allowedKnowledgeFileIds: 'politicas-venda.pdf',
           sourceUseRules: 'catalog para produtos\napi para estoque',
           systemPrompt: 'agente de vendas',
           model: 'gpt-4o-mini',
@@ -62,6 +66,10 @@ describe('Semantic intent router', () => {
     expect(departments.sales.semanticDescription).toBe('mensagens de compra');
     expect(departments.sales.activationExamples).toEqual(['quero comprar', 'me mostra opcoes']);
     expect(departments.sales.allowedSources).toEqual(['catalog', 'api']);
+    expect(departments.sales.allowedIntegrationTypes).toEqual(['facilzap', 'ecommerce']);
+    expect(departments.sales.allowedIntegrationIds).toEqual(['catalogo-principal']);
+    expect(departments.sales.allowedSourceUrls).toEqual(['https://loja.example.com/catalogo']);
+    expect(departments.sales.allowedKnowledgeFileIds).toEqual(['politicas-venda.pdf']);
     expect(departments.sales.sourceUseRules).toEqual(['catalog para produtos', 'api para estoque']);
     expect(departments.sales.systemPrompt).toBe('agente de vendas');
     expect(departments.sales.model).toBe('gpt-4o-mini');

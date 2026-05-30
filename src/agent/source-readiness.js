@@ -12,8 +12,20 @@ function normalizeIntegrations(config = {}) {
   return list(config.product_integrations).filter(integration =>
     integration
     && integration.enabled !== false
+    && integration.is_active !== false
+    && !['error', 'failed', 'inactive', 'disabled'].includes(String(integration.status || '').trim().toLowerCase())
     && hasText(integration.api_endpoint)
   );
+}
+
+function describeBlockedIntegrations(config = {}) {
+  return list(config.product_integrations).filter(integration => {
+    if (!integration || !hasText(integration.api_endpoint)) return false;
+    const status = String(integration.status || '').trim().toLowerCase();
+    return integration.enabled === false
+      || integration.is_active === false
+      || ['error', 'failed', 'inactive', 'disabled'].includes(status);
+  });
 }
 
 function normalizeScopeSet(values) {
@@ -75,6 +87,7 @@ function scopeConfigForDepartmentReadiness(config = {}, department = {}) {
 
 function buildSourceAvailability(config = {}) {
   const integrations = normalizeIntegrations(config);
+  const blockedIntegrations = describeBlockedIntegrations(config);
   const knowledgeFiles = list(config.knowledge_files).filter(file =>
     file && (hasText(file.extractedText) || hasText(file.path) || hasText(file.originalName) || hasText(file.fileName))
   );
@@ -96,7 +109,11 @@ function buildSourceAvailability(config = {}) {
     api: {
       ready: integrations.length > 0,
       count: integrations.length,
-      detail: integrations.length ? `${integrations.length} integracao(oes) operacional(is)` : 'nenhuma integracao operacional configurada'
+      detail: integrations.length
+        ? `${integrations.length} integracao(oes) operacional(is)`
+        : (blockedIntegrations.length
+            ? `${blockedIntegrations.length} integracao(oes) configurada(s), mas inativa(s) ou com erro`
+            : 'nenhuma integracao operacional configurada')
     },
     catalog: {
       ready: productUrls.length > 0 || integrations.length > 0,

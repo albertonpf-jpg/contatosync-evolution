@@ -30,7 +30,20 @@ const DEFAULT_ROUTE_DIAGNOSTIC_SCENARIOS = [
     message: 'Ja enviei o comprovante, meu pedido foi liberado?',
     expectedIntents: ['billing', 'order_status'],
     expectedDepartments: ['billing'],
+    forbiddenDepartments: ['sales', 'support', 'scheduling'],
     requiredSources: ['api'],
+    expectHandoff: false,
+    minConfidence: 0.55
+  },
+  {
+    id: 'product-vs-billing-boundary',
+    label: 'Produto nao deve cair no financeiro',
+    message: 'Tem vestido azul tamanho 4 para festa?',
+    expectedIntents: ['product'],
+    expectedDepartments: ['sales'],
+    forbiddenDepartments: ['billing', 'scheduling', 'handoff'],
+    requiredSources: ['catalog'],
+    forbiddenSources: ['api'],
     expectHandoff: false,
     minConfidence: 0.55
   },
@@ -40,6 +53,7 @@ const DEFAULT_ROUTE_DIAGNOSTIC_SCENARIOS = [
     message: 'Consigo marcar para retirar amanha as 15h?',
     expectedIntents: ['scheduling'],
     expectedDepartments: ['scheduling'],
+    forbiddenDepartments: ['sales', 'billing', 'handoff'],
     requiredSources: ['api'],
     expectHandoff: false,
     minConfidence: 0.55
@@ -157,6 +171,7 @@ function normalizeScenarioList(scenarios) {
       message: String(item.message || '').trim(),
       expectedIntents: Array.isArray(item.expectedIntents) ? item.expectedIntents.map(String).filter(Boolean) : [],
       expectedDepartments: Array.isArray(item.expectedDepartments) ? item.expectedDepartments.map(String).filter(Boolean) : [],
+      forbiddenDepartments: Array.isArray(item.forbiddenDepartments) ? item.forbiddenDepartments.map(String).filter(Boolean) : [],
       requiredSources: Array.isArray(item.requiredSources) ? item.requiredSources.map(String).filter(Boolean) : [],
       forbiddenSources: Array.isArray(item.forbiddenSources) ? item.forbiddenSources.map(String).filter(Boolean) : [],
       expectHandoff: typeof item.expectHandoff === 'boolean' ? item.expectHandoff : undefined,
@@ -183,6 +198,15 @@ function evaluateAIRouteScenario(diagnosis, scenario) {
       id: 'department',
       passed: scenario.expectedDepartments.includes(diagnosis.department?.id),
       expected: scenario.expectedDepartments,
+      actual: diagnosis.department?.id
+    });
+  }
+
+  for (const department of scenario.forbiddenDepartments || []) {
+    checks.push({
+      id: `forbidden-department:${department}`,
+      passed: diagnosis.department?.id !== department,
+      expected: `diferente de ${department}`,
       actual: diagnosis.department?.id
     });
   }

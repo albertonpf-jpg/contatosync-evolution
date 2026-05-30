@@ -8609,7 +8609,12 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
   const effectiveConfig = {
     ...config,
     product_integrations: (integrations || [])
-      .filter(integration => integration?.api_endpoint)
+      .filter(integration => {
+        if (!integration?.api_endpoint) return false;
+        if (integration.enabled === false || integration.is_active === false) return false;
+        const status = String(integration.status || '').trim().toLowerCase();
+        return !['error', 'failed', 'inactive', 'disabled'].includes(status);
+      })
       .map(integration => ({
         id: integration.id,
         integration_id: integration.id,

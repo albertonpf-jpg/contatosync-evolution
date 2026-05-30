@@ -171,6 +171,35 @@ describe('AI route diagnostics', () => {
     });
   });
 
+  test('does not count integrations in error status as operational API sources', () => {
+    const readiness = buildAISourceReadiness({
+      product_integrations: [
+        {
+          id: 'pedidos-api',
+          integration_type: 'facilzap',
+          api_endpoint: 'https://api.example.com',
+          enabled: true,
+          status: 'error'
+        }
+      ],
+      department_agent_config: {
+        billing: {
+          name: 'Financeiro',
+          allowedSources: ['api'],
+          sourcePriority: ['api'],
+          allowedIntegrationIds: ['pedidos-api']
+        }
+      }
+    });
+
+    expect(readiness.availability.api.ready).toBe(false);
+    expect(readiness.availability.api.detail).toContain('com erro');
+    expect(readiness.departments.billing.issues[0]).toMatchObject({
+      severity: 'error',
+      source: 'api'
+    });
+  });
+
   test('accepts API source when agent binding matches integration id and type', () => {
     const readiness = buildAISourceReadiness({
       product_integrations: [
@@ -226,6 +255,41 @@ describe('AI route diagnostics', () => {
       severity: 'error',
       source: 'api'
     });
+  });
+
+  test('suite can prove a message did not route to forbidden departments or sources', async () => {
+    const suite = await runAIRouteDiagnosticsSuite({
+      scenarios: [
+        {
+          id: 'product-boundary',
+          label: 'Produto fica em vendas',
+          message: 'Tem vestido azul tamanho 4 para festa?',
+          expectedDepartments: ['sales'],
+          forbiddenDepartments: ['billing', 'scheduling', 'handoff'],
+          requiredSources: ['catalog'],
+          forbiddenSources: ['api'],
+          minConfidence: 0.8
+        }
+      ],
+      config: {
+        semantic_intent_enabled: true,
+        _intentRuntimeContext: {
+          classifyIntent: async () => ({
+            intent: 'product',
+            departmentId: 'sales',
+            confidence: 0.91,
+            reason: 'interesse em produto'
+          })
+        }
+      }
+    });
+
+    expect(suite.failed).toBe(0);
+    expect(suite.results[0].checks.map(check => check.id)).toEqual(expect.arrayContaining([
+      'forbidden-department:billing',
+      'forbidden-department:scheduling',
+      'forbidden-source:api'
+    ]));
   });
 
   test('reports semantic classifier readiness when API key is missing', async () => {

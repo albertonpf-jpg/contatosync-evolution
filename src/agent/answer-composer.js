@@ -72,6 +72,130 @@ function getLineValue(text = '', pattern) {
   return String(text || '').match(pattern)?.[1]?.trim() || '';
 }
 
+function uniqueItems(items = []) {
+  const seen = new Set();
+  const output = [];
+  for (const item of items) {
+    const value = String(item || '').trim();
+    if (!value) continue;
+    const key = normalizeText(value);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(value);
+  }
+  return output;
+}
+
+function extractRequestedSizes(text = '') {
+  const normalized = normalizeText(text);
+  const sizes = [];
+  const patterns = [
+    /\b(?:tamanho|tam|numero|n[ºo])\s*(\d{1,2})\b/gi,
+    /\b(\d{1,2})\s*(?:anos|ano)\b/gi
+  ];
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(normalized))) {
+      sizes.push(match[1]);
+    }
+  }
+  return uniqueItems(sizes);
+}
+
+function splitCsvValues(value = '') {
+  return String(value || '')
+    .split(/,|;|\|/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function parseProductSuggestionsFromText(content = '') {
+  const text = String(content || '');
+  const chunks = text
+    .split(/(?=Produto:\s*)/i)
+    .map(chunk => chunk.trim())
+    .filter(chunk => /^Produto:\s*/i.test(chunk));
+
+  return chunks.map(chunk => {
+    const title = getLineValue(chunk, /^Produto:\s*([^\n]+)/i);
+    if (!title) return null;
+    const colors = splitCsvValues(getLineValue(chunk, /^Cores:\s*([^\n]+)/im));
+    const sizes = splitCsvValues(getLineValue(chunk, /^Tamanhos:\s*([^\n]+)/im))
+      .map(value => value.replace(/^0+/, '') || value);
+    const variations = splitCsvValues(getLineValue(chunk, /^Variacoes:\s*([^\n]+)/im));
+    return { title, colors, sizes, variations };
+  }).filter(Boolean);
+}
+
+function getProductSuggestions(evidence = [], messageText = '') {
+  const requestedSizes = extractRequestedSizes(messageText);
+  const suggestions = [];
+
+  for (const item of evidence) {
+    if (!['catalog', 'rag'].includes(item.sourceType)) continue;
+    const products = Array.isArray(item.metadata?.products) ? item.metadata.products : [];
+    for (const product of products) {
+      const title = String(product.title || product.name || product.nome || '').trim();
+      if (!title) continue;
+      suggestions.push({
+        title,
+        colors: Array.isArray(product.colors) ? product.colors : [],
+        sizes: Array.isArray(product.sizes) ? product.sizes : [],
+        variations: Array.isArray(product.variations) ? product.variations : []
+      });
+    }
+    suggestions.push(...parseProductSuggestionsFromText(item.content));
+  }
+
+  const filtered = requestedSizes.length > 0
+    ? suggestions.filter(product => {
+        const haystack = [
+          ...(product.sizes || []),
+          ...(product.variations || [])
+        ].map(value => normalizeText(value));
+        return requestedSizes.some(size => haystack.some(value =>
+          value === size
+          || value.includes(`tamanho ${size}`)
+          || value.includes(`tam ${size}`)
+          || value.includes(` ${size}`)
+        ));
+      })
+    : suggestions;
+
+  const deduped = [];
+  const seen = new Set();
+  for (const product of filtered) {
+    const key = normalizeText(product.title);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    deduped.push({
+      title: product.title,
+      colors: uniqueItems(product.colors || []).slice(0, 4),
+      sizes: uniqueItems(product.sizes || []).slice(0, 8),
+      variations: uniqueItems(product.variations || []).slice(0, 6)
+    });
+  }
+  return deduped.slice(0, 4);
+}
+
+function buildProductSuggestionAnswer(products = [], messageText = '') {
+  if (!products.length) return '';
+  const requestedSizes = extractRequestedSizes(messageText);
+  const sizeText = requestedSizes.length ? ` no tamanho ${requestedSizes.join(', ')}` : '';
+  const lines = products.map((product, index) => {
+    const details = [];
+    if (product.sizes.length) details.push(`tamanhos: ${product.sizes.join(', ')}`);
+    if (product.colors.length) details.push(`cores: ${product.colors.join(', ')}`);
+    if (!product.sizes.length && product.variations.length) details.push(`variacoes: ${product.variations.join(', ')}`);
+    return `${index + 1}. ${product.title}${details.length ? ` (${details.join('; ')})` : ''}`;
+  });
+  return [
+    `Encontrei opcoes compatíveis${sizeText} nas fontes do catalogo:`,
+    ...lines,
+    'Quer que eu veja mais detalhes de algum desses modelos?'
+  ].join('\n');
+}
+
 function digitsOnly(value = '') {
   return String(value || '').replace(/\D/g, '');
 }
@@ -345,6 +469,15 @@ async function compose({ message = {}, route = {}, evidence = {} } = {}) {
         confidence: 'high',
         grounded: true,
         product_cards: productCards
+      };
+    }
+    const suggestedProducts = getProductSuggestions(ranked, message.text || '');
+    if (suggestedProducts.length > 0) {
+      return {
+        text: buildProductSuggestionAnswer(suggestedProducts, message.text || ''),
+        confidence: 'high',
+        grounded: true,
+        product_cards: []
       };
     }
     if (catalogEvidence?.metadata?.lookupAttempted && catalogEvidence?.metadata?.productsFound === false) {

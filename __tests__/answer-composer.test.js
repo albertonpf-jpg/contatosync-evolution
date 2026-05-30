@@ -73,6 +73,43 @@ describe('Agent answer composer', () => {
     expect(generateAnswer).not.toHaveBeenCalled();
   });
 
+  test('recommends textual product options from grounded product evidence when cards are not available', async () => {
+    const result = await answerComposer.compose({
+      message: { text: 'Quero comprar um conjunto infantil tamanho 6, tem opcoes?' },
+      route: { intent: 'product' },
+      evidence: {
+        topEvidence: [
+          {
+            sourceType: 'catalog',
+            content: '',
+            score: 0.35,
+            metadata: { lookupAttempted: true, productsFound: false, productCards: [] }
+          },
+          {
+            sourceType: 'rag',
+            content: [
+              'Produto: Conjunto babadinho',
+              'Cores: branco, vermelho',
+              'Tamanhos: 6, 8, 10',
+              'Variacoes: BRANCO Tamanho 6, VERMELHO Tamanho 8',
+              '',
+              'Produto: Conjunto Ursinha',
+              'Tamanhos: 4, 6, 8'
+            ].join('\n'),
+            score: 0.8
+          }
+        ],
+        departmentSettings: { systemPrompt: 'Agente de vendas' }
+      }
+    });
+
+    expect(result.text).toMatch(/Encontrei opcoes compativeis|Encontrei opcoes compatíveis/i);
+    expect(result.text).toMatch(/Conjunto babadinho/);
+    expect(result.text).toMatch(/Conjunto Ursinha/);
+    expect(result.text).toMatch(/tamanho 6/i);
+    expect(result.grounded).toBe(true);
+  });
+
   test('falls back to deterministic grounded answer when no answer runtime is configured', async () => {
     const result = await answerComposer.compose({
       message: { text: 'Qual o horario?' },
@@ -166,6 +203,27 @@ describe('Agent answer composer', () => {
     expect(result.text).toBe('');
     expect(result.missingInfo).toBe('order_number');
     expect(result.grounded).toBe(false);
+  });
+
+  test('asks directly for order number when order status evidence is insufficient', async () => {
+    const result = await answerComposer.compose({
+      message: { text: 'Meu pedido ja foi enviado? meu telefone e 11999999999' },
+      route: { intent: 'order_status' },
+      evidence: {
+        topEvidence: [{
+          sourceType: 'api',
+          content: [
+            '- cliente: whatsapp: 11999999999',
+            '- cliente: nome: Cliente Teste'
+          ].join('\n'),
+          score: 0.85
+        }],
+        departmentSettings: { systemPrompt: 'Agente financeiro' }
+      }
+    });
+
+    expect(result.text).toBe('');
+    expect(result.missingInfo).toBe('order_number');
   });
 
   test('scopes integrations, URLs and files by department bindings', () => {

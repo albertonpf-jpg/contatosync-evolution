@@ -82,6 +82,16 @@ async function validate({ message = {}, route = {}, evidence = {}, draftAnswer =
   }
 
   if (Array.isArray(evidence.conflicts) && evidence.conflicts.length > 0 && draftAnswer.confidence !== 'high') {
+    if (route.intent === 'order_status') {
+      return {
+        action: 'clarify',
+        confidence: 'low',
+        finalAnswer: '',
+        clarificationQuestion: questionForMissingInfo(draftAnswer.missingInfo || 'order_number', route),
+        discoveryQuestion: '',
+        reason: 'evidencia transacional insuficiente ou conflitante; pedir identificador do pedido'
+      };
+    }
     return {
       action: 'clarify',
       confidence: 'low',

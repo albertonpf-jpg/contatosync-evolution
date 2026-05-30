@@ -171,6 +171,7 @@ const aiConfigSchemas = {
     monthly_limit: Joi.number().integer().min(1).max(50000).optional(),
     ai_engine: Joi.string().valid('local_multi_agent', 'dify', 'hybrid').optional(),
     semantic_intent_enabled: Joi.boolean().optional(),
+    require_semantic_intent_classifier: Joi.boolean().optional(),
     intent_classifier_model: Joi.string().max(100).optional().allow(''),
     intent_confidence_threshold: Joi.number().precision(2).min(0.4).max(0.95).optional(),
     department_agents_enabled: Joi.boolean().optional(),

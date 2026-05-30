@@ -261,6 +261,21 @@ describe('Retrieval-Grounded WhatsApp Agent', () => {
     expect(result.response).not.toMatch(/retirada.*agendamento/i);
   });
 
+  test('modo semantico estrito nao responde quando classificador real esta indisponivel', async () => {
+    const { result } = await run('Estou procurando algo para presente de menina de 2 anos', {
+      rag: async () => [{ sourceType: 'rag', sourceName: 'Catalogo', content: 'Temos vestidos e conjuntos infantis para presente.', score: 0.9 }],
+      site: async () => [],
+      file: async () => []
+    }, [], {
+      semantic_intent_enabled: true,
+      require_semantic_intent_classifier: true
+    });
+
+    expect(result.action).toBe('clarify');
+    expect(result.response).toMatch(/produto|pedido|pagamento|agendamento|duvida geral/i);
+    expect(result.validation.reason).toMatch(/classificador semantico obrigatorio indisponivel/i);
+  });
+
   test('falha de API nao inventa e nao chama humano', async () => {
     const { result } = await run('Qual o status do meu pedido 12345?', {
       api: async () => { throw new Error('timeout'); },

@@ -20,6 +20,23 @@ async function validate({ message = {}, route = {}, evidence = {}, draftAnswer =
     };
   }
 
+  const config = message.effectiveConfig || message.config || {};
+  const strictSemanticIntent = config.semantic_intent_enabled !== false
+    && config.require_semantic_intent_classifier === true;
+  const semanticSkipped = Boolean(route.semanticSkippedReason);
+  const answeredByLocalFallback = String(route.routerMode || '').includes('semantic_skipped')
+    || String(route.routerMode || '').includes('semantic_error');
+  if (strictSemanticIntent && semanticSkipped && answeredByLocalFallback) {
+    return {
+      action: 'clarify',
+      confidence: 'low',
+      finalAnswer: '',
+      clarificationQuestion: questionForMissingInfo('route_ambiguity', route),
+      discoveryQuestion: '',
+      reason: `classificador semantico obrigatorio indisponivel: ${route.semanticSkippedReason}`
+    };
+  }
+
   if (route.needsHuman === true && route.explicitHumanRequest !== true) {
     return {
       action: 'clarify',

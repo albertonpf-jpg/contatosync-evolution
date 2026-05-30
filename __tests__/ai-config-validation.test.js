@@ -5,6 +5,7 @@ describe('AI config validation', () => {
     const payload = {
       ai_engine: 'local_multi_agent',
       semantic_intent_enabled: true,
+      require_semantic_intent_classifier: true,
       intent_classifier_model: 'gpt-4o-mini',
       intent_confidence_threshold: 0.72,
       department_agent_config: {
@@ -34,6 +35,7 @@ describe('AI config validation', () => {
     const { error, value } = aiConfigSchemas.update.validate(payload, { abortEarly: false, stripUnknown: true });
 
     expect(error).toBeUndefined();
+    expect(value.require_semantic_intent_classifier).toBe(true);
     expect(value.department_agent_config.billing.allowedSources).toEqual(['api', 'rag', 'file']);
     expect(value.department_agent_config.billing.maxEvidence).toBe(4);
   });

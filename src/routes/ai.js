@@ -43,6 +43,7 @@ function toPublicAIConfig(config) {
   }
   publicConfig.department_agent_config = normalizeDepartmentConfig(publicConfig);
   if (typeof publicConfig.semantic_intent_enabled !== 'boolean') publicConfig.semantic_intent_enabled = true;
+  if (typeof publicConfig.require_semantic_intent_classifier !== 'boolean') publicConfig.require_semantic_intent_classifier = true;
   if (!publicConfig.intent_classifier_model) publicConfig.intent_classifier_model = publicConfig.model || 'gpt-4o-mini';
   if (!publicConfig.intent_confidence_threshold) publicConfig.intent_confidence_threshold = 0.68;
   return publicConfig;
@@ -128,6 +129,7 @@ router.get('/config',
         monthly_limit: 1500,
         ai_engine: 'local_multi_agent',
         semantic_intent_enabled: true,
+        require_semantic_intent_classifier: true,
         intent_classifier_model: 'gpt-4o-mini',
         intent_confidence_threshold: 0.68,
         department_agents_enabled: true,
@@ -703,7 +705,7 @@ router.get('/operations',
       executeWithRLS(req.user.id, (client) =>
         client
           .from('evolution_ai_config')
-          .select('enabled, ai_engine, semantic_intent_enabled, intent_classifier_model, intent_confidence_threshold, department_agents_enabled, queue_settings, department_agent_config, product_catalog_url, product_source_urls, knowledge_files, site_url, store_url, knowledge_base_url, site_urls, knowledge_source_urls, source_urls, system_prompt, greeting_message, fallback_message')
+          .select('enabled, ai_engine, semantic_intent_enabled, require_semantic_intent_classifier, intent_classifier_model, intent_confidence_threshold, department_agents_enabled, queue_settings, department_agent_config, product_catalog_url, product_source_urls, knowledge_files, site_url, store_url, knowledge_base_url, site_urls, knowledge_source_urls, source_urls, system_prompt, greeting_message, fallback_message')
           .eq('client_id', req.user.id)
           .single()
       ),
@@ -773,6 +775,7 @@ router.get('/operations',
       enabled: config?.enabled === true,
       departmentAgentsEnabled: config?.department_agents_enabled !== false,
       semanticIntentEnabled: config?.semantic_intent_enabled !== false,
+      requireSemanticIntentClassifier: config?.require_semantic_intent_classifier !== false,
       intentClassifierModel: config?.intent_classifier_model || config?.model || 'gpt-4o-mini',
       intentConfidenceThreshold: Number(config?.intent_confidence_threshold || 0.68),
       queueSettings: config?.queue_settings || {},

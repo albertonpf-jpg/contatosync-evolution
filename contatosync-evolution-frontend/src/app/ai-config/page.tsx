@@ -10,6 +10,7 @@ interface AIConfig {
   enabled: boolean;
   ai_engine?: 'local_multi_agent' | 'dify' | 'hybrid';
   semantic_intent_enabled?: boolean;
+  require_semantic_intent_classifier?: boolean;
   intent_classifier_model?: string;
   intent_confidence_threshold?: number;
   department_agents_enabled?: boolean;
@@ -117,6 +118,7 @@ interface AIOperations {
   enabled: boolean;
   departmentAgentsEnabled: boolean;
   semanticIntentEnabled?: boolean;
+  requireSemanticIntentClassifier?: boolean;
   intentClassifierModel?: string;
   intentConfidenceThreshold?: number;
   departments: Record<string, DepartmentConfig>;
@@ -429,6 +431,7 @@ export default function AIConfigPage() {
         ...config,
         ai_engine: 'local_multi_agent',
         semantic_intent_enabled: config.semantic_intent_enabled !== false,
+        require_semantic_intent_classifier: config.require_semantic_intent_classifier !== false,
         intent_classifier_model: config.intent_classifier_model || config.model || 'gpt-4o-mini',
         intent_confidence_threshold: Number(config.intent_confidence_threshold || 0.68),
         department_agents_enabled: config.department_agents_enabled !== false,
@@ -704,6 +707,15 @@ export default function AIConfigPage() {
                     className="h-4 w-4"
                   />
                   Ativo
+                </label>
+                <label className="flex items-center gap-2 text-sm font-medium text-emerald-900">
+                  <input
+                    type="checkbox"
+                    checked={config.require_semantic_intent_classifier !== false}
+                    onChange={event => updateConfigField('require_semantic_intent_classifier', event.target.checked)}
+                    className="h-4 w-4"
+                  />
+                  Exigir classificador operacional
                 </label>
               </div>
               {semanticReadinessIssueCount > 0 && (

@@ -242,12 +242,12 @@ class ApiService {
   }
 
   async diagnoseAIRoute(data: { message: string; phone?: string }) {
-    const response = await this.api.post('/ai/route-diagnostics', data);
+    const response = await this.api.post('/ai/route-diagnostics', data, { timeout: 60000 });
     return response.data.data;
   }
 
   async runAIRouteDiagnosticsSuite(data: { phone?: string; scenarios?: any[] } = {}) {
-    const response = await this.api.post('/ai/route-diagnostics/suite', data);
+    const response = await this.api.post('/ai/route-diagnostics/suite', data, { timeout: 90000 });
     return response.data.data;
   }
 

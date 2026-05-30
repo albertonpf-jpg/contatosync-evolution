@@ -12,7 +12,7 @@ const { hasDifyConfig } = require('../services/difyService');
 const { createStoredFile, mediaRoot } = require('../utils/mediaStore');
 const { getSendPolicySnapshot } = require('../services/whatsappSendPolicy');
 const { getAIAutoReplyQueueSnapshot } = require('../services/aiAutoReplyQueueState');
-const { DEFAULT_DEPARTMENTS } = require('../agent/department-config');
+const { DEFAULT_DEPARTMENTS, normalizeDepartmentConfig } = require('../agent/department-config');
 const { getDepartmentRoutingMap } = require('../agent/departments');
 
 const router = express.Router();
@@ -39,6 +39,10 @@ function toPublicAIConfig(config) {
   for (const field of INTERNAL_DIFY_CONFIG_FIELDS) {
     delete publicConfig[field];
   }
+  publicConfig.department_agent_config = normalizeDepartmentConfig(publicConfig);
+  if (typeof publicConfig.semantic_intent_enabled !== 'boolean') publicConfig.semantic_intent_enabled = true;
+  if (!publicConfig.intent_classifier_model) publicConfig.intent_classifier_model = publicConfig.model || 'gpt-4o-mini';
+  if (!publicConfig.intent_confidence_threshold) publicConfig.intent_confidence_threshold = 0.68;
   return publicConfig;
 }
 
@@ -121,6 +125,9 @@ router.get('/config',
         reply_delay_seconds: 8,
         monthly_limit: 1500,
         ai_engine: 'local_multi_agent',
+        semantic_intent_enabled: true,
+        intent_classifier_model: 'gpt-4o-mini',
+        intent_confidence_threshold: 0.68,
         department_agents_enabled: true,
         department_agent_config: buildDefaultDepartmentConfig(),
         queue_settings: {
@@ -643,9 +650,12 @@ router.get('/operations',
       engine: config?.ai_engine || 'local_multi_agent',
       enabled: config?.enabled === true,
       departmentAgentsEnabled: config?.department_agents_enabled !== false,
+      semanticIntentEnabled: config?.semantic_intent_enabled !== false,
+      intentClassifierModel: config?.intent_classifier_model || config?.model || 'gpt-4o-mini',
+      intentConfidenceThreshold: Number(config?.intent_confidence_threshold || 0.68),
       queueSettings: config?.queue_settings || {},
-      departments: config?.department_agent_config || buildDefaultDepartmentConfig(),
-      departmentRouting: getDepartmentRoutingMap(),
+      departments: normalizeDepartmentConfig(config || {}),
+      departmentRouting: getDepartmentRoutingMap(config || {}),
       last24h: {
         success: successCount || 0,
         errors: errorCount || 0,

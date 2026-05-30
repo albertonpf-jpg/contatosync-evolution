@@ -2,7 +2,15 @@ const DEFAULT_DEPARTMENTS = {
   sales: {
     enabled: true,
     name: 'Vendas',
+    intents: ['product'],
     objective: 'converter interesse em produto em atendimento objetivo, com catalogo e cards quando houver evidencia',
+    semanticDescription: 'Acione quando a mensagem indicar compra, interesse em produto, preco, variacao, tamanho, cor, disponibilidade, foto, modelo ou catalogo, mesmo sem usar essas palavras exatas.',
+    activationExamples: ['Tem algo para bebe de 2 anos?', 'Queria ver opcoes para festa', 'Quanto fica esse conjunto?', 'Voce tem tamanho 6?'],
+    systemPrompt: 'Voce e o agente de vendas. Ajude o cliente a encontrar produtos reais, confirme variacoes e nunca invente preco ou estoque.',
+    model: '',
+    temperature: null,
+    allowedSources: ['catalog', 'api', 'rag', 'file', 'site', 'conversation_memory'],
+    sourceUseRules: ['use catalogo para produto, preco, estoque, foto e variacao', 'use API quando houver integracao transacional relevante', 'use RAG/arquivos/site para politicas comerciais'],
     sourcePriority: ['catalog', 'api', 'rag', 'file', 'site', 'conversation_memory'],
     responseRules: [
       'priorizar catalogo vivo e cards quando houver produto encontrado',
@@ -15,7 +23,15 @@ const DEFAULT_DEPARTMENTS = {
   support: {
     enabled: true,
     name: 'Atendimento',
+    intents: ['faq', 'policy', 'support', 'complaint', 'unknown'],
     objective: 'responder duvidas gerais, politicas, prazos, troca, entrega e funcionamento sem inventar informacoes',
+    semanticDescription: 'Acione para duvidas gerais, politicas da loja, entrega, retirada, troca, devolucao, garantia, horario, reclamacoes e mensagens ambiguas.',
+    activationExamples: ['Como funciona a entrega?', 'Posso trocar?', 'Que horas abre?', 'Nao entendi como comprar'],
+    systemPrompt: 'Voce e o agente de atendimento. Responda com base nas politicas e fontes oficiais, sem prometer o que nao esta configurado.',
+    model: '',
+    temperature: null,
+    allowedSources: ['rag', 'file', 'site', 'api', 'conversation_memory'],
+    sourceUseRules: ['use RAG/arquivos/site para politicas e funcionamento', 'use API somente quando a duvida depender de dado vivo', 'pergunte mais detalhes quando a mensagem for ambigua'],
     sourcePriority: ['rag', 'file', 'site', 'api', 'conversation_memory'],
     responseRules: [
       'responder somente com politicas ou fontes configuradas',
@@ -28,7 +44,15 @@ const DEFAULT_DEPARTMENTS = {
   billing: {
     enabled: true,
     name: 'Financeiro',
+    intents: ['billing', 'order_status'],
     objective: 'consultar pagamentos, pedidos, cobrancas e status transacional antes de responder',
+    semanticDescription: 'Acione para pedidos, rastreio, pagamento, cobranca, boleto, comprovante, estorno, status e dados transacionais.',
+    activationExamples: ['Meu pedido ja saiu?', 'Paguei no pix e nao confirmou', 'Cadê meu rastreio?', 'Quero segunda via'],
+    systemPrompt: 'Voce e o agente financeiro/pedidos. Consulte integracoes antes de responder e peça identificadores quando faltarem.',
+    model: '',
+    temperature: null,
+    allowedSources: ['api', 'rag', 'file', 'site', 'conversation_memory'],
+    sourceUseRules: ['use API para pedido, pagamento, rastreio e status', 'peca numero do pedido quando faltar', 'nao exponha dados sensiveis sem contexto suficiente'],
     sourcePriority: ['api', 'rag', 'file', 'site', 'conversation_memory'],
     responseRules: [
       'consultar integracoes antes de responder status de pedido ou pagamento',
@@ -41,7 +65,15 @@ const DEFAULT_DEPARTMENTS = {
   scheduling: {
     enabled: true,
     name: 'Agenda',
+    intents: ['scheduling'],
     objective: 'tratar horarios, agendamentos, retirada marcada e disponibilidade operacional',
+    semanticDescription: 'Acione quando a mensagem envolver agenda, marcar horario, retirada agendada, encaixe, disponibilidade de atendimento ou janela de retirada.',
+    activationExamples: ['Consigo retirar amanha?', 'Tem horario hoje?', 'Quero agendar uma retirada', 'Da pra encaixar?'],
+    systemPrompt: 'Voce e o agente de agenda. Confirme data, horario e disponibilidade antes de prometer qualquer agendamento.',
+    model: '',
+    temperature: null,
+    allowedSources: ['api', 'rag', 'file', 'site', 'conversation_memory'],
+    sourceUseRules: ['use API se houver disponibilidade viva', 'use RAG/arquivos/site para regras de agenda e retirada', 'pergunte data e horario quando faltarem'],
     sourcePriority: ['api', 'rag', 'file', 'site', 'conversation_memory'],
     responseRules: [
       'confirmar data, horario e unidade quando a mensagem estiver incompleta',
@@ -54,7 +86,15 @@ const DEFAULT_DEPARTMENTS = {
   handoff: {
     enabled: true,
     name: 'Encaminhamento',
+    intents: ['human_request'],
     objective: 'encaminhar somente quando o cliente pedir humano explicitamente ou quando regra critica exigir',
+    semanticDescription: 'Acione apenas quando o cliente pedir claramente pessoa, humano, atendente, transferencia ou suporte humano.',
+    activationExamples: ['Quero falar com uma pessoa', 'Me passa para um atendente', 'Nao quero falar com robo'],
+    systemPrompt: 'Voce e o agente de encaminhamento. Confirme que um atendente sera acionado e preserve o contexto.',
+    model: '',
+    temperature: null,
+    allowedSources: ['conversation_memory', 'rag', 'file'],
+    sourceUseRules: ['use memoria para resumir contexto ao humano', 'nao responda assuntos que outro agente pode resolver'],
     sourcePriority: ['conversation_memory', 'rag', 'file'],
     responseRules: [
       'confirmar que um atendente sera acionado',
@@ -72,6 +112,13 @@ function normalizeStringList(value) {
   return [];
 }
 
+function normalizeNullableTemperature(value, fallback = null) {
+  if (value === null || value === undefined || value === '') return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(0, Math.min(2, number));
+}
+
 function normalizeDepartmentConfig(rawConfig = {}) {
   const source = rawConfig.department_agent_config || rawConfig.departmentAgentConfig || {};
   const normalized = {};
@@ -83,7 +130,15 @@ function normalizeDepartmentConfig(rawConfig = {}) {
       ...current,
       enabled: current.enabled !== false,
       name: String(current.name || defaults.name).trim() || defaults.name,
+      intents: normalizeStringList(current.intents || defaults.intents),
       objective: String(current.objective || defaults.objective).trim() || defaults.objective,
+      semanticDescription: String(current.semanticDescription || current.semantic_description || defaults.semanticDescription || '').trim(),
+      activationExamples: normalizeStringList(current.activationExamples || current.activation_examples || defaults.activationExamples),
+      systemPrompt: String(current.systemPrompt || current.system_prompt || defaults.systemPrompt || '').trim(),
+      model: String(current.model || defaults.model || '').trim(),
+      temperature: normalizeNullableTemperature(current.temperature, defaults.temperature),
+      allowedSources: normalizeStringList(current.allowedSources || current.allowed_sources || defaults.allowedSources),
+      sourceUseRules: normalizeStringList(current.sourceUseRules || current.source_use_rules || defaults.sourceUseRules),
       sourcePriority: normalizeStringList(current.sourcePriority || current.source_priority || defaults.sourcePriority),
       responseRules: normalizeStringList(current.responseRules || current.response_rules || defaults.responseRules),
       handoffKeywords: normalizeStringList(current.handoffKeywords || current.handoff_keywords || defaults.handoffKeywords),
@@ -103,5 +158,6 @@ module.exports = {
   DEFAULT_DEPARTMENTS,
   normalizeDepartmentConfig,
   getDepartmentSettings,
-  normalizeStringList
+  normalizeStringList,
+  normalizeNullableTemperature
 };

@@ -8572,6 +8572,12 @@ async function generateAIResponse({ supabase, clientId, message, conversation, c
     openaiApiKey: client?.openai_api_key,
     apiKey: client?.openai_api_key
   };
+  effectiveConfig._intentRuntimeContext = {
+    clientId,
+    client_id: clientId,
+    openaiApiKey: client?.openai_api_key,
+    claudeApiKey: client?.claude_api_key
+  };
 
   if (mediaOnlyMessage) {
     const mediaKind = getMediaKind(media);

@@ -129,6 +129,9 @@ const aiConfigSchemas = {
     reply_delay_seconds: Joi.number().integer().min(1).max(60).optional(),
     monthly_limit: Joi.number().integer().min(1).max(50000).optional(),
     ai_engine: Joi.string().valid('local_multi_agent', 'dify', 'hybrid').optional(),
+    semantic_intent_enabled: Joi.boolean().optional(),
+    intent_classifier_model: Joi.string().max(100).optional().allow(''),
+    intent_confidence_threshold: Joi.number().precision(2).min(0.4).max(0.95).optional(),
     department_agents_enabled: Joi.boolean().optional(),
     department_agent_config: Joi.object().optional(),
     queue_settings: Joi.object({

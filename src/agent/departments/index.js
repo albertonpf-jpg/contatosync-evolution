@@ -1,5 +1,5 @@
 const sourceDecision = require('../../router/source-decision');
-const { getDepartmentSettings } = require('../department-config');
+const { getDepartmentSettings, normalizeDepartmentConfig } = require('../department-config');
 
 function clonePlan(plan = {}) {
   return {
@@ -37,16 +37,35 @@ function buildPlanWithPriority({ message, route, priority, reason }) {
 }
 
 function applyDepartmentSettingsToPlan(plan = {}, settings = {}) {
+  const allowedSources = Array.isArray(settings.allowedSources) && settings.allowedSources.length > 0
+    ? new Set(settings.allowedSources)
+    : null;
   const sourcePriority = Array.isArray(settings.sourcePriority) && settings.sourcePriority.length > 0
     ? settings.sourcePriority
     : [];
-  const next = sourcePriority.length > 0 ? orderSources(plan, sourcePriority) : clonePlan(plan);
+  const base = sourcePriority.length > 0 ? orderSources(plan, sourcePriority) : clonePlan(plan);
+  const next = allowedSources
+    ? {
+        ...base,
+        executeSources: base.executeSources.filter(source => allowedSources.has(source)),
+        sources: base.sources.filter(source => allowedSources.has(source.sourceType)),
+        skippedSources: [
+          ...(base.skippedSources || []),
+          ...base.executeSources.filter(source => !allowedSources.has(source))
+        ]
+      }
+    : base;
   return {
     ...next,
     departmentSettings: {
       name: settings.name,
       objective: settings.objective,
+      systemPrompt: settings.systemPrompt,
+      model: settings.model,
+      temperature: settings.temperature,
+      allowedSources: settings.allowedSources || [],
       sourcePriority,
+      sourceUseRules: settings.sourceUseRules || [],
       responseRules: settings.responseRules || [],
       maxEvidence: settings.maxEvidence
     }
@@ -117,14 +136,15 @@ const departmentRoutingDescriptions = {
   handoff: 'pedido explicito de atendente humano'
 };
 
-function getDepartmentRoutingMap() {
+function getDepartmentRoutingMap(config = {}) {
+  const departments = Object.keys(config || {}).length ? normalizeDepartmentConfig(config) : {};
   return Object.fromEntries(Object.entries(departmentAgents).map(([id, agent]) => [
     id,
     {
       id,
-      label: agent.label,
-      intents: [...agent.intents],
-      triggerSummary: departmentRoutingDescriptions[id] || agent.intents.join(', ')
+      label: departments[id]?.name || agent.label,
+      intents: departments[id]?.intents?.length ? departments[id].intents : [...agent.intents],
+      triggerSummary: departments[id]?.semanticDescription || departmentRoutingDescriptions[id] || agent.intents.join(', ')
     }
   ]));
 }

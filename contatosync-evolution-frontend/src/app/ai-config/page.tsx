@@ -9,6 +9,9 @@ import { Bot, CheckCircle2, FileText, KeyRound, Loader2, Plus, RefreshCw, Save, 
 interface AIConfig {
   enabled: boolean;
   ai_engine?: 'local_multi_agent' | 'dify' | 'hybrid';
+  semantic_intent_enabled?: boolean;
+  intent_classifier_model?: string;
+  intent_confidence_threshold?: number;
   department_agents_enabled?: boolean;
   department_agent_config?: Record<string, DepartmentConfig>;
   queue_settings?: QueueSettings;
@@ -37,7 +40,15 @@ interface AIConfig {
 interface DepartmentConfig {
   enabled?: boolean;
   name?: string;
+  intents?: string[];
   objective?: string;
+  semanticDescription?: string;
+  activationExamples?: string[];
+  systemPrompt?: string;
+  model?: string;
+  temperature?: number | null;
+  allowedSources?: string[];
+  sourceUseRules?: string[];
   sourcePriority?: string[];
   responseRules?: string[];
   handoffKeywords?: string[];
@@ -54,6 +65,9 @@ interface AIOperations {
   engine: string;
   enabled: boolean;
   departmentAgentsEnabled: boolean;
+  semanticIntentEnabled?: boolean;
+  intentClassifierModel?: string;
+  intentConfidenceThreshold?: number;
   departments: Record<string, DepartmentConfig>;
   departmentRouting?: Record<string, {
     id: string;
@@ -191,6 +205,7 @@ function formatFileSize(value?: number) {
 }
 
 const departmentOrder = ['sales', 'support', 'billing', 'scheduling', 'handoff'];
+const sourceOptions = ['catalog', 'api', 'rag', 'file', 'site', 'conversation_memory'];
 
 export default function AIConfigPage() {
   const [config, setConfig] = useState<AIConfig | null>(null);
@@ -261,6 +276,9 @@ export default function AIConfigPage() {
       const updated = await apiService.updateAIConfig({
         ...config,
         ai_engine: 'local_multi_agent',
+        semantic_intent_enabled: config.semantic_intent_enabled !== false,
+        intent_classifier_model: config.intent_classifier_model || config.model || 'gpt-4o-mini',
+        intent_confidence_threshold: Number(config.intent_confidence_threshold || 0.68),
         department_agents_enabled: config.department_agents_enabled !== false,
         department_agent_config: config.department_agent_config || operations?.departments || {},
         queue_settings: config.queue_settings || operations?.queueSettings || {},
@@ -458,6 +476,48 @@ export default function AIConfigPage() {
               </div>
             </div>
 
+            <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-4">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className="text-sm font-semibold text-emerald-950">Classificador semantico de intencao</h3>
+                  <p className="mt-1 text-sm text-emerald-800">Quando ativo, a IA entende a intencao por contexto e sinonimos antes de cair no fallback por regras.</p>
+                </div>
+                <label className="flex items-center gap-2 text-sm font-medium text-emerald-900">
+                  <input
+                    type="checkbox"
+                    checked={config.semantic_intent_enabled !== false}
+                    onChange={event => updateConfigField('semantic_intent_enabled', event.target.checked)}
+                    className="h-4 w-4"
+                  />
+                  Ativo
+                </label>
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-[1fr_160px]">
+                <label className="text-sm font-medium text-emerald-950">
+                  Modelo do classificador
+                  <select
+                    value={config.intent_classifier_model || config.model || 'gpt-4o-mini'}
+                    onChange={event => updateConfigField('intent_classifier_model', event.target.value)}
+                    className="mt-1 w-full rounded-lg border border-emerald-200 bg-white px-3 py-2"
+                  >
+                    {models.map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
+                  </select>
+                </label>
+                <label className="text-sm font-medium text-emerald-950">
+                  Confianca minima
+                  <input
+                    type="number"
+                    min="0.4"
+                    max="0.95"
+                    step="0.01"
+                    value={config.intent_confidence_threshold || 0.68}
+                    onChange={event => updateConfigField('intent_confidence_threshold', Number(event.target.value))}
+                    className="mt-1 w-full rounded-lg border border-emerald-200 bg-white px-3 py-2"
+                  />
+                </label>
+              </div>
+            </div>
+
             <div className="rounded-lg border border-gray-200 p-4">
               <div className="mb-3 flex items-center justify-between">
                 <div>
@@ -536,14 +596,50 @@ export default function AIConfigPage() {
                       </div>
                     </div>
                     <label className="mt-3 block text-xs font-medium uppercase text-gray-500">
-                      Objetivo do agente
+                      Quando este agente deve ser acionado
+                      <textarea
+                        value={department.semanticDescription || ''}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, semanticDescription: event.target.value }
+                        })}
+                        rows={3}
+                        className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                      />
+                    </label>
+                    <label className="mt-3 block text-xs font-medium uppercase text-gray-500">
+                      Exemplos de mensagens deste setor
+                      <textarea
+                        value={(department.activationExamples || []).join('\n')}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, activationExamples: textToList(event.target.value) }
+                        })}
+                        rows={3}
+                        className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                      />
+                    </label>
+                    <label className="mt-3 block text-xs font-medium uppercase text-gray-500">
+                      Prompt system do agente
+                      <textarea
+                        value={department.systemPrompt || ''}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, systemPrompt: event.target.value }
+                        })}
+                        rows={3}
+                        className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                      />
+                    </label>
+                    <label className="mt-3 block text-xs font-medium uppercase text-gray-500">
+                      Objetivo operacional
                       <textarea
                         value={department.objective || ''}
                         onChange={event => updateConfigField('department_agent_config', {
                           ...(config.department_agent_config || operations?.departments || {}),
                           [id]: { ...department, objective: event.target.value }
                         })}
-                        rows={3}
+                        rows={2}
                         className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
                       />
                     </label>
@@ -577,15 +673,71 @@ export default function AIConfigPage() {
                       <label className="text-xs font-medium uppercase text-gray-500">
                         Prioridade de fontes
                         <input
-                          value={listToText(department.sourcePriority)}
+                          value={listToText(department.allowedSources)}
                           onChange={event => updateConfigField('department_agent_config', {
                             ...(config.department_agent_config || operations?.departments || {}),
-                            [id]: { ...department, sourcePriority: textToList(event.target.value) }
+                            [id]: { ...department, allowedSources: textToList(event.target.value) }
+                          })}
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                        />
+                        <p className="mt-1 text-[11px] normal-case text-gray-500">{sourceOptions.join(', ')}</p>
+                      </label>
+                    </div>
+                    <label className="mt-3 block text-xs font-medium uppercase text-gray-500">
+                      Quando usar cada fonte
+                      <textarea
+                        value={(department.sourceUseRules || []).join('\n')}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, sourceUseRules: textToList(event.target.value) }
+                        })}
+                        rows={3}
+                        className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                      />
+                    </label>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      <label className="text-xs font-medium uppercase text-gray-500">
+                        Modelo do agente
+                        <select
+                          value={department.model || ''}
+                          onChange={event => updateConfigField('department_agent_config', {
+                            ...(config.department_agent_config || operations?.departments || {}),
+                            [id]: { ...department, model: event.target.value }
+                          })}
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                        >
+                          <option value="">Usar modelo global</option>
+                          {models.map(model => <option key={model.value} value={model.value}>{model.label}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-xs font-medium uppercase text-gray-500">
+                        Temperatura
+                        <input
+                          type="number"
+                          min="0"
+                          max="2"
+                          step="0.1"
+                          value={department.temperature ?? ''}
+                          placeholder="global"
+                          onChange={event => updateConfigField('department_agent_config', {
+                            ...(config.department_agent_config || operations?.departments || {}),
+                            [id]: { ...department, temperature: event.target.value === '' ? null : Number(event.target.value) }
                           })}
                           className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
                         />
                       </label>
                     </div>
+                    <label className="mt-3 block text-xs font-medium uppercase text-gray-500">
+                      Prioridade das fontes permitidas
+                      <input
+                        value={listToText(department.sourcePriority)}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, sourcePriority: textToList(event.target.value) }
+                        })}
+                        className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                      />
+                    </label>
                     <label className="mt-3 block text-xs font-medium uppercase text-gray-500">
                       Palavras de encaminhamento humano
                       <input

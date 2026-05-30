@@ -1,4 +1,5 @@
 const { ROUTER_INTENTS, SOURCE_TYPES } = require('../types/agent.types');
+const { classifyIntentSemantically, getSemanticThreshold } = require('./semantic-intent-classifier');
 
 const HUMAN_REQUEST_PATTERNS = [
   /\b(quero|preciso|pode|poderia|me)\s+(falar|fala|passa|passar|transferir|transfere|encaminhar|encaminha)\s+(com|para|pra)?\s*(um|uma)?\s*(atendente|pessoa|humano|suporte humano)\b/i,
@@ -85,7 +86,27 @@ function buildSourceFlags(intent, explicitHumanRequest) {
 
 async function route(normalizedMessage = {}) {
   const text = normalizedMessage.text || normalizedMessage.content || '';
-  const inferred = inferIntent(text, normalizedMessage);
+  const fallbackInferred = inferIntent(text, normalizedMessage);
+  let inferred = fallbackInferred;
+  let semanticResult = null;
+  let routerMode = 'rules';
+
+  if (fallbackInferred.intent !== 'human_request') {
+    try {
+      semanticResult = await classifyIntentSemantically(normalizedMessage);
+      const threshold = getSemanticThreshold(normalizedMessage.effectiveConfig || {});
+      if (!semanticResult.skipped && semanticResult.classification?.confidence >= threshold) {
+        inferred = semanticResult.classification;
+        routerMode = 'semantic';
+      } else if (!semanticResult.skipped) {
+        routerMode = 'rules_after_low_confidence_semantic';
+      }
+    } catch (error) {
+      semanticResult = { skipped: true, reason: String(error?.message || error) };
+      routerMode = 'rules_after_semantic_error';
+    }
+  }
+
   const intent = ROUTER_INTENTS.includes(inferred.intent) ? inferred.intent : 'unknown';
   const explicitHumanRequest = intent === 'human_request';
   const flags = buildSourceFlags(intent, explicitHumanRequest);
@@ -124,7 +145,15 @@ async function route(normalizedMessage = {}) {
     blockedSources,
     sourcePriority,
     confidence: inferred.confidence,
-    reason: inferred.reason
+    reason: inferred.reason,
+    routerMode,
+    semantic: semanticResult && !semanticResult.skipped ? {
+      intent: semanticResult.classification.intent,
+      confidence: semanticResult.classification.confidence,
+      reason: semanticResult.classification.reason
+    } : null,
+    semanticSkippedReason: semanticResult?.skipped ? semanticResult.reason : '',
+    fallbackIntent: fallbackInferred.intent
   };
 }
 

@@ -13,6 +13,7 @@ const { createStoredFile, mediaRoot } = require('../utils/mediaStore');
 const { getSendPolicySnapshot } = require('../services/whatsappSendPolicy');
 const { getAIAutoReplyQueueSnapshot } = require('../services/aiAutoReplyQueueState');
 const { DEFAULT_DEPARTMENTS } = require('../agent/department-config');
+const { getDepartmentRoutingMap } = require('../agent/departments');
 
 const router = express.Router();
 const upload = multer({
@@ -644,6 +645,7 @@ router.get('/operations',
       departmentAgentsEnabled: config?.department_agents_enabled !== false,
       queueSettings: config?.queue_settings || {},
       departments: config?.department_agent_config || buildDefaultDepartmentConfig(),
+      departmentRouting: getDepartmentRoutingMap(),
       last24h: {
         success: successCount || 0,
         errors: errorCount || 0,

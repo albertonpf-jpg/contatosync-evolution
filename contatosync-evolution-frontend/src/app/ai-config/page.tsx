@@ -55,6 +55,12 @@ interface AIOperations {
   enabled: boolean;
   departmentAgentsEnabled: boolean;
   departments: Record<string, DepartmentConfig>;
+  departmentRouting?: Record<string, {
+    id: string;
+    label: string;
+    intents: string[];
+    triggerSummary: string;
+  }>;
   queueSettings: QueueSettings;
   aiQueue?: {
     timers?: Array<{ key: string; messages: number; version: number; incomingMessageIds: number }>;
@@ -467,7 +473,15 @@ export default function AIConfigPage() {
                 {Object.entries(config.department_agent_config || operations?.departments || {}).map(([id, department]) => (
                   <div key={id} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
                     <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-semibold text-gray-900">{department.name || id}</p>
+                      <input
+                        value={department.name || id}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, name: event.target.value }
+                        })}
+                        className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-900"
+                        aria-label={`Nome do agente ${id}`}
+                      />
                       <input
                         type="checkbox"
                         checked={department.enabled !== false}
@@ -478,38 +492,77 @@ export default function AIConfigPage() {
                         className="h-4 w-4"
                       />
                     </div>
-                    <textarea
-                      value={department.objective || ''}
-                      onChange={event => updateConfigField('department_agent_config', {
-                        ...(config.department_agent_config || operations?.departments || {}),
-                        [id]: { ...department, objective: event.target.value }
-                      })}
-                      rows={3}
-                      className="mt-2 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                    />
-                    <div className="mt-2 grid gap-2 sm:grid-cols-[90px_1fr]">
-                      <input
-                        type="number"
-                        min="1"
-                        max="10"
-                        value={department.maxEvidence || 5}
-                        onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
-                          [id]: { ...department, maxEvidence: Number(event.target.value) }
-                        })}
-                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                        aria-label={`Evidencias maximas para ${department.name || id}`}
-                      />
-                      <input
-                        value={listToText(department.sourcePriority)}
-                        onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
-                          [id]: { ...department, sourcePriority: textToList(event.target.value) }
-                        })}
-                        className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
-                        aria-label={`Prioridade de fontes para ${department.name || id}`}
-                      />
+                    <div className="mt-2 rounded-lg border border-gray-200 bg-white p-3">
+                      <p className="text-xs font-medium uppercase text-gray-500">Acionado por</p>
+                      <p className="mt-1 text-sm text-gray-700">{operations?.departmentRouting?.[id]?.triggerSummary || 'Intencao classificada automaticamente.'}</p>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {(operations?.departmentRouting?.[id]?.intents || []).map(intent => (
+                          <span key={intent} className="rounded-full bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700">{intent}</span>
+                        ))}
+                      </div>
                     </div>
+                    <label className="mt-3 block text-xs font-medium uppercase text-gray-500">
+                      Objetivo do agente
+                      <textarea
+                        value={department.objective || ''}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, objective: event.target.value }
+                        })}
+                        rows={3}
+                        className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                      />
+                    </label>
+                    <label className="mt-3 block text-xs font-medium uppercase text-gray-500">
+                      Regras de resposta
+                      <textarea
+                        value={(department.responseRules || []).join('\n')}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, responseRules: textToList(event.target.value) }
+                        })}
+                        rows={3}
+                        className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                      />
+                    </label>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-[110px_1fr]">
+                      <label className="text-xs font-medium uppercase text-gray-500">
+                        Evidencias
+                        <input
+                          type="number"
+                          min="1"
+                          max="10"
+                          value={department.maxEvidence || 5}
+                          onChange={event => updateConfigField('department_agent_config', {
+                            ...(config.department_agent_config || operations?.departments || {}),
+                            [id]: { ...department, maxEvidence: Number(event.target.value) }
+                          })}
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                        />
+                      </label>
+                      <label className="text-xs font-medium uppercase text-gray-500">
+                        Prioridade de fontes
+                        <input
+                          value={listToText(department.sourcePriority)}
+                          onChange={event => updateConfigField('department_agent_config', {
+                            ...(config.department_agent_config || operations?.departments || {}),
+                            [id]: { ...department, sourcePriority: textToList(event.target.value) }
+                          })}
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                        />
+                      </label>
+                    </div>
+                    <label className="mt-3 block text-xs font-medium uppercase text-gray-500">
+                      Palavras de encaminhamento humano
+                      <input
+                        value={listToText(department.handoffKeywords)}
+                        onChange={event => updateConfigField('department_agent_config', {
+                          ...(config.department_agent_config || operations?.departments || {}),
+                          [id]: { ...department, handoffKeywords: textToList(event.target.value) }
+                        })}
+                        className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                      />
+                    </label>
                   </div>
                 ))}
               </div>

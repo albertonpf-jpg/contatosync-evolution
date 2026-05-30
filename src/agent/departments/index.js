@@ -109,6 +109,26 @@ const departmentAgents = {
   }
 };
 
+const departmentRoutingDescriptions = {
+  sales: 'produto, preco, estoque, catalogo, fotos, tamanhos, cores e interesse de compra',
+  support: 'politicas, entrega, troca, devolucao, horario, duvidas gerais, reclamacoes e casos sem classificacao clara',
+  billing: 'pedido, pagamento, cobranca, comprovante, rastreio e status transacional',
+  scheduling: 'agenda, horario marcado, retirada, disponibilidade operacional e encaixe',
+  handoff: 'pedido explicito de atendente humano'
+};
+
+function getDepartmentRoutingMap() {
+  return Object.fromEntries(Object.entries(departmentAgents).map(([id, agent]) => [
+    id,
+    {
+      id,
+      label: agent.label,
+      intents: [...agent.intents],
+      triggerSummary: departmentRoutingDescriptions[id] || agent.intents.join(', ')
+    }
+  ]));
+}
+
 function selectDepartmentAgent(route = {}, config = {}) {
   const intent = route.intent || 'unknown';
   const initial = Object.values(departmentAgents).find(agent => agent.intents.includes(intent)) || departmentAgents.support;
@@ -124,5 +144,6 @@ function selectDepartmentAgent(route = {}, config = {}) {
 
 module.exports = {
   departmentAgents,
+  getDepartmentRoutingMap,
   selectDepartmentAgent
 };

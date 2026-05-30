@@ -1,4 +1,4 @@
-const { selectDepartmentAgent } = require('../src/agent/departments');
+const { getDepartmentRoutingMap, selectDepartmentAgent } = require('../src/agent/departments');
 
 describe('Department agents', () => {
   test.each([
@@ -76,5 +76,13 @@ describe('Department agents', () => {
 
     expect(plan.executeSources[0]).toBe('site');
     expect(plan.departmentSettings.sourcePriority).toEqual(['site', 'catalog', 'rag']);
+  });
+
+  test('exposes routing metadata for the configuration panel', () => {
+    const routing = getDepartmentRoutingMap();
+
+    expect(routing.sales.intents).toContain('product');
+    expect(routing.billing.triggerSummary).toMatch(/pedido/i);
+    expect(routing.handoff.triggerSummary).toMatch(/humano/i);
   });
 });

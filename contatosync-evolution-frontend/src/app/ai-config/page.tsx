@@ -101,6 +101,48 @@ interface AIOperations {
   };
 }
 
+interface AIRouteDiagnosis {
+  route: {
+    intent: string;
+    confidence: number;
+    reason: string;
+    routerMode: string;
+    fallbackIntent?: string;
+    semantic?: { intent: string; confidence: number; reason: string } | null;
+    semanticSkippedReason?: string;
+    explicitHumanRequest?: boolean;
+    requiredSources?: string[];
+  };
+  department: {
+    id: string;
+    name: string;
+    objective?: string;
+    model?: string;
+    temperature?: number | null;
+  };
+  retrievalPlan: {
+    executeSources: string[];
+    skippedSources: string[];
+    sourcePriority: string[];
+    maxEvidence?: number;
+    reason?: string;
+  };
+  sourceBindings: {
+    allowedSources: string[];
+    allowedIntegrationTypes: string[];
+    allowedIntegrationIds: string[];
+    allowedSourceUrls: string[];
+    allowedKnowledgeFileIds: string[];
+    sourceUseRules: string[];
+    responseRules: string[];
+  };
+  safety: {
+    willHandoff: boolean;
+    willUseSemanticClassifier: boolean;
+    needsClarificationLikely: boolean;
+  };
+}
+
 interface Integration {
   id: string;
   integration_type: string;
@@ -225,6 +267,9 @@ export default function AIConfigPage() {
   const [saving, setSaving] = useState(false);
   const [uploadingFiles, setUploadingFiles] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [routeTestMessage, setRouteTestMessage] = useState('Quero saber se meu pagamento ja liberou');
+  const [routeDiagnosis, setRouteDiagnosis] = useState<AIRouteDiagnosis | null>(null);
+  const [diagnosingRoute, setDiagnosingRoute] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -411,6 +456,24 @@ export default function AIConfigPage() {
     }
   };
 
+  const diagnoseRoute = async () => {
+    if (!routeTestMessage.trim()) {
+      setError('Informe uma mensagem para simular o roteamento.');
+      return;
+    }
+
+    try {
+      setDiagnosingRoute(true);
+      setError(null);
+      const result = await apiService.diagnoseAIRoute({ message: routeTestMessage.trim() });
+      setRouteDiagnosis(result);
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.message || 'Erro ao diagnosticar roteamento');
+    } finally {
+      setDiagnosingRoute(false);
+    }
+  };
+
   if (loading || !config) {
     return (
       <DashboardLayout>
@@ -564,6 +627,72 @@ export default function AIConfigPage() {
                     );
                   })}
                 </div>
+              </div>
+
+              <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+                  <label className="flex-1 text-sm font-medium text-slate-900">
+                    Simular roteamento com a configuracao salva
+                    <textarea
+                      value={routeTestMessage}
+                      onChange={event => setRouteTestMessage(event.target.value)}
+                      rows={2}
+                      className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-gray-900"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void diagnoseRoute()}
+                    disabled={diagnosingRoute}
+                    className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    {diagnosingRoute ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Bot className="mr-2 h-4 w-4" />}
+                    Diagnosticar
+                  </button>
+                </div>
+                {routeDiagnosis && (
+                  <div className="mt-4 grid gap-3 md:grid-cols-3">
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <p className="text-xs font-medium uppercase text-slate-500">Intencao</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-950">{routeDiagnosis.route.intent}</p>
+                      <p className="mt-1 text-xs text-slate-600">{Math.round((routeDiagnosis.route.confidence || 0) * 100)}% · {routeDiagnosis.route.routerMode}</p>
+                      {routeDiagnosis.route.semantic && (
+                        <p className="mt-2 text-xs text-emerald-700">Semantico: {routeDiagnosis.route.semantic.intent} ({Math.round(routeDiagnosis.route.semantic.confidence * 100)}%)</p>
+                      )}
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <p className="text-xs font-medium uppercase text-slate-500">Agente</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-950">{routeDiagnosis.department.name}</p>
+                      <p className="mt-1 text-xs text-slate-600">{routeDiagnosis.department.model || 'modelo global'} · temp {routeDiagnosis.department.temperature ?? 'global'}</p>
+                      {routeDiagnosis.safety.willHandoff && <p className="mt-2 text-xs font-medium text-amber-700">Encaminha para humano</p>}
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white p-3">
+                      <p className="text-xs font-medium uppercase text-slate-500">Fontes usadas</p>
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {(routeDiagnosis.retrievalPlan.executeSources || []).map(source => (
+                          <span key={source} className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700">{source}</span>
+                        ))}
+                      </div>
+                      {routeDiagnosis.safety.needsClarificationLikely && <p className="mt-2 text-xs text-amber-700">Pode pedir mais detalhes</p>}
+                    </div>
+                    <div className="rounded-lg border border-slate-200 bg-white p-3 md:col-span-3">
+                      <p className="text-xs font-medium uppercase text-slate-500">Por que decidiu assim</p>
+                      <p className="mt-1 text-sm text-slate-700">{routeDiagnosis.route.reason}</p>
+                      <div className="mt-3 grid gap-3 md:grid-cols-2">
+                        <div>
+                          <p className="text-xs font-medium uppercase text-slate-500">Vinculos deste agente</p>
+                          <p className="mt-1 text-xs text-slate-600">Integracoes: {(routeDiagnosis.sourceBindings.allowedIntegrationTypes || []).join(', ') || 'todas permitidas'}</p>
+                          <p className="mt-1 text-xs text-slate-600">URLs: {(routeDiagnosis.sourceBindings.allowedSourceUrls || []).join(', ') || 'todas permitidas'}</p>
+                          <p className="mt-1 text-xs text-slate-600">Arquivos: {(routeDiagnosis.sourceBindings.allowedKnowledgeFileIds || []).join(', ') || 'todos permitidos'}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs font-medium uppercase text-slate-500">Regras aplicadas</p>
+                          <p className="mt-1 text-xs text-slate-600">{(routeDiagnosis.sourceBindings.responseRules || []).concat(routeDiagnosis.sourceBindings.sourceUseRules || []).slice(0, 4).join(' · ') || 'regras padrao do agente'}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <h4 className="mb-3 text-sm font-semibold text-gray-900">Configuracao detalhada dos agentes</h4>

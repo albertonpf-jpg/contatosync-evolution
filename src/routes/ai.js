@@ -12,6 +12,7 @@ const { hasDifyConfig } = require('../services/difyService');
 const { createStoredFile, mediaRoot } = require('../utils/mediaStore');
 const { getSendPolicySnapshot } = require('../services/whatsappSendPolicy');
 const { getAIAutoReplyQueueSnapshot } = require('../services/aiAutoReplyQueueState');
+const { buildAIRouteDiagnosis } = require('../services/aiRouteDiagnostics');
 const { DEFAULT_DEPARTMENTS, normalizeDepartmentConfig } = require('../agent/department-config');
 const { getDepartmentRoutingMap } = require('../agent/departments');
 
@@ -426,6 +427,54 @@ router.post('/test',
 
       return error(res, 'Erro ao gerar resposta de IA', 500, { message: aiError.message });
     }
+  })
+);
+
+/**
+ * POST /api/ai/route-diagnostics
+ * Simular classificacao de intencao, agente escolhido e fontes consultadas.
+ */
+router.post('/route-diagnostics',
+  asyncHandler(async (req, res) => {
+    const message = String(req.body?.message || '').trim();
+    if (!message) return error(res, 'Mensagem e obrigatoria', 400);
+
+    const [{ data: config }, { data: client }] = await Promise.all([
+      executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_ai_config')
+          .select('*')
+          .eq('client_id', req.user.id)
+          .single()
+      ),
+      executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_clients')
+          .select('id, openai_api_key, claude_api_key, ai_model')
+          .eq('id', req.user.id)
+          .single()
+      )
+    ]);
+
+    if (!config) return notFound(res, 'Configuracao de IA nao encontrada');
+
+    const diagnosis = await buildAIRouteDiagnosis({
+      message,
+      config,
+      client: client || {},
+      contact: {
+        name: 'Diagnostico IA',
+        phone: String(req.body?.phone || '')
+      },
+      conversation: {
+        id: '',
+        contact_name: 'Diagnostico IA',
+        phone: String(req.body?.phone || '')
+      },
+      conversationHistory: Array.isArray(req.body?.conversationHistory) ? req.body.conversationHistory : []
+    });
+
+    success(res, diagnosis, 'Diagnostico de roteamento gerado');
   })
 );
 

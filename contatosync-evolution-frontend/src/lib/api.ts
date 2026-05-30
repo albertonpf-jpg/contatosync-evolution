@@ -241,6 +241,11 @@ class ApiService {
     return response.data.data;
   }
 
+  async diagnoseAIRoute(data: { message: string; phone?: string }) {
+    const response = await this.api.post('/ai/route-diagnostics', data);
+    return response.data.data;
+  }
+
   // Integrações
   async getIntegrations() {
     const response = await this.api.get('/integrations');

@@ -6,6 +6,7 @@ const evidenceRanker = require('../retrieval/evidence-ranker');
 const answerComposer = require('./answer-composer');
 const confidenceGuardrail = require('./confidence-guardrail');
 const { selectDepartmentAgent } = require('./departments');
+const { buildAISourceReadiness } = require('./source-readiness');
 const humanHandoff = require('../handoff/human-handoff.service');
 const { logAgentStep } = require('../utils/structured-logger');
 
@@ -93,6 +94,17 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     message: normalizedMessage,
     route
   });
+  const sourceReadiness = buildAISourceReadiness(normalizedMessage.effectiveConfig || {});
+  const departmentReadiness = sourceReadiness.departments[departmentAgent.id] || null;
+  const executedSources = new Set(retrievalPlan.executeSources || []);
+  const runtimeCriticalSources = new Set(['api', 'catalog']);
+  const configuredSourceIssues = (departmentReadiness?.issues || []).filter(issue =>
+    issue.severity === 'error' && runtimeCriticalSources.has(issue.source) && executedSources.has(issue.source)
+  );
+  retrievalPlan.sourceReadiness = {
+    department: departmentReadiness,
+    issues: configuredSourceIssues
+  };
   logAgentStep({
     conversationId: normalizedMessage.conversationId,
     step: 'source_decision',
@@ -100,7 +112,9 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     outputSummary: retrievalPlan.executeSources.join(', '),
     confidence: route.confidence,
     sourcesUsed: retrievalPlan.executeSources,
-    decision: retrievalPlan.reason
+    decision: configuredSourceIssues.length
+      ? `${retrievalPlan.reason} Fonte critica sem configuracao visivel: ${configuredSourceIssues.map(issue => issue.source).join(', ')}`
+      : retrievalPlan.reason
   }, logger);
 
   const rewrittenQuery = await queryRewriter.rewrite({
@@ -138,6 +152,12 @@ async function handleIncomingWhatsAppMessage(rawMessage = {}, options = {}) {
     rankedEvidence.topEvidence = (rankedEvidence.topEvidence || []).slice(0, limit);
   }
   rankedEvidence.departmentSettings = departmentAgent.settings;
+  const evidenceSources = new Set((rankedEvidence.topEvidence || evidenceBundle.evidence || [])
+    .filter(item => String(item?.content || '').trim() || item?.metadata?.productsFound === true)
+    .filter(item => !item?.metadata?.error)
+    .map(item => item.sourceType));
+  retrievalPlan.sourceReadiness.issues = configuredSourceIssues.filter(issue => !evidenceSources.has(issue.source));
+  rankedEvidence.sourceReadiness = retrievalPlan.sourceReadiness;
   logAgentStep({
     conversationId: normalizedMessage.conversationId,
     step: 'ranker',

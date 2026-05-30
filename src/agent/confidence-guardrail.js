@@ -45,6 +45,21 @@ async function validate({ message = {}, route = {}, evidence = {}, draftAnswer =
     };
   }
 
+  const criticalSourceIssues = (evidence.sourceReadiness?.issues || []).filter(issue => issue.severity === 'error');
+  if (criticalSourceIssues.length > 0) {
+    const missingInfo = route.intent === 'order_status' || route.intent === 'billing'
+      ? 'order_number'
+      : draftAnswer.missingInfo;
+    return {
+      action: 'clarify',
+      confidence: 'low',
+      finalAnswer: '',
+      clarificationQuestion: questionForMissingInfo(missingInfo, route),
+      discoveryQuestion: '',
+      reason: `fonte critica do agente indisponivel: ${criticalSourceIssues.map(issue => issue.source).join(', ')}`
+    };
+  }
+
   if (Array.isArray(evidence.conflicts) && evidence.conflicts.length > 0 && draftAnswer.confidence !== 'high') {
     return {
       action: 'clarify',

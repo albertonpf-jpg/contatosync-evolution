@@ -996,7 +996,7 @@ export default function AIConfigPage() {
                         />
                       </label>
                       <label className="text-xs font-medium uppercase text-gray-500">
-                        Prioridade de fontes
+                        Fontes permitidas
                         <input
                           value={listToText(department.allowedSources)}
                           onChange={event => updateConfigField('department_agent_config', {

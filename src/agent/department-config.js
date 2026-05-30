@@ -126,10 +126,27 @@ const DEFAULT_DEPARTMENTS = {
   }
 };
 
+const ROUTER_INTENTS = new Set(['faq', 'policy', 'product', 'order_status', 'scheduling', 'billing', 'support', 'human_request', 'complaint', 'unknown']);
+const SOURCE_TYPES = new Set(['catalog', 'api', 'rag', 'file', 'site', 'conversation_memory']);
+
 function normalizeStringList(value) {
   if (Array.isArray(value)) return value.map(String).map(item => item.trim()).filter(Boolean);
   if (typeof value === 'string') return value.split(/[\n,]+/).map(item => item.trim()).filter(Boolean);
   return [];
+}
+
+function normalizeIntentList(value, fallback = []) {
+  const list = normalizeStringList(value).filter(intent => ROUTER_INTENTS.has(intent));
+  return list.length ? list : normalizeStringList(fallback).filter(intent => ROUTER_INTENTS.has(intent));
+}
+
+function normalizeSourceList(value, fallback = []) {
+  const list = normalizeStringList(value)
+    .map(source => source === 'files' ? 'file' : source)
+    .filter(source => SOURCE_TYPES.has(source));
+  return list.length ? [...new Set(list)] : normalizeStringList(fallback)
+    .map(source => source === 'files' ? 'file' : source)
+    .filter(source => SOURCE_TYPES.has(source));
 }
 
 function normalizeNullableTemperature(value, fallback = null) {
@@ -150,20 +167,20 @@ function normalizeDepartmentConfig(rawConfig = {}) {
       ...current,
       enabled: current.enabled !== false,
       name: String(current.name || defaults.name).trim() || defaults.name,
-      intents: normalizeStringList(current.intents || defaults.intents),
+      intents: normalizeIntentList(current.intents, defaults.intents),
       objective: String(current.objective || defaults.objective).trim() || defaults.objective,
       semanticDescription: String(current.semanticDescription || current.semantic_description || defaults.semanticDescription || '').trim(),
       activationExamples: normalizeStringList(current.activationExamples || current.activation_examples || defaults.activationExamples),
       systemPrompt: String(current.systemPrompt || current.system_prompt || defaults.systemPrompt || '').trim(),
       model: String(current.model || defaults.model || '').trim(),
       temperature: normalizeNullableTemperature(current.temperature, defaults.temperature),
-      allowedSources: normalizeStringList(current.allowedSources || current.allowed_sources || defaults.allowedSources),
+      allowedSources: normalizeSourceList(current.allowedSources || current.allowed_sources, defaults.allowedSources),
       allowedIntegrationTypes: normalizeStringList(current.allowedIntegrationTypes || current.allowed_integration_types || defaults.allowedIntegrationTypes),
       allowedIntegrationIds: normalizeStringList(current.allowedIntegrationIds || current.allowed_integration_ids || defaults.allowedIntegrationIds),
       allowedSourceUrls: normalizeStringList(current.allowedSourceUrls || current.allowed_source_urls || defaults.allowedSourceUrls),
       allowedKnowledgeFileIds: normalizeStringList(current.allowedKnowledgeFileIds || current.allowed_knowledge_file_ids || defaults.allowedKnowledgeFileIds),
       sourceUseRules: normalizeStringList(current.sourceUseRules || current.source_use_rules || defaults.sourceUseRules),
-      sourcePriority: normalizeStringList(current.sourcePriority || current.source_priority || defaults.sourcePriority),
+      sourcePriority: normalizeSourceList(current.sourcePriority || current.source_priority, defaults.sourcePriority),
       responseRules: normalizeStringList(current.responseRules || current.response_rules || defaults.responseRules),
       handoffKeywords: normalizeStringList(current.handoffKeywords || current.handoff_keywords || defaults.handoffKeywords),
       maxEvidence: Math.max(1, Math.min(10, Number(current.maxEvidence || current.max_evidence || defaults.maxEvidence) || defaults.maxEvidence))
@@ -183,5 +200,7 @@ module.exports = {
   normalizeDepartmentConfig,
   getDepartmentSettings,
   normalizeStringList,
+  normalizeIntentList,
+  normalizeSourceList,
   normalizeNullableTemperature
 };

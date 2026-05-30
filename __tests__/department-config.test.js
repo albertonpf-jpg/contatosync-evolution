@@ -30,6 +30,22 @@ describe('Department config', () => {
     expect(config.sales.responseRules.length).toBeGreaterThan(0);
   });
 
+  test('drops invalid intents and sources from custom department config', () => {
+    const config = normalizeDepartmentConfig({
+      department_agent_config: {
+        billing: {
+          intents: ['billing', 'delete_everything'],
+          allowedSources: ['api', 'unknown_tool', 'files'],
+          sourcePriority: ['unknown_tool', 'api', 'file']
+        }
+      }
+    });
+
+    expect(config.billing.intents).toEqual(['billing']);
+    expect(config.billing.allowedSources).toEqual(['api', 'file']);
+    expect(config.billing.sourcePriority).toEqual(['api', 'file']);
+  });
+
   test('gets one department settings with fallback to support', () => {
     expect(getDepartmentSettings({}, 'missing').name).toBe('Atendimento');
   });

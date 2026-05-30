@@ -1,5 +1,46 @@
 const Joi = require('joi');
 
+const ROUTER_INTENTS = ['faq', 'policy', 'product', 'order_status', 'scheduling', 'billing', 'support', 'human_request', 'complaint', 'unknown'];
+const AI_SOURCE_TYPES = ['catalog', 'api', 'rag', 'file', 'files', 'site', 'conversation_memory'];
+
+const shortString = (max = 255) => Joi.string().max(max).optional().allow('');
+const stringList = (maxItems = 50, maxLength = 500) => Joi.array().items(Joi.string().max(maxLength)).max(maxItems).optional();
+const sourceList = Joi.array().items(Joi.string().valid(...AI_SOURCE_TYPES)).max(10).optional();
+const departmentAgentSchema = Joi.object({
+  enabled: Joi.boolean().optional(),
+  name: shortString(120),
+  intents: Joi.array().items(Joi.string().valid(...ROUTER_INTENTS)).max(10).optional(),
+  objective: shortString(1000),
+  semanticDescription: shortString(1500),
+  semantic_description: shortString(1500),
+  activationExamples: stringList(30, 500),
+  activation_examples: stringList(30, 500),
+  systemPrompt: shortString(5000),
+  system_prompt: shortString(5000),
+  model: shortString(100),
+  temperature: Joi.number().precision(2).min(0).max(2).optional().allow(null),
+  allowedSources: sourceList,
+  allowed_sources: sourceList,
+  allowedIntegrationTypes: stringList(30, 120),
+  allowed_integration_types: stringList(30, 120),
+  allowedIntegrationIds: stringList(50, 255),
+  allowed_integration_ids: stringList(50, 255),
+  allowedSourceUrls: stringList(50, 1000),
+  allowed_source_urls: stringList(50, 1000),
+  allowedKnowledgeFileIds: stringList(50, 255),
+  allowed_knowledge_file_ids: stringList(50, 255),
+  sourceUseRules: stringList(50, 1000),
+  source_use_rules: stringList(50, 1000),
+  sourcePriority: sourceList,
+  source_priority: sourceList,
+  responseRules: stringList(50, 1000),
+  response_rules: stringList(50, 1000),
+  handoffKeywords: stringList(50, 255),
+  handoff_keywords: stringList(50, 255),
+  maxEvidence: Joi.number().integer().min(1).max(10).optional(),
+  max_evidence: Joi.number().integer().min(1).max(10).optional()
+});
+
 // Schemas de validação
 
 const authSchemas = {
@@ -133,7 +174,10 @@ const aiConfigSchemas = {
     intent_classifier_model: Joi.string().max(100).optional().allow(''),
     intent_confidence_threshold: Joi.number().precision(2).min(0.4).max(0.95).optional(),
     department_agents_enabled: Joi.boolean().optional(),
-    department_agent_config: Joi.object().optional(),
+    department_agent_config: Joi.object()
+      .pattern(Joi.string().max(80), departmentAgentSchema)
+      .max(20)
+      .optional(),
     queue_settings: Joi.object({
       max_parallel_per_client: Joi.number().integer().min(1).max(5).optional(),
       max_parallel_per_session: Joi.number().integer().min(1).max(3).optional(),

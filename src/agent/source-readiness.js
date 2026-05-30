@@ -16,6 +16,63 @@ function normalizeIntegrations(config = {}) {
   );
 }
 
+function normalizeScopeSet(values) {
+  const items = list(values).map(item => String(item || '').trim().toLowerCase()).filter(Boolean);
+  return items.length > 0 ? new Set(items) : null;
+}
+
+function sourceUrlKey(value = '') {
+  return String(value || '').trim().replace(/\/+$/, '').toLowerCase();
+}
+
+function integrationScopeKey(integration = {}) {
+  return String(integration.id || integration.integration_id || integration.integration_name || '').trim().toLowerCase();
+}
+
+function knowledgeFileScopeKey(file = {}) {
+  return String(file.id || file.path || file.originalName || file.fileName || '').trim().toLowerCase();
+}
+
+function scopeConfigForDepartmentReadiness(config = {}, department = {}) {
+  if (!department || typeof department !== 'object') return config;
+
+  const integrationTypes = normalizeScopeSet(department.allowedIntegrationTypes);
+  const integrationIds = normalizeScopeSet(department.allowedIntegrationIds);
+  const sourceUrls = normalizeScopeSet(list(department.allowedSourceUrls).map(sourceUrlKey));
+  const knowledgeFileIds = normalizeScopeSet(department.allowedKnowledgeFileIds);
+
+  if (!integrationTypes && !integrationIds && !sourceUrls && !knowledgeFileIds) return config;
+
+  const scoped = { ...config };
+
+  if (Array.isArray(config.product_integrations) && (integrationTypes || integrationIds)) {
+    scoped.product_integrations = config.product_integrations.filter(integration => {
+      const type = String(integration.integration_type || integration.type || '').trim().toLowerCase();
+      const id = integrationScopeKey(integration);
+      return (!integrationTypes || integrationTypes.has(type))
+        && (!integrationIds || integrationIds.has(id));
+    });
+  }
+
+  if (sourceUrls) {
+    const keepUrl = value => sourceUrls.has(sourceUrlKey(value));
+    scoped.product_source_urls = Array.isArray(config.product_source_urls) ? config.product_source_urls.filter(keepUrl) : [];
+    scoped.site_urls = Array.isArray(config.site_urls) ? config.site_urls.filter(keepUrl) : [];
+    scoped.knowledge_source_urls = Array.isArray(config.knowledge_source_urls) ? config.knowledge_source_urls.filter(keepUrl) : [];
+    scoped.source_urls = Array.isArray(config.source_urls) ? config.source_urls.filter(keepUrl) : [];
+    if (config.product_catalog_url && !keepUrl(config.product_catalog_url)) scoped.product_catalog_url = '';
+    if (config.site_url && !keepUrl(config.site_url)) scoped.site_url = '';
+    if (config.store_url && !keepUrl(config.store_url)) scoped.store_url = '';
+    if (config.knowledge_base_url && !keepUrl(config.knowledge_base_url)) scoped.knowledge_base_url = '';
+  }
+
+  if (Array.isArray(config.knowledge_files) && knowledgeFileIds) {
+    scoped.knowledge_files = config.knowledge_files.filter(file => knowledgeFileIds.has(knowledgeFileScopeKey(file)));
+  }
+
+  return scoped;
+}
+
 function buildSourceAvailability(config = {}) {
   const integrations = normalizeIntegrations(config);
   const knowledgeFiles = list(config.knowledge_files).filter(file =>
@@ -79,11 +136,12 @@ function buildAISourceReadiness(config = {}) {
     const priority = list(department.sourcePriority);
     const allowed = list(department.allowedSources);
     const sources = priority.length ? priority : allowed;
+    const departmentAvailability = buildSourceAvailability(scopeConfigForDepartmentReadiness(config, department));
     const issues = [];
 
     if (department.enabled !== false) sources.forEach((source, index) => {
       const normalizedSource = source === 'files' ? 'file' : source;
-      const sourceAvailability = availability[normalizedSource];
+      const sourceAvailability = departmentAvailability[normalizedSource];
       if (!sourceAvailability || sourceAvailability.ready) return;
       const severity = index === 0 && ['api', 'catalog', 'file', 'site', 'rag'].includes(normalizedSource)
         ? 'error'
@@ -100,6 +158,7 @@ function buildAISourceReadiness(config = {}) {
       name: department.name || id,
       enabled: department.enabled !== false,
       sources,
+      availability: departmentAvailability,
       issues
     };
     allIssues.push(...issues.map(issue => ({ ...issue, departmentId: id })));

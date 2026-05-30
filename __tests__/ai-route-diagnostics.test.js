@@ -143,6 +143,60 @@ describe('AI route diagnostics', () => {
     expect(readiness.availability.api.ready).toBe(true);
   });
 
+  test('reports API source missing when agent is bound to unmatched integration id', () => {
+    const readiness = buildAISourceReadiness({
+      product_integrations: [
+        {
+          id: 'pedidos-api',
+          integration_type: 'facilzap',
+          api_endpoint: 'https://api.example.com',
+          enabled: true
+        }
+      ],
+      department_agent_config: {
+        billing: {
+          name: 'Financeiro',
+          allowedSources: ['api'],
+          sourcePriority: ['api'],
+          allowedIntegrationIds: ['erp-inexistente']
+        }
+      }
+    });
+
+    expect(readiness.availability.api.ready).toBe(true);
+    expect(readiness.departments.billing.availability.api.ready).toBe(false);
+    expect(readiness.departments.billing.issues[0]).toMatchObject({
+      severity: 'error',
+      source: 'api'
+    });
+  });
+
+  test('accepts API source when agent binding matches integration id and type', () => {
+    const readiness = buildAISourceReadiness({
+      product_integrations: [
+        {
+          id: 'pedidos-api',
+          integration_type: 'facilzap',
+          api_endpoint: 'https://api.example.com',
+          enabled: true
+        }
+      ],
+      department_agent_config: {
+        billing: {
+          name: 'Financeiro',
+          allowedSources: ['api'],
+          sourcePriority: ['api'],
+          allowedIntegrationIds: ['pedidos-api'],
+          allowedIntegrationTypes: ['facilzap']
+        }
+      }
+    });
+
+    expect(readiness.availability.api.ready).toBe(true);
+    expect(readiness.departments.billing.availability.api.ready).toBe(true);
+    expect(readiness.departments.billing.issues).toEqual([]);
+  });
+
   test('includes selected agent source readiness in route diagnosis', async () => {
     const diagnosis = await buildAIRouteDiagnosis({
       message: 'Ja paguei no pix, meu pedido foi liberado?',

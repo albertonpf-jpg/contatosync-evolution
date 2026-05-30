@@ -287,6 +287,36 @@ describe('Retrieval-Grounded WhatsApp Agent', () => {
     expect(result.validation.reason).toMatch(/fonte critica.*api/i);
   });
 
+  test('agente financeiro nao usa politica generica quando API configurada nao esta vinculada ao agente', async () => {
+    const { result } = await run('Ja paguei no Pix, meu pedido foi liberado?', {
+      rag: async () => [{ sourceType: 'rag', sourceName: 'Politica', content: 'O pagamento pode ser feito por Pix ou cartao.', score: 0.92 }],
+      site: async () => [],
+      file: async () => []
+    }, [], {
+      product_integrations: [
+        {
+          id: 'pedidos-api',
+          integration_type: 'facilzap',
+          api_endpoint: 'https://api.example.com',
+          enabled: true
+        }
+      ],
+      department_agent_config: {
+        billing: {
+          name: 'Financeiro',
+          allowedSources: ['api', 'rag', 'file'],
+          sourcePriority: ['api', 'rag', 'file'],
+          allowedIntegrationIds: ['erp-inexistente']
+        }
+      }
+    });
+
+    expect(result.action).toBe('clarify');
+    expect(result.response).toMatch(/numero do pedido/i);
+    expect(result.response).not.toMatch(/pagamento pode ser feito|Pix ou cartao/i);
+    expect(result.validation.reason).toMatch(/fonte critica.*api/i);
+  });
+
   test('fluxo nao emite planner antes de retrieval', async () => {
     const { logs } = await run('Voces aceitam pix?', {
       rag: async () => [{ sourceType: 'rag', sourceName: 'Politica', content: 'O pagamento e por Pix ou cartao.', score: 0.9 }],

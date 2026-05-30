@@ -146,8 +146,8 @@ router.get('/config',
         system_prompt: 'Você é um assistente virtual amigável e prestativo.',
         greeting_message: 'Olá! Como posso ajudar você hoje? 😊',
         fallback_message: 'Desculpe, não consegui entender. Um atendente humano entrará em contato em breve.',
-        trigger_keywords: ['preço', 'produto', 'estoque', 'delivery'],
-        blacklist_keywords: ['urgente', 'emergência'],
+        trigger_keywords: [],
+        blacklist_keywords: [],
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };

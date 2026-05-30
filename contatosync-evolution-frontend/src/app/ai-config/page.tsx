@@ -132,6 +132,31 @@ interface AIOperations {
   }>;
   semanticReadiness?: SemanticReadiness;
   sourceReadiness?: SourceReadiness;
+  whatsappReadiness?: {
+    ready: boolean;
+    status: 'ready' | 'needs_qr_scan' | 'disconnected' | 'no_session' | string;
+    summary: string;
+    counts: {
+      total: number;
+      connected: number;
+      pending: number;
+      disconnected: number;
+    };
+    sessions: Array<{
+      id: string;
+      sessionName: string;
+      displayName: string;
+      whatsappPhone?: string;
+      databaseStatus: string;
+      runtimeStatus?: string;
+      state: string;
+      connected: boolean;
+      pendingQr: boolean;
+      hasQr: boolean;
+      lastSeen?: string | null;
+      updatedAt?: string | null;
+    }>;
+  };
   queueSettings: QueueSettings;
   aiQueue?: {
     timers?: Array<{ key: string; messages: number; version: number; incomingMessageIds: number }>;
@@ -394,6 +419,7 @@ export default function AIConfigPage() {
   const sourceReadinessSummary = operations?.sourceReadiness?.summary || { errors: 0, warnings: 0 };
   const semanticReadiness = operations?.semanticReadiness;
   const semanticReadinessIssueCount = (semanticReadiness?.summary?.errors || 0) + (semanticReadiness?.summary?.warnings || 0);
+  const whatsappReadiness = operations?.whatsappReadiness;
   const effectiveDepartmentConfig = useMemo(
     () => hasDepartmentConfig(config?.department_agent_config) ? config?.department_agent_config || {} : operations?.departments || {},
     [config?.department_agent_config, operations?.departments]
@@ -672,6 +698,34 @@ export default function AIConfigPage() {
                 <p className="text-xs font-medium uppercase tracking-wide text-blue-700">Fila agora</p>
                 <p className="mt-1 text-sm font-semibold text-blue-950">{runningJobs} rodando / {queuedJobs + queueTimers} aguardando</p>
               </div>
+            </div>
+
+            <div className={`rounded-lg border p-4 ${whatsappReadiness?.ready ? 'border-green-100 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className={`text-sm font-semibold ${whatsappReadiness?.ready ? 'text-green-950' : 'text-red-950'}`}>Canal WhatsApp / Baileys</h3>
+                  <p className={`mt-1 text-sm ${whatsappReadiness?.ready ? 'text-green-800' : 'text-red-800'}`}>
+                    {whatsappReadiness?.summary || 'Verificando se existe uma sessao WhatsApp conectada para atendimento.'}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-green-700">{whatsappReadiness?.counts.connected ?? 0} conectadas</span>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-700">{whatsappReadiness?.counts.pending ?? 0} pendentes</span>
+                </div>
+              </div>
+              {(whatsappReadiness?.sessions || []).length > 0 && (
+                <div className="mt-3 grid gap-2">
+                  {(whatsappReadiness?.sessions || []).slice(0, 3).map(session => (
+                    <div key={session.id || session.sessionName} className="rounded-lg border border-white/70 bg-white px-3 py-2 text-xs text-gray-700">
+                      <span className={`mr-2 font-semibold ${session.connected ? 'text-green-700' : session.pendingQr ? 'text-amber-700' : 'text-red-700'}`}>
+                        {session.displayName || session.sessionName}
+                      </span>
+                      Estado: {session.runtimeStatus || session.databaseStatus || session.state}
+                      {session.whatsappPhone ? ` · ${session.whatsappPhone}` : ''}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className={`rounded-lg border p-4 ${sourceReadinessSummary.errors ? 'border-red-200 bg-red-50' : sourceReadinessSummary.warnings ? 'border-amber-200 bg-amber-50' : 'border-green-100 bg-green-50'}`}>

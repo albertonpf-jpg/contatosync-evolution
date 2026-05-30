@@ -16,6 +16,8 @@ const { buildAIRouteDiagnosis, buildAISourceReadiness, runAIRouteDiagnosticsSuit
 const { DEFAULT_DEPARTMENTS, normalizeDepartmentConfig } = require('../agent/department-config');
 const { getDepartmentRoutingMap } = require('../agent/departments');
 const { buildSemanticIntentReadiness } = require('../router/semantic-intent-classifier');
+const baileysService = require('../services/baileysService');
+const { buildWhatsAppOperationalReadiness } = require('../services/whatsappOperationalReadiness');
 
 const router = express.Router();
 const upload = multer({
@@ -701,7 +703,7 @@ router.get('/stats',
 router.get('/operations',
   asyncHandler(async (req, res) => {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const [{ data: config }, { data: integrations }, { data: recentLogs }, { count: successCount }, { count: errorCount }, { data: clientProfile }] = await Promise.all([
+    const [{ data: config }, { data: integrations }, { data: recentLogs }, { count: successCount }, { count: errorCount }, { data: clientProfile }, { data: whatsappSessions }] = await Promise.all([
       executeWithRLS(req.user.id, (client) =>
         client
           .from('evolution_ai_config')
@@ -746,6 +748,12 @@ router.get('/operations',
           .select('openai_api_key, claude_api_key, ai_model')
           .eq('id', req.user.id)
           .single()
+      ),
+      executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_sessions')
+          .select('id, session_name, whatsapp_phone, status, last_seen, updated_at')
+          .eq('client_id', req.user.id)
       )
     ]);
 
@@ -783,6 +791,7 @@ router.get('/operations',
       departmentRouting: getDepartmentRoutingMap(effectiveConfig),
       semanticReadiness: buildSemanticIntentReadiness(effectiveConfig, clientProfile || {}),
       sourceReadiness: buildAISourceReadiness(effectiveConfig),
+      whatsappReadiness: buildWhatsAppOperationalReadiness(whatsappSessions || [], baileysService),
       last24h: {
         success: successCount || 0,
         errors: errorCount || 0,

@@ -155,6 +155,11 @@ export default function WhatsAppPage() {
     }
   };
 
+  const connectedCount = sessions.filter(session => ['connected', 'open'].includes(getCurrentStatus(session))).length;
+  const pendingCount = sessions.filter(session => ['qr_pending', 'connecting'].includes(getCurrentStatus(session))).length;
+  const disconnectedCount = sessions.filter(session => ['disconnected', 'close'].includes(getCurrentStatus(session))).length;
+  const hasOperationalSession = connectedCount > 0;
+
   return (
     <DashboardLayout>
       <div className="space-y-6">
@@ -201,6 +206,28 @@ export default function WhatsAppPage() {
             </div>
           </div>
         </div>
+
+        {!loading && (
+          <div className={`rounded-lg border p-4 ${hasOperationalSession ? 'border-green-200 bg-green-50' : 'border-red-200 bg-red-50'}`}>
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div>
+                <h2 className={`text-sm font-semibold ${hasOperationalSession ? 'text-green-950' : 'text-red-950'}`}>Prontidao para atendimento</h2>
+                <p className={`mt-1 text-sm ${hasOperationalSession ? 'text-green-800' : 'text-red-800'}`}>
+                  {hasOperationalSession
+                    ? 'Existe uma sessao WhatsApp conectada. O atendimento pode enviar e receber mensagens.'
+                    : pendingCount > 0
+                      ? 'Ha sessao aguardando QR Code. Abra o QR Code e escaneie pelo WhatsApp para ativar o atendimento.'
+                      : 'Nenhuma sessao WhatsApp esta conectada. Crie uma sessao ou gere um novo QR Code para ativar o atendimento.'}
+                </p>
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-2">
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-green-700">{connectedCount} conectadas</span>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-700">{pendingCount} aguardando QR</span>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-red-700">{disconnectedCount} desconectadas</span>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Sessions List */}
         <div className="bg-white rounded-lg shadow-sm border">

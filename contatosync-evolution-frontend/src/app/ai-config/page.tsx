@@ -753,6 +753,11 @@ export default function AIConfigPage() {
                 <div className="flex shrink-0 gap-2">
                   <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-green-700">{whatsappReadiness?.counts.connected ?? 0} conectadas</span>
                   <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-700">{whatsappReadiness?.counts.pending ?? 0} pendentes</span>
+                  {!whatsappReadiness?.ready && (
+                    <a href="/whatsapp" className="rounded-full bg-red-600 px-3 py-1 text-xs font-semibold text-white hover:bg-red-700">
+                      Conectar
+                    </a>
+                  )}
                 </div>
               </div>
               {(whatsappReadiness?.sessions || []).length > 0 && (

@@ -93,6 +93,11 @@ function shouldKeepRuleFallback(fallbackInferred = {}, configuredResult = {}) {
     && Number(configuredResult.confidence || 0) <= Number(fallbackInferred.confidence || 0) + 0.04;
 }
 
+function shouldUseHighConfidenceRuleFallback(fallbackInferred = {}) {
+  if (!fallbackInferred.intent || fallbackInferred.intent === 'unknown') return false;
+  return Number(fallbackInferred.confidence || 0) >= 0.78;
+}
+
 function buildStrictSemanticClarification(reason = 'semantic_classifier_required', semanticClassification = null) {
   return {
     intent: 'unknown',
@@ -133,12 +138,17 @@ async function route(normalizedMessage = {}) {
         routerMode = 'semantic';
       } else if (!semanticResult.skipped) {
         if (strictSemanticIntent) {
-          const reason = semanticClassification.intent === 'unknown'
-            ? 'classificador semantico nao encontrou uma intencao acionavel'
-            : 'classificador semantico retornou baixa confianca ou ambiguidade';
-          configuredResult = buildStrictSemanticClarification(reason, semanticClassification);
-          inferred = configuredResult;
-          routerMode = 'clarify_after_low_confidence_semantic';
+          if (shouldUseHighConfidenceRuleFallback(fallbackInferred)) {
+            inferred = fallbackInferred;
+            routerMode = 'rules_after_low_confidence_semantic';
+          } else {
+            const reason = semanticClassification.intent === 'unknown'
+              ? 'classificador semantico nao encontrou uma intencao acionavel'
+              : 'classificador semantico retornou baixa confianca ou ambiguidade';
+            configuredResult = buildStrictSemanticClarification(reason, semanticClassification);
+            inferred = configuredResult;
+            routerMode = 'clarify_after_low_confidence_semantic';
+          }
         } else {
           configuredResult = classifyByConfiguredAgents({ text, config: effectiveConfig, fallbackIntent: fallbackInferred.intent });
           if (shouldKeepRuleFallback(fallbackInferred, configuredResult)) {

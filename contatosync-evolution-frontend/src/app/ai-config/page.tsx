@@ -190,6 +190,8 @@ function formatFileSize(value?: number) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
+const departmentOrder = ['sales', 'support', 'billing', 'scheduling', 'handoff'];
+
 export default function AIConfigPage() {
   const [config, setConfig] = useState<AIConfig | null>(null);
   const [integrations, setIntegrations] = useState<Integration[]>([]);
@@ -458,7 +460,10 @@ export default function AIConfigPage() {
 
             <div className="rounded-lg border border-gray-200 p-4">
               <div className="mb-3 flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-gray-900">Agentes por departamento</h3>
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900">Agentes departamentais e roteamento</h3>
+                  <p className="mt-1 text-xs text-gray-500">A IA primeiro classifica a intencao da mensagem e entao escolhe o agente do setor correspondente.</p>
+                </div>
                 <label className="flex items-center gap-2 text-sm text-gray-700">
                   <input
                     type="checkbox"
@@ -469,6 +474,35 @@ export default function AIConfigPage() {
                   Ativos
                 </label>
               </div>
+
+              <div className="mb-4 rounded-lg border border-indigo-100 bg-indigo-50 p-4">
+                <h4 className="text-sm font-semibold text-indigo-950">Como o sistema escolhe cada agente</h4>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  {departmentOrder.map(id => {
+                    const routing = operations?.departmentRouting?.[id];
+                    const department = (config.department_agent_config || operations?.departments || {})[id];
+                    if (!routing && !department) return null;
+                    return (
+                      <div key={id} className="rounded-lg border border-indigo-100 bg-white p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-sm font-semibold text-gray-900">{department?.name || routing?.label || id}</p>
+                          <span className={`rounded-full px-2 py-1 text-xs ${department?.enabled === false ? 'bg-gray-100 text-gray-600' : 'bg-green-100 text-green-700'}`}>
+                            {department?.enabled === false ? 'Inativo' : 'Ativo'}
+                          </span>
+                        </div>
+                        <p className="mt-2 text-sm text-gray-600">{routing?.triggerSummary || 'Roteamento automatico pela intencao da mensagem.'}</p>
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {(routing?.intents || []).map(intent => (
+                            <span key={intent} className="rounded-full bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">{intent}</span>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <h4 className="mb-3 text-sm font-semibold text-gray-900">Configuracao detalhada dos agentes</h4>
               <div className="grid gap-3 md:grid-cols-2">
                 {Object.entries(config.department_agent_config || operations?.departments || {}).map(([id, department]) => (
                   <div key={id} className="rounded-lg border border-gray-200 bg-gray-50 p-3">

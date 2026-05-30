@@ -241,7 +241,8 @@ async function route(normalizedMessage = {}) {
       scores: (configuredResult.scores || []).slice(0, 5).map(item => ({
         id: item.id,
         intent: item.intent,
-        score: Number(item.score || 0)
+        score: Number(item.score || 0),
+        exclusionScore: Number(item.exclusionScore || 0)
       }))
     } : null,
     fallbackIntent: fallbackInferred.intent,

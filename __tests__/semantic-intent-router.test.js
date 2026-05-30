@@ -1,7 +1,7 @@
 const lightweightRouter = require('../src/router/lightweight-router');
 const { normalizeDepartmentConfig } = require('../src/agent/department-config');
 const { selectDepartmentAgent } = require('../src/agent/departments');
-const { buildSemanticIntentReadiness, classifyIntentSemantically } = require('../src/router/semantic-intent-classifier');
+const { buildClassifierPrompt, buildSemanticIntentReadiness, classifyIntentSemantically } = require('../src/router/semantic-intent-classifier');
 
 describe('Semantic intent router', () => {
   test('uses semantic classifier before keyword fallback when confidence is high', async () => {
@@ -85,6 +85,33 @@ describe('Semantic intent router', () => {
     expect(route.needsCatalog).toBe(true);
   });
 
+  test('configured fallback respects per-agent exclusion examples', async () => {
+    const route = await lightweightRouter.route({
+      text: 'meu pedido ja saiu?',
+      effectiveConfig: {
+        semantic_intent_enabled: true,
+        require_semantic_intent_classifier: false,
+        department_agent_config: {
+          sales: {
+            semanticDescription: 'mensagens sobre pedido do cliente',
+            activationExamples: ['meu pedido ja saiu?'],
+            exclusionExamples: ['meu pedido ja saiu?', 'rastreio do meu pedido'],
+            intents: ['product']
+          },
+          billing: {
+            semanticDescription: 'status, rastreio e pedido ja feito',
+            activationExamples: ['meu pedido ja saiu?', 'cade meu rastreio?'],
+            intents: ['order_status', 'billing']
+          }
+        }
+      }
+    });
+
+    expect(route.intent).toBe('order_status');
+    expect(route.configuredDepartmentId).toBe('billing');
+    expect(route.configured.scores.find(score => score.id === 'sales').exclusionScore).toBeGreaterThan(0);
+  });
+
   test('strict semantic mode does not route by configured token fallback when classifier is unavailable', async () => {
     const route = await lightweightRouter.route({
       text: 'Estou procurando algo para presente de menina de 2 anos',
@@ -146,6 +173,8 @@ describe('Semantic intent router', () => {
 
     expect(departments.sales.semanticDescription).toBe('mensagens de compra');
     expect(departments.sales.activationExamples).toEqual(['quero comprar', 'me mostra opcoes']);
+    expect(departments.sales.boundaryRules.length).toBeGreaterThan(0);
+    expect(departments.sales.exclusionExamples.length).toBeGreaterThan(0);
     expect(departments.sales.allowedSources).toEqual(['catalog', 'api']);
     expect(departments.sales.allowedIntegrationTypes).toEqual(['facilzap', 'ecommerce']);
     expect(departments.sales.allowedIntegrationIds).toEqual(['catalogo-principal']);
@@ -155,6 +184,23 @@ describe('Semantic intent router', () => {
     expect(departments.sales.systemPrompt).toBe('agente de vendas');
     expect(departments.sales.model).toBe('gpt-4o-mini');
     expect(departments.sales.temperature).toBe(0.3);
+  });
+
+  test('semantic classifier prompt includes per-agent boundary contract', () => {
+    const prompt = buildClassifierPrompt({
+      message: { text: 'paguei no pix e nao confirmou' },
+      config: {
+        department_agent_config: {
+          sales: {
+            boundaryRules: ['nao tratar pagamento'],
+            exclusionExamples: ['paguei no pix e nao confirmou']
+          }
+        }
+      }
+    });
+
+    expect(prompt).toMatch(/Nao acionar quando: nao tratar pagamento/);
+    expect(prompt).toMatch(/Exemplos que pertencem a outro setor: paguei no pix e nao confirmou/);
   });
 
   test('department plan only executes allowed sources', async () => {

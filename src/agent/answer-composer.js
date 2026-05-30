@@ -168,7 +168,8 @@ async function composeWithAgentModel({ message = {}, route = {}, ranked = [], de
 
   const rules = [
     ...(Array.isArray(departmentSettings.responseRules) ? departmentSettings.responseRules : []),
-    ...(Array.isArray(departmentSettings.sourceUseRules) ? departmentSettings.sourceUseRules : [])
+    ...(Array.isArray(departmentSettings.sourceUseRules) ? departmentSettings.sourceUseRules : []),
+    ...(Array.isArray(departmentSettings.boundaryRules) ? departmentSettings.boundaryRules : [])
   ].join('\n- ');
   const sourceContract = Array.isArray(departmentSettings.allowedSources) && departmentSettings.allowedSources.length > 0
     ? `Fontes autorizadas para este agente: ${departmentSettings.allowedSources.join(', ')}`

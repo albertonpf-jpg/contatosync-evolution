@@ -15,6 +15,8 @@ describe('AI config validation', () => {
           intents: ['billing', 'order_status'],
           semanticDescription: 'Pedido, pagamento e rastreio',
           activationExamples: ['Paguei no pix', 'Meu pedido saiu?'],
+          boundaryRules: ['nao vender produto novo'],
+          exclusionExamples: ['tem tamanho 6?'],
           systemPrompt: 'Consulte pedidos antes de responder.',
           model: 'gpt-4o-mini',
           temperature: 0.2,
@@ -36,6 +38,8 @@ describe('AI config validation', () => {
 
     expect(error).toBeUndefined();
     expect(value.require_semantic_intent_classifier).toBe(true);
+    expect(value.department_agent_config.billing.boundaryRules).toEqual(['nao vender produto novo']);
+    expect(value.department_agent_config.billing.exclusionExamples).toEqual(['tem tamanho 6?']);
     expect(value.department_agent_config.billing.allowedSources).toEqual(['api', 'rag', 'file']);
     expect(value.department_agent_config.billing.maxEvidence).toBe(4);
   });

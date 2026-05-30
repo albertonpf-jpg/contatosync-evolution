@@ -45,6 +45,8 @@ interface DepartmentConfig {
   objective?: string;
   semanticDescription?: string;
   activationExamples?: string[];
+  boundaryRules?: string[];
+  exclusionExamples?: string[];
   systemPrompt?: string;
   model?: string;
   temperature?: number | null;
@@ -995,6 +997,32 @@ export default function AIConfigPage() {
                         className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
                       />
                     </label>
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <label className="block text-xs font-medium uppercase text-gray-500">
+                        Limites deste agente
+                        <textarea
+                          value={(department.boundaryRules || []).join('\n')}
+                          onChange={event => updateConfigField('department_agent_config', {
+                            ...(config.department_agent_config || operations?.departments || {}),
+                            [id]: { ...department, boundaryRules: textToList(event.target.value) }
+                          })}
+                          rows={3}
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                        />
+                      </label>
+                      <label className="block text-xs font-medium uppercase text-gray-500">
+                        Exemplos de outro setor
+                        <textarea
+                          value={(department.exclusionExamples || []).join('\n')}
+                          onChange={event => updateConfigField('department_agent_config', {
+                            ...(config.department_agent_config || operations?.departments || {}),
+                            [id]: { ...department, exclusionExamples: textToList(event.target.value) }
+                          })}
+                          rows={3}
+                          className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
+                        />
+                      </label>
+                    </div>
                     <label className="mt-3 block text-xs font-medium uppercase text-gray-500">
                       Prompt system do agente
                       <textarea

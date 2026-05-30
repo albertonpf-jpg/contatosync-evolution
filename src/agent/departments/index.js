@@ -71,6 +71,8 @@ function applyDepartmentSettingsToPlan(plan = {}, settings = {}) {
       sourcePriority,
       sourceUseRules: settings.sourceUseRules || [],
       responseRules: settings.responseRules || [],
+      boundaryRules: settings.boundaryRules || [],
+      exclusionExamples: settings.exclusionExamples || [],
       maxEvidence: settings.maxEvidence
     }
   };

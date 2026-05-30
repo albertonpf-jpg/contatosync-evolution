@@ -61,6 +61,13 @@ function getDepartmentProfileText(id, department = {}) {
   ].filter(Boolean).join(' ');
 }
 
+function getDepartmentExclusionText(department = {}) {
+  return [
+    ...(department.boundaryRules || []),
+    ...(department.exclusionExamples || [])
+  ].filter(Boolean).join(' ');
+}
+
 function chooseIntentForDepartment(department = {}, fallbackIntent = 'unknown') {
   const intents = Array.isArray(department.intents) ? department.intents.filter(Boolean) : [];
   if (intents.includes(fallbackIntent)) return fallbackIntent;
@@ -86,11 +93,16 @@ function classifyByConfiguredAgents({ text = '', config = {}, fallbackIntent = '
     .map(([id, department]) => {
       const profile = getDepartmentProfileText(id, department);
       const profileTokens = tokenSet(profile);
-      const score = (overlapScore(messageTokens, profileTokens) * 0.7) + (phraseScore(text, profile) * 0.3);
+      const exclusionText = getDepartmentExclusionText(department);
+      const exclusionTokens = tokenSet(exclusionText);
+      const positiveScore = (overlapScore(messageTokens, profileTokens) * 0.7) + (phraseScore(text, profile) * 0.3);
+      const exclusionScore = (overlapScore(messageTokens, exclusionTokens) * 0.75) + (phraseScore(text, exclusionText) * 0.25);
+      const score = Math.max(0, positiveScore - (exclusionScore * 0.9));
       return {
         id,
         intent: chooseIntentForDepartment(department, fallbackIntent),
         score,
+        exclusionScore,
         name: department.name || id
       };
     })

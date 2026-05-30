@@ -62,13 +62,17 @@ function buildClassifierPrompt({ message = {}, config = {} } = {}) {
   const departments = normalizeDepartmentConfig(config);
   const agentLines = Object.entries(departments).map(([id, department]) => {
     const examples = Array.isArray(department.activationExamples) ? department.activationExamples.join(' | ') : '';
+    const boundaryRules = Array.isArray(department.boundaryRules) ? department.boundaryRules.join(' | ') : '';
+    const exclusions = Array.isArray(department.exclusionExamples) ? department.exclusionExamples.join(' | ') : '';
     const intents = Array.isArray(department.intents) ? department.intents.join(', ') : '';
     return [
       `- ${id} (${department.name})`,
       `  Objetivo: ${department.objective}`,
       `  Intencoes aceitas: ${intents || 'definidas pelo sistema'}`,
       `  Quando acionar: ${department.semanticDescription || department.objective}`,
-      examples ? `  Exemplos: ${examples}` : ''
+      examples ? `  Exemplos de acionamento: ${examples}` : '',
+      boundaryRules ? `  Nao acionar quando: ${boundaryRules}` : '',
+      exclusions ? `  Exemplos que pertencem a outro setor: ${exclusions}` : ''
     ].filter(Boolean).join('\n');
   }).join('\n');
 
@@ -82,6 +86,7 @@ function buildClassifierPrompt({ message = {}, config = {} } = {}) {
     'Escolha exatamente uma intent desta lista: faq, policy, product, order_status, scheduling, billing, support, human_request, complaint, unknown.',
     'Escolha tambem o departmentId do agente responsavel usando exatamente um dos IDs listados abaixo.',
     'O departmentId precisa ser coerente com as intencoes aceitas pelo agente. Se houver duvida entre setores, use baixa confianca e explique em ambiguity.',
+    'Respeite "Nao acionar quando" e exemplos de exclusao de cada agente; eles tem prioridade sobre exemplos positivos parecidos.',
     'Use human_request somente quando o cliente pedir explicitamente uma pessoa/atendente/humano.',
     'Se a mensagem estiver ambigua, use unknown ou faq com baixa confianca.',
     '',

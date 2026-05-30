@@ -16,6 +16,8 @@ describe('Department config', () => {
           enabled: false,
           name: 'Vendas consultivas',
           objective: 'Priorizar catalogo e conversao.',
+          boundaryRules: 'nao tratar pedidos pagos\nnao resolver cobranca',
+          exclusionExamples: 'meu pedido saiu?, paguei no pix',
           handoffKeywords: 'desconto, gerente',
           maxEvidence: 99
         }
@@ -24,6 +26,8 @@ describe('Department config', () => {
 
     expect(config.sales.enabled).toBe(false);
     expect(config.sales.name).toBe('Vendas consultivas');
+    expect(config.sales.boundaryRules).toEqual(['nao tratar pedidos pagos', 'nao resolver cobranca']);
+    expect(config.sales.exclusionExamples).toEqual(['meu pedido saiu?', 'paguei no pix']);
     expect(config.sales.handoffKeywords).toEqual(['desconto', 'gerente']);
     expect(config.sales.maxEvidence).toBe(10);
     expect(config.sales.sourcePriority).toContain('catalog');

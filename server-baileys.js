@@ -1591,25 +1591,15 @@ async function recoverActiveSessions() {
       return;
     }
 
-    // Só recuperar sessões que estavam ativas (connected/open/connecting).
+    // So recuperar sessoes que estavam ativas (connected/open/connecting).
     // Sessões qr_pending ou disconnected sem conexão prévia NÃO são recuperadas
     // automaticamente — evita loop infinito de QR Code não escaneado.
-    const RECOVERY_MAX_AGE_MS = 30 * 60 * 1000; // 30 min: só reconecta se estava ativa recentemente
     const recoverableStatuses = new Set(['connected', 'open', 'connecting']);
-    const now = Date.now();
 
     const toRecover = sessions.filter(s => {
       if (!recoverableStatuses.has(s.status)) {
         console.log('[BAILEYS RECOVERY] skipping status=' + s.status + ' session=' + s.session_name);
         return false;
-      }
-      // Se updated_at existe, verificar se era recente o suficiente
-      if (s.updated_at) {
-        const age = now - new Date(s.updated_at).getTime();
-        if (age > RECOVERY_MAX_AGE_MS) {
-          console.log('[BAILEYS RECOVERY] skipping stale session=' + s.session_name + ' age=' + Math.round(age/60000) + 'min');
-          return false;
-        }
       }
       return true;
     });

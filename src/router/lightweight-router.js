@@ -93,14 +93,17 @@ function shouldKeepRuleFallback(fallbackInferred = {}, configuredResult = {}) {
     && Number(configuredResult.confidence || 0) <= Number(fallbackInferred.confidence || 0) + 0.04;
 }
 
-function buildStrictSemanticClarification(reason = 'semantic_classifier_required') {
+function buildStrictSemanticClarification(reason = 'semantic_classifier_required', semanticClassification = null) {
   return {
     intent: 'unknown',
     departmentId: 'support',
     confidence: 0.3,
     reason,
-    ambiguity: 'semantic_classifier_required',
-    nextBestDepartments: ['sales', 'billing', 'scheduling', 'support'],
+    missingInfo: Array.isArray(semanticClassification?.missingInfo) ? semanticClassification.missingInfo : [],
+    ambiguity: semanticClassification?.ambiguity || 'semantic_classifier_required',
+    nextBestDepartments: Array.isArray(semanticClassification?.nextBestDepartments) && semanticClassification.nextBestDepartments.length
+      ? semanticClassification.nextBestDepartments
+      : ['sales', 'billing', 'scheduling', 'support'],
     scores: []
   };
 }
@@ -120,12 +123,20 @@ async function route(normalizedMessage = {}) {
     try {
       semanticResult = await classifyIntentSemantically(normalizedMessage);
       const threshold = getSemanticThreshold(effectiveConfig);
-      if (!semanticResult.skipped && semanticResult.classification?.confidence >= threshold) {
+      const semanticClassification = semanticResult.classification || {};
+      const semanticIsActionable = !semanticResult.skipped
+        && semanticClassification.intent !== 'unknown'
+        && !semanticClassification.ambiguity
+        && semanticClassification.confidence >= threshold;
+      if (semanticIsActionable) {
         inferred = semanticResult.classification;
         routerMode = 'semantic';
       } else if (!semanticResult.skipped) {
         if (strictSemanticIntent) {
-          configuredResult = buildStrictSemanticClarification('classificador semantico retornou baixa confianca');
+          const reason = semanticClassification.intent === 'unknown'
+            ? 'classificador semantico nao encontrou uma intencao acionavel'
+            : 'classificador semantico retornou baixa confianca ou ambiguidade';
+          configuredResult = buildStrictSemanticClarification(reason, semanticClassification);
           inferred = configuredResult;
           routerMode = 'clarify_after_low_confidence_semantic';
         } else {

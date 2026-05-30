@@ -7,10 +7,11 @@ const DEFAULT_ROUTE_DIAGNOSTIC_SCENARIOS = [
   {
     id: 'product-interest',
     label: 'Interesse em produto sem palavra-chave exata',
-    message: 'Tem alguma opcao bonita para presente de menina de 2 anos?',
+    message: 'Minha sobrinha vai fazer 2 anos e queria algo bonito para ela usar na festa.',
     expectedIntents: ['product'],
     expectedDepartments: ['sales'],
     requiredSources: ['catalog'],
+    expectSemantic: true,
     expectHandoff: false,
     minConfidence: 0.55
   },
@@ -21,6 +22,7 @@ const DEFAULT_ROUTE_DIAGNOSTIC_SCENARIOS = [
     expectedIntents: ['policy', 'faq', 'support'],
     expectedDepartments: ['support'],
     requiredSources: ['rag'],
+    expectSemantic: true,
     expectHandoff: false,
     minConfidence: 0.55
   },
@@ -32,6 +34,7 @@ const DEFAULT_ROUTE_DIAGNOSTIC_SCENARIOS = [
     expectedDepartments: ['billing'],
     forbiddenDepartments: ['sales', 'support', 'scheduling'],
     requiredSources: ['api'],
+    expectSemantic: true,
     expectHandoff: false,
     minConfidence: 0.55
   },
@@ -44,6 +47,7 @@ const DEFAULT_ROUTE_DIAGNOSTIC_SCENARIOS = [
     forbiddenDepartments: ['billing', 'scheduling', 'handoff'],
     requiredSources: ['catalog'],
     forbiddenSources: ['api'],
+    expectSemantic: true,
     expectHandoff: false,
     minConfidence: 0.55
   },
@@ -55,8 +59,20 @@ const DEFAULT_ROUTE_DIAGNOSTIC_SCENARIOS = [
     expectedDepartments: ['scheduling'],
     forbiddenDepartments: ['sales', 'billing', 'handoff'],
     requiredSources: ['api'],
+    expectSemantic: true,
     expectHandoff: false,
     minConfidence: 0.55
+  },
+  {
+    id: 'ambiguous-without-keywords',
+    label: 'Mensagem vaga nao deve escolher agente no chute',
+    message: 'Oi, preciso resolver isso para hoje.',
+    expectedIntents: ['unknown'],
+    expectedDepartments: ['support'],
+    forbiddenDepartments: ['sales', 'billing', 'scheduling', 'handoff'],
+    expectClarification: true,
+    expectHandoff: false,
+    minConfidence: 0.25
   },
   {
     id: 'human-request',
@@ -175,6 +191,8 @@ function normalizeScenarioList(scenarios) {
       requiredSources: Array.isArray(item.requiredSources) ? item.requiredSources.map(String).filter(Boolean) : [],
       forbiddenSources: Array.isArray(item.forbiddenSources) ? item.forbiddenSources.map(String).filter(Boolean) : [],
       expectHandoff: typeof item.expectHandoff === 'boolean' ? item.expectHandoff : undefined,
+      expectSemantic: typeof item.expectSemantic === 'boolean' ? item.expectSemantic : undefined,
+      expectClarification: typeof item.expectClarification === 'boolean' ? item.expectClarification : undefined,
       minConfidence: Number.isFinite(Number(item.minConfidence)) ? Number(item.minConfidence) : undefined
     }))
     .filter(item => item.message);
@@ -235,6 +253,24 @@ function evaluateAIRouteScenario(diagnosis, scenario) {
       passed: diagnosis.safety?.willHandoff === scenario.expectHandoff,
       expected: scenario.expectHandoff,
       actual: diagnosis.safety?.willHandoff === true
+    });
+  }
+
+  if (typeof scenario.expectSemantic === 'boolean') {
+    checks.push({
+      id: 'semantic-router',
+      passed: diagnosis.safety?.willUseSemanticClassifier === scenario.expectSemantic,
+      expected: scenario.expectSemantic,
+      actual: diagnosis.safety?.willUseSemanticClassifier === true
+    });
+  }
+
+  if (typeof scenario.expectClarification === 'boolean') {
+    checks.push({
+      id: 'clarification',
+      passed: diagnosis.safety?.needsClarificationLikely === scenario.expectClarification,
+      expected: scenario.expectClarification,
+      actual: diagnosis.safety?.needsClarificationLikely === true
     });
   }
 

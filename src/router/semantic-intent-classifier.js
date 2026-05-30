@@ -82,12 +82,15 @@ function buildClassifierPrompt({ message = {}, config = {} } = {}) {
 
   return [
     'Classifique semanticamente a intencao da mensagem de WhatsApp.',
+    'Pense como um roteador de atendimento: primeiro identifique o resultado que o cliente quer, depois escolha o setor que tem permissao para resolver esse resultado.',
     'Nao dependa de palavra-chave exata; entenda sinonimos, contexto, gírias e frases incompletas.',
     'Escolha exatamente uma intent desta lista: faq, policy, product, order_status, scheduling, billing, support, human_request, complaint, unknown.',
     'Escolha tambem o departmentId do agente responsavel usando exatamente um dos IDs listados abaixo.',
     'O departmentId precisa ser coerente com as intencoes aceitas pelo agente. Se houver duvida entre setores, use baixa confianca e explique em ambiguity.',
     'Respeite "Nao acionar quando" e exemplos de exclusao de cada agente; eles tem prioridade sobre exemplos positivos parecidos.',
     'Use human_request somente quando o cliente pedir explicitamente uma pessoa/atendente/humano.',
+    'Se a mensagem estiver vaga demais para decidir com seguranca, use unknown, confidence abaixo do limite e preencha missingInfo com "intent".',
+    'Nunca escolha um agente so porque apareceu uma palavra parecida; se o objetivo do cliente nao estiver claro, peca esclarecimento.',
     'Se a mensagem estiver ambigua, use unknown ou faq com baixa confianca.',
     '',
     'Agentes disponiveis:',

@@ -132,7 +132,7 @@ function getProductSuggestions(evidence = [], messageText = '') {
   const suggestions = [];
 
   for (const item of evidence) {
-    if (!['catalog', 'rag'].includes(item.sourceType)) continue;
+    if (!['catalog', 'rag', 'product_api'].includes(item.sourceType)) continue;
     const products = Array.isArray(item.metadata?.products) ? item.metadata.products : [];
     for (const product of products) {
       const title = String(product.title || product.name || product.nome || '').trim();

@@ -86,7 +86,7 @@ describe('Agent answer composer', () => {
             metadata: { lookupAttempted: true, productsFound: false, productCards: [] }
           },
           {
-            sourceType: 'rag',
+            sourceType: 'product_api',
             content: [
               'Produto: Conjunto babadinho',
               'Cores: branco, vermelho',

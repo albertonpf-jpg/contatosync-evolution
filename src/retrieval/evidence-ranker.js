@@ -1,6 +1,7 @@
 const PRIORITY = {
   api: 100,
   catalog: 90,
+  product_api: 88,
   policy: 80,
   file: 70,
   rag: 65,
@@ -55,7 +56,7 @@ function isRelevantForRoute(item = {}, route = {}, question = '') {
   if (item.metadata?.error) return true;
   if (item.sourceType === 'conversation_memory') return false;
   if (isConversationTranscript(item.content)) return false;
-  if (route.intent === 'product') return item.sourceType === 'catalog' || item.sourceType === 'rag';
+  if (route.intent === 'product') return item.sourceType === 'catalog' || item.sourceType === 'rag' || item.sourceType === 'product_api';
   if (route.intent === 'order_status') return item.sourceType === 'api';
   if (['policy', 'faq', 'billing', 'scheduling', 'support'].includes(route.intent)) {
     if (/(catalog|api|product)/i.test(item.sourceType)) return false;

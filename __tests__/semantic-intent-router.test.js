@@ -12,6 +12,7 @@ describe('Semantic intent router', () => {
         _intentRuntimeContext: {
           classifyIntent: async () => ({
             intent: 'billing',
+            departmentId: 'billing',
             confidence: 0.87,
             reason: 'cliente fala sobre comprovante e liberacao de pagamento'
           })
@@ -21,6 +22,7 @@ describe('Semantic intent router', () => {
 
     expect(route.intent).toBe('billing');
     expect(route.routerMode).toBe('semantic');
+    expect(route.semanticDepartmentId).toBe('billing');
     expect(route.needsApi).toBe(true);
   });
 
@@ -102,5 +104,34 @@ describe('Semantic intent router', () => {
 
     expect(plan.executeSources).toEqual(['catalog']);
     expect(plan.skippedSources).toEqual(expect.arrayContaining(['api', 'rag']));
+  });
+
+  test('selects departments from saved agent intent configuration', async () => {
+    const config = {
+      department_agent_config: {
+        sales: { intents: [] },
+        support: { intents: ['product', 'faq', 'policy', 'support', 'unknown'] }
+      }
+    };
+    const route = await lightweightRouter.route({
+      text: 'Quero opcoes para festa infantil',
+      effectiveConfig: {
+        ...config,
+        semantic_intent_enabled: true,
+        _intentRuntimeContext: {
+          classifyIntent: async () => ({
+            intent: 'product',
+            departmentId: 'support',
+            confidence: 0.92,
+            reason: 'configuracao direciona produto para atendimento'
+          })
+        }
+      }
+    });
+    const agent = selectDepartmentAgent(route, config);
+
+    expect(route.intent).toBe('product');
+    expect(route.semanticDepartmentId).toBe('support');
+    expect(agent.id).toBe('support');
   });
 });

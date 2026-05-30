@@ -155,7 +155,24 @@ function getDepartmentRoutingMap(config = {}) {
 
 function selectDepartmentAgent(route = {}, config = {}) {
   const intent = route.intent || 'unknown';
-  const initial = Object.values(departmentAgents).find(agent => agent.intents.includes(intent)) || departmentAgents.support;
+  const departments = normalizeDepartmentConfig(config);
+  const configuredDepartmentId = route.semanticDepartmentId || route.inferredDepartmentId || '';
+  const configuredMatch = configuredDepartmentId && departmentAgents[configuredDepartmentId]
+    && departments[configuredDepartmentId]?.enabled !== false
+    && Array.isArray(departments[configuredDepartmentId]?.intents)
+    && departments[configuredDepartmentId].intents.includes(intent)
+    ? departmentAgents[configuredDepartmentId]
+    : null;
+  const configIntentMatch = Object.entries(departments).find(([id, department]) =>
+    departmentAgents[id]
+    && department.enabled !== false
+    && Array.isArray(department.intents)
+    && department.intents.includes(intent)
+  );
+  const initial = configuredMatch
+    || (configIntentMatch ? departmentAgents[configIntentMatch[0]] : null)
+    || Object.values(departmentAgents).find(agent => agent.intents.includes(intent))
+    || departmentAgents.support;
   const initialSettings = getDepartmentSettings(config, initial.id);
   const selected = initialSettings.enabled === false && initial.id !== 'support' ? departmentAgents.support : initial;
   const settings = selected.id === initial.id ? initialSettings : getDepartmentSettings(config, selected.id);

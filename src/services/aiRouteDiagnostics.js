@@ -87,6 +87,9 @@ async function buildAIRouteDiagnosis({ message = '', config = {}, client = {}, c
       reason: route.reason,
       routerMode: route.routerMode,
       fallbackIntent: route.fallbackIntent,
+      inferredDepartmentId: route.inferredDepartmentId,
+      semanticDepartmentId: route.semanticDepartmentId,
+      routingConflict: route.routingConflict === true,
       semantic: route.semantic,
       semanticSkippedReason: route.semanticSkippedReason,
       explicitHumanRequest: route.explicitHumanRequest === true,
@@ -120,7 +123,10 @@ async function buildAIRouteDiagnosis({ message = '', config = {}, client = {}, c
     safety: {
       willHandoff: route.explicitHumanRequest === true,
       willUseSemanticClassifier: route.routerMode === 'semantic',
-      needsClarificationLikely: route.intent === 'unknown' || Number(route.confidence || 0) < 0.55
+      needsClarificationLikely: route.intent === 'unknown'
+        || Number(route.confidence || 0) < 0.55
+        || route.routingConflict === true
+        || Boolean(route.semantic?.ambiguity)
     }
   };
 }

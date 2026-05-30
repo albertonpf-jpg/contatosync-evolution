@@ -108,7 +108,18 @@ interface AIRouteDiagnosis {
     reason: string;
     routerMode: string;
     fallbackIntent?: string;
-    semantic?: { intent: string; confidence: number; reason: string } | null;
+    inferredDepartmentId?: string;
+    semanticDepartmentId?: string;
+    routingConflict?: boolean;
+    semantic?: {
+      intent: string;
+      departmentId?: string;
+      confidence: number;
+      reason: string;
+      missingInfo?: string[];
+      ambiguity?: string;
+      nextBestDepartments?: string[];
+    } | null;
     semanticSkippedReason?: string;
     explicitHumanRequest?: boolean;
     requiredSources?: string[];
@@ -711,7 +722,11 @@ export default function AIConfigPage() {
                       <p className="text-xs font-medium uppercase text-slate-500">Agente</p>
                       <p className="mt-1 text-sm font-semibold text-slate-950">{routeDiagnosis.department.name}</p>
                       <p className="mt-1 text-xs text-slate-600">{routeDiagnosis.department.model || 'modelo global'} · temp {routeDiagnosis.department.temperature ?? 'global'}</p>
+                      {(routeDiagnosis.route.semanticDepartmentId || routeDiagnosis.route.inferredDepartmentId) && (
+                        <p className="mt-1 text-xs text-slate-600">Decisao: {routeDiagnosis.route.semanticDepartmentId || routeDiagnosis.route.inferredDepartmentId}</p>
+                      )}
                       {routeDiagnosis.safety.willHandoff && <p className="mt-2 text-xs font-medium text-amber-700">Encaminha para humano</p>}
+                      {routeDiagnosis.route.routingConflict && <p className="mt-2 text-xs font-medium text-amber-700">Conflito entre intencao e setor</p>}
                     </div>
                     <div className="rounded-lg border border-slate-200 bg-white p-3">
                       <p className="text-xs font-medium uppercase text-slate-500">Fontes usadas</p>
@@ -725,6 +740,9 @@ export default function AIConfigPage() {
                     <div className="rounded-lg border border-slate-200 bg-white p-3 md:col-span-3">
                       <p className="text-xs font-medium uppercase text-slate-500">Por que decidiu assim</p>
                       <p className="mt-1 text-sm text-slate-700">{routeDiagnosis.route.reason}</p>
+                      {routeDiagnosis.route.semantic?.ambiguity && (
+                        <p className="mt-2 text-xs text-amber-700">Ambiguidade: {routeDiagnosis.route.semantic.ambiguity}</p>
+                      )}
                       <div className="mt-3 grid gap-3 md:grid-cols-2">
                         <div>
                           <p className="text-xs font-medium uppercase text-slate-500">Vinculos deste agente</p>

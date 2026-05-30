@@ -24,11 +24,24 @@ function normalizeClassification(raw = {}, fallbackReason = '') {
   const confidence = Math.max(0, Math.min(1, Number(raw.confidence || 0)));
   return {
     intent,
+    departmentId: typeof raw.departmentId === 'string' ? raw.departmentId.trim() : '',
     confidence,
     reason: String(raw.reason || fallbackReason || '').slice(0, 500),
     missingInfo: Array.isArray(raw.missingInfo) ? raw.missingInfo.map(String).slice(0, 5) : [],
+    ambiguity: typeof raw.ambiguity === 'string' ? raw.ambiguity.slice(0, 300) : '',
+    nextBestDepartments: Array.isArray(raw.nextBestDepartments) ? raw.nextBestDepartments.map(String).slice(0, 3) : [],
     source: 'semantic'
   };
+}
+
+function resolveDepartmentIdForIntent(intent = 'unknown', config = {}) {
+  const departments = normalizeDepartmentConfig(config);
+  const enabledEntries = Object.entries(departments).filter(([, department]) => department.enabled !== false);
+  const match = enabledEntries.find(([, department]) => Array.isArray(department.intents) && department.intents.includes(intent));
+  if (match) return match[0];
+  if (intent === 'human_request' && departments.handoff?.enabled !== false) return 'handoff';
+  if (departments.support?.enabled !== false) return 'support';
+  return enabledEntries[0]?.[0] || 'support';
 }
 
 function buildClassifierPrompt({ message = {}, config = {} } = {}) {
@@ -53,6 +66,8 @@ function buildClassifierPrompt({ message = {}, config = {} } = {}) {
     'Classifique semanticamente a intencao da mensagem de WhatsApp.',
     'Nao dependa de palavra-chave exata; entenda sinonimos, contexto, gírias e frases incompletas.',
     'Escolha exatamente uma intent desta lista: faq, policy, product, order_status, scheduling, billing, support, human_request, complaint, unknown.',
+    'Escolha tambem o departmentId do agente responsavel usando exatamente um dos IDs listados abaixo.',
+    'O departmentId precisa ser coerente com as intencoes aceitas pelo agente. Se houver duvida entre setores, use baixa confianca e explique em ambiguity.',
     'Use human_request somente quando o cliente pedir explicitamente uma pessoa/atendente/humano.',
     'Se a mensagem estiver ambigua, use unknown ou faq com baixa confianca.',
     '',
@@ -63,7 +78,7 @@ function buildClassifierPrompt({ message = {}, config = {} } = {}) {
     `Mensagem atual: ${message.text || message.content || ''}`,
     '',
     'Responda somente JSON neste formato:',
-    '{"intent":"product","confidence":0.0,"reason":"motivo curto","missingInfo":[]}'
+    '{"intent":"product","departmentId":"sales","confidence":0.0,"reason":"motivo curto","missingInfo":[],"ambiguity":"","nextBestDepartments":[]}'
   ].join('\n');
 }
 
@@ -104,7 +119,14 @@ async function classifyIntentSemantically(message = {}) {
   const runtime = config._intentRuntimeContext || {};
   if (typeof runtime.classifyIntent === 'function') {
     const result = await runtime.classifyIntent({ message, config });
-    return { skipped: false, classification: normalizeClassification(result, 'classificador semantico customizado') };
+    const classification = normalizeClassification(result, 'classificador semantico customizado');
+    return {
+      skipped: false,
+      classification: {
+        ...classification,
+        departmentId: classification.departmentId || resolveDepartmentIdForIntent(classification.intent, config)
+      }
+    };
   }
 
   const apiKey = runtime.openaiApiKey || config.intent_classifier_api_key || process.env.OPENAI_API_KEY;
@@ -119,7 +141,14 @@ async function classifyIntentSemantically(message = {}) {
     timeoutMs: Number(config.intent_classifier_timeout_ms || 8000)
   });
   if (!raw) return { skipped: true, reason: 'invalid_semantic_classifier_json' };
-  return { skipped: false, classification: normalizeClassification(raw, 'classificacao semantica por LLM') };
+  const classification = normalizeClassification(raw, 'classificacao semantica por LLM');
+  return {
+    skipped: false,
+    classification: {
+      ...classification,
+      departmentId: classification.departmentId || resolveDepartmentIdForIntent(classification.intent, config)
+    }
+  };
 }
 
 function getSemanticThreshold(config = {}) {
@@ -132,5 +161,6 @@ module.exports = {
   classifyIntentSemantically,
   getSemanticThreshold,
   buildClassifierPrompt,
-  normalizeClassification
+  normalizeClassification,
+  resolveDepartmentIdForIntent
 };

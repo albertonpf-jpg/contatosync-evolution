@@ -1,5 +1,5 @@
 const { ROUTER_INTENTS, SOURCE_TYPES } = require('../types/agent.types');
-const { classifyIntentSemantically, getSemanticThreshold } = require('./semantic-intent-classifier');
+const { classifyIntentSemantically, getSemanticThreshold, resolveDepartmentIdForIntent } = require('./semantic-intent-classifier');
 
 const HUMAN_REQUEST_PATTERNS = [
   /\b(quero|preciso|pode|poderia|me)\s+(falar|fala|passa|passar|transferir|transfere|encaminhar|encaminha)\s+(com|para|pra)?\s*(um|uma)?\s*(atendente|pessoa|humano|suporte humano)\b/i,
@@ -109,6 +109,13 @@ async function route(normalizedMessage = {}) {
 
   const intent = ROUTER_INTENTS.includes(inferred.intent) ? inferred.intent : 'unknown';
   const explicitHumanRequest = intent === 'human_request';
+  const semanticDepartmentId = semanticResult && !semanticResult.skipped
+    ? (semanticResult.classification.departmentId || resolveDepartmentIdForIntent(intent, normalizedMessage.effectiveConfig || {}))
+    : '';
+  const inferredDepartmentId = semanticDepartmentId || resolveDepartmentIdForIntent(intent, normalizedMessage.effectiveConfig || {});
+  const routingConflict = semanticResult && !semanticResult.skipped && semanticResult.classification.departmentId
+    ? semanticResult.classification.departmentId !== resolveDepartmentIdForIntent(intent, normalizedMessage.effectiveConfig || {})
+    : false;
   const flags = buildSourceFlags(intent, explicitHumanRequest);
 
   const requiredSources = SOURCE_TYPES
@@ -149,11 +156,18 @@ async function route(normalizedMessage = {}) {
     routerMode,
     semantic: semanticResult && !semanticResult.skipped ? {
       intent: semanticResult.classification.intent,
+      departmentId: semanticResult.classification.departmentId || '',
       confidence: semanticResult.classification.confidence,
-      reason: semanticResult.classification.reason
+      reason: semanticResult.classification.reason,
+      missingInfo: semanticResult.classification.missingInfo || [],
+      ambiguity: semanticResult.classification.ambiguity || '',
+      nextBestDepartments: semanticResult.classification.nextBestDepartments || []
     } : null,
     semanticSkippedReason: semanticResult?.skipped ? semanticResult.reason : '',
-    fallbackIntent: fallbackInferred.intent
+    fallbackIntent: fallbackInferred.intent,
+    semanticDepartmentId,
+    inferredDepartmentId,
+    routingConflict
   };
 }
 

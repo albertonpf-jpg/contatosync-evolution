@@ -10,14 +10,15 @@ function logger() {
   return { lines: [], log(line) { this.lines.push(String(line)); } };
 }
 
-async function run(text, adapters = {}, history = []) {
+async function run(text, adapters = {}, history = [], config = {}) {
   const testLogger = logger();
   const result = await orchestrator.handleIncomingWhatsAppMessage({
     clientId: 'client-1',
     conversation: { id: 'conv-1', phone: '5511999999999' },
     contact: { name: 'Cliente', phone: '5511999999999' },
     text,
-    conversationHistory: history
+    conversationHistory: history,
+    config
   }, { adapters, logger: testLogger });
   return { result, logs: testLogger.lines };
 }
@@ -232,6 +233,30 @@ describe('Retrieval-Grounded WhatsApp Agent', () => {
     const { result } = await run('Tem disponivel?');
     expect(result.action).toBe('clarify');
     expect(result.response).toMatch(/qual produto/i);
+  });
+
+  test('ambiguidade entre agentes bloqueia resposta mesmo com evidencia', async () => {
+    const { result } = await run('preciso resolver uma situacao', {
+      rag: async () => [{ sourceType: 'rag', sourceName: 'FAQ', content: 'A retirada e feita somente com agendamento.', score: 0.9 }],
+      site: async () => [],
+      file: async () => []
+    }, [], {
+      semantic_intent_enabled: true,
+      department_agent_config: {
+        sales: {
+          semanticDescription: 'resolver situacao do cliente',
+          activationExamples: ['preciso resolver uma situacao']
+        },
+        support: {
+          semanticDescription: 'resolver situacao do cliente',
+          activationExamples: ['preciso resolver uma situacao']
+        }
+      }
+    });
+
+    expect(result.action).toBe('clarify');
+    expect(result.response).toMatch(/produto|pedido|pagamento|agendamento|duvida geral/i);
+    expect(result.response).not.toMatch(/retirada.*agendamento/i);
   });
 
   test('falha de API nao inventa e nao chama humano', async () => {

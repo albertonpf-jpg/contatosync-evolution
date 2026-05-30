@@ -1,4 +1,5 @@
 function questionForMissingInfo(missingInfo = 'details', route = {}) {
+  if (missingInfo === 'route_ambiguity') return 'Voce quer falar sobre produto, pedido, pagamento, agendamento ou uma duvida geral?';
   if (missingInfo === 'order_number') return 'Me envia o numero do pedido para eu verificar pra voce?';
   if (missingInfo === 'product') return 'Para eu te responder certinho, voce esta falando de qual produto?';
   if (missingInfo === 'purchase_mode') return 'Voce quer saber sobre compra para uso proprio ou compra em quantidade?';
@@ -27,6 +28,20 @@ async function validate({ message = {}, route = {}, evidence = {}, draftAnswer =
       clarificationQuestion: questionForMissingInfo(draftAnswer.missingInfo, route),
       discoveryQuestion: '',
       reason: 'needsHuman bloqueado porque nao houve pedido explicito de humano'
+    };
+  }
+
+  const routeAmbiguity = route.routingConflict === true
+    || String(route.routerMode || '').startsWith('clarify_');
+  if (routeAmbiguity) {
+    const missingInfo = draftAnswer.missingInfo || 'route_ambiguity';
+    return {
+      action: 'clarify',
+      confidence: 'low',
+      finalAnswer: '',
+      clarificationQuestion: questionForMissingInfo(missingInfo, route),
+      discoveryQuestion: '',
+      reason: 'roteamento ambiguo entre agentes; pedir esclarecimento antes de responder'
     };
   }
 

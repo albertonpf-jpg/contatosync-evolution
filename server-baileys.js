@@ -1591,11 +1591,11 @@ async function recoverActiveSessions() {
       return;
     }
 
-    // Só recuperar sessões que estavam ativas (connected/connecting).
+    // Só recuperar sessões que estavam ativas (connected/open/connecting).
     // Sessões qr_pending ou disconnected sem conexão prévia NÃO são recuperadas
     // automaticamente — evita loop infinito de QR Code não escaneado.
     const RECOVERY_MAX_AGE_MS = 30 * 60 * 1000; // 30 min: só reconecta se estava ativa recentemente
-    const recoverableStatuses = new Set(['connected', 'connecting']);
+    const recoverableStatuses = new Set(['connected', 'open', 'connecting']);
     const now = Date.now();
 
     const toRecover = sessions.filter(s => {

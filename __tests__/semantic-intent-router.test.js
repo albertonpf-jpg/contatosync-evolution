@@ -48,6 +48,29 @@ describe('Semantic intent router', () => {
     expect(route.configuredDepartmentId).toBe('sales');
   });
 
+  test('strict semantic mode asks clarification when classifier confidence is low', async () => {
+    const route = await lightweightRouter.route({
+      text: 'Tem vestido azul tamanho 4?',
+      effectiveConfig: {
+        semantic_intent_enabled: true,
+        require_semantic_intent_classifier: true,
+        intent_confidence_threshold: 0.8,
+        _intentRuntimeContext: {
+          classifyIntent: async () => ({
+            intent: 'faq',
+            confidence: 0.41,
+            reason: 'baixa confianca'
+          })
+        }
+      }
+    });
+
+    expect(route.intent).toBe('unknown');
+    expect(route.routerMode).toBe('clarify_after_low_confidence_semantic');
+    expect(route.configured.ambiguity).toBe('semantic_classifier_required');
+    expect(route.configured.reason).toMatch(/baixa confianca/i);
+  });
+
   test('uses configured agent examples when semantic classifier is unavailable', async () => {
     const route = await lightweightRouter.route({
       text: 'Estou procurando algo para presente de menina de 2 anos',
@@ -60,6 +83,23 @@ describe('Semantic intent router', () => {
     expect(route.routerMode).toBe('configured_after_semantic_skipped');
     expect(route.configuredDepartmentId).toBe('sales');
     expect(route.needsCatalog).toBe(true);
+  });
+
+  test('strict semantic mode does not route by configured token fallback when classifier is unavailable', async () => {
+    const route = await lightweightRouter.route({
+      text: 'Estou procurando algo para presente de menina de 2 anos',
+      effectiveConfig: {
+        semantic_intent_enabled: true,
+        require_semantic_intent_classifier: true
+      }
+    });
+
+    expect(route.intent).toBe('unknown');
+    expect(route.routerMode).toBe('clarify_after_semantic_skipped');
+    expect(route.configuredDepartmentId).toBe('support');
+    expect(route.configured.ambiguity).toBe('semantic_classifier_required');
+    expect(route.configured.reason).toMatch(/indisponivel/i);
+    expect(route.needsCatalog).toBe(false);
   });
 
   test('asks for clarification when configured fallback cannot separate departments', async () => {

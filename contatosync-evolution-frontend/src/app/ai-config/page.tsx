@@ -1358,14 +1358,14 @@ export default function AIConfigPage() {
 
             <div className="grid gap-4 md:grid-cols-2">
               <label className="text-sm font-medium text-gray-700">
-                Palavras de gatilho
+                Controles globais legados de ativacao
                 <input value={triggerText} onChange={event => setTriggerText(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
-                <FieldHelp>Palavras que ajudam a IA a identificar quando deve responder. Separe por virgulas. Exemplo: preco, entrega, produto, horario, pedido. Use termos que seus clientes costumam mandar no WhatsApp.</FieldHelp>
+                <FieldHelp>Lista opcional herdada para ligar ou desligar a resposta automatica em casos simples. Nao define setor, intencao nem agente. A escolha inteligente do agente vem do classificador semantico e da configuracao detalhada de cada agente acima.</FieldHelp>
               </label>
               <label className="text-sm font-medium text-gray-700">
-                Palavras bloqueadas
+                Controles globais legados de bloqueio
                 <input value={blacklistText} onChange={event => setBlacklistText(event.target.value)} className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2" />
-                <FieldHelp>Palavras que impedem resposta automatica e indicam que deve chamar humano. Separe por virgulas. Exemplo: urgente, reclamacao, cancelamento, juridico, emergencia.</FieldHelp>
+                <FieldHelp>Lista opcional herdada para impedir resposta automatica antes do roteamento. Nao encaminha para um setor por palavra-chave. Para atendimento por intencao, configure o classificador semantico, prompts, fontes e regras de cada agente.</FieldHelp>
               </label>
             </div>
 

@@ -93,6 +93,18 @@ function shouldKeepRuleFallback(fallbackInferred = {}, configuredResult = {}) {
     && Number(configuredResult.confidence || 0) <= Number(fallbackInferred.confidence || 0) + 0.04;
 }
 
+function buildStrictSemanticClarification(reason = 'semantic_classifier_required') {
+  return {
+    intent: 'unknown',
+    departmentId: 'support',
+    confidence: 0.3,
+    reason,
+    ambiguity: 'semantic_classifier_required',
+    nextBestDepartments: ['sales', 'billing', 'scheduling', 'support'],
+    scores: []
+  };
+}
+
 async function route(normalizedMessage = {}) {
   const text = normalizedMessage.text || normalizedMessage.content || '';
   const effectiveConfig = normalizedMessage.effectiveConfig || {};
@@ -101,6 +113,8 @@ async function route(normalizedMessage = {}) {
   let semanticResult = null;
   let configuredResult = null;
   let routerMode = 'rules';
+  const strictSemanticIntent = effectiveConfig.semantic_intent_enabled !== false
+    && effectiveConfig.require_semantic_intent_classifier === true;
 
   if (fallbackInferred.intent !== 'human_request') {
     try {
@@ -110,33 +124,51 @@ async function route(normalizedMessage = {}) {
         inferred = semanticResult.classification;
         routerMode = 'semantic';
       } else if (!semanticResult.skipped) {
-        configuredResult = classifyByConfiguredAgents({ text, config: effectiveConfig, fallbackIntent: fallbackInferred.intent });
-        if (shouldKeepRuleFallback(fallbackInferred, configuredResult)) {
-          inferred = fallbackInferred;
-          routerMode = 'rules_after_low_confidence_semantic';
-        } else {
+        if (strictSemanticIntent) {
+          configuredResult = buildStrictSemanticClarification('classificador semantico retornou baixa confianca');
           inferred = configuredResult;
-          routerMode = configuredResult.ambiguity ? 'clarify_after_low_confidence_semantic' : 'configured_after_low_confidence_semantic';
+          routerMode = 'clarify_after_low_confidence_semantic';
+        } else {
+          configuredResult = classifyByConfiguredAgents({ text, config: effectiveConfig, fallbackIntent: fallbackInferred.intent });
+          if (shouldKeepRuleFallback(fallbackInferred, configuredResult)) {
+            inferred = fallbackInferred;
+            routerMode = 'rules_after_low_confidence_semantic';
+          } else {
+            inferred = configuredResult;
+            routerMode = configuredResult.ambiguity ? 'clarify_after_low_confidence_semantic' : 'configured_after_low_confidence_semantic';
+          }
         }
       } else {
-        configuredResult = classifyByConfiguredAgents({ text, config: effectiveConfig, fallbackIntent: fallbackInferred.intent });
-        if (shouldKeepRuleFallback(fallbackInferred, configuredResult)) {
-          inferred = fallbackInferred;
-          routerMode = 'rules_after_semantic_skipped';
-        } else {
+        if (strictSemanticIntent) {
+          configuredResult = buildStrictSemanticClarification(`classificador semantico indisponivel: ${semanticResult.reason || 'sem motivo informado'}`);
           inferred = configuredResult;
-          routerMode = configuredResult.ambiguity ? 'clarify_after_semantic_skipped' : 'configured_after_semantic_skipped';
+          routerMode = 'clarify_after_semantic_skipped';
+        } else {
+          configuredResult = classifyByConfiguredAgents({ text, config: effectiveConfig, fallbackIntent: fallbackInferred.intent });
+          if (shouldKeepRuleFallback(fallbackInferred, configuredResult)) {
+            inferred = fallbackInferred;
+            routerMode = 'rules_after_semantic_skipped';
+          } else {
+            inferred = configuredResult;
+            routerMode = configuredResult.ambiguity ? 'clarify_after_semantic_skipped' : 'configured_after_semantic_skipped';
+          }
         }
       }
     } catch (error) {
       semanticResult = { skipped: true, reason: String(error?.message || error) };
-      configuredResult = classifyByConfiguredAgents({ text, config: effectiveConfig, fallbackIntent: fallbackInferred.intent });
-      if (shouldKeepRuleFallback(fallbackInferred, configuredResult)) {
-        inferred = fallbackInferred;
-        routerMode = 'rules_after_semantic_error';
-      } else {
+      if (strictSemanticIntent) {
+        configuredResult = buildStrictSemanticClarification(`erro no classificador semantico: ${semanticResult.reason}`);
         inferred = configuredResult;
-        routerMode = configuredResult.ambiguity ? 'clarify_after_semantic_error' : 'configured_after_semantic_error';
+        routerMode = 'clarify_after_semantic_error';
+      } else {
+        configuredResult = classifyByConfiguredAgents({ text, config: effectiveConfig, fallbackIntent: fallbackInferred.intent });
+        if (shouldKeepRuleFallback(fallbackInferred, configuredResult)) {
+          inferred = fallbackInferred;
+          routerMode = 'rules_after_semantic_error';
+        } else {
+          inferred = configuredResult;
+          routerMode = configuredResult.ambiguity ? 'clarify_after_semantic_error' : 'configured_after_semantic_error';
+        }
       }
     }
   }

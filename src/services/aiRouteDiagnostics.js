@@ -1,6 +1,7 @@
 const lightweightRouter = require('../router/lightweight-router');
 const { selectDepartmentAgent } = require('../agent/departments');
 const { buildAISourceReadiness, buildSourceAvailability } = require('../agent/source-readiness');
+const { buildSemanticIntentReadiness } = require('../router/semantic-intent-classifier');
 
 const DEFAULT_ROUTE_DIAGNOSTIC_SCENARIOS = [
   {
@@ -81,6 +82,7 @@ async function buildAIRouteDiagnosis({ message = '', config = {}, client = {}, c
   });
 
   const sourceReadiness = buildAISourceReadiness(effectiveConfig);
+  const semanticReadiness = buildSemanticIntentReadiness(effectiveConfig, client);
 
   return {
     message: normalizedMessage.text,
@@ -130,9 +132,10 @@ async function buildAIRouteDiagnosis({ message = '', config = {}, client = {}, c
       availability: sourceReadiness.availability,
       issues: (sourceReadiness.departments[departmentAgent.id]?.issues || [])
     },
+    semanticReadiness,
     safety: {
       willHandoff: route.explicitHumanRequest === true,
-      willUseSemanticClassifier: route.routerMode === 'semantic',
+      willUseSemanticClassifier: route.routerMode === 'semantic' && semanticReadiness.ready === true,
       needsClarificationLikely: route.intent === 'unknown'
         || Number(route.confidence || 0) < 0.55
         || route.routingConflict === true

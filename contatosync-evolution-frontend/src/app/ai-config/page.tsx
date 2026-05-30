@@ -94,6 +94,24 @@ interface SourceReadiness {
   };
 }
 
+interface SemanticReadiness {
+  enabled: boolean;
+  ready: boolean;
+  provider: string;
+  model: string;
+  mode: string;
+  detail: string;
+  issues: Array<{
+    severity: 'error' | 'warning';
+    code: string;
+    message: string;
+  }>;
+  summary: {
+    errors: number;
+    warnings: number;
+  };
+}
+
 interface AIOperations {
   engine: string;
   enabled: boolean;
@@ -108,6 +126,7 @@ interface AIOperations {
     intents: string[];
     triggerSummary: string;
   }>;
+  semanticReadiness?: SemanticReadiness;
   sourceReadiness?: SourceReadiness;
   queueSettings: QueueSettings;
   aiQueue?: {
@@ -192,6 +211,7 @@ interface AIRouteDiagnosis {
     availability?: SourceReadiness['availability'];
     issues: SourceReadinessIssue[];
   };
+  semanticReadiness?: SemanticReadiness;
   safety: {
     willHandoff: boolean;
     willUseSemanticClassifier: boolean;
@@ -364,6 +384,8 @@ export default function AIConfigPage() {
   const runningJobs = operations?.aiQueue?.processingQueues?.reduce((sum, queue) => sum + (queue.running || 0), 0) ?? 0;
   const sourceReadinessIssues = operations?.sourceReadiness?.issues || [];
   const sourceReadinessSummary = operations?.sourceReadiness?.summary || { errors: 0, warnings: 0 };
+  const semanticReadiness = operations?.semanticReadiness;
+  const semanticReadinessIssueCount = (semanticReadiness?.summary?.errors || 0) + (semanticReadiness?.summary?.warnings || 0);
 
   useEffect(() => {
     void loadPage();
@@ -664,11 +686,15 @@ export default function AIConfigPage() {
               )}
             </div>
 
-            <div className="rounded-lg border border-emerald-100 bg-emerald-50 p-4">
+            <div className={`rounded-lg border p-4 ${semanticReadiness && !semanticReadiness.ready ? 'border-amber-200 bg-amber-50' : 'border-emerald-100 bg-emerald-50'}`}>
               <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <h3 className="text-sm font-semibold text-emerald-950">Classificador semantico de intencao</h3>
-                  <p className="mt-1 text-sm text-emerald-800">Quando ativo, a IA entende a intencao por contexto e sinonimos antes de cair no fallback por regras.</p>
+                  <h3 className={`text-sm font-semibold ${semanticReadiness && !semanticReadiness.ready ? 'text-amber-950' : 'text-emerald-950'}`}>Classificador semantico de intencao</h3>
+                  <p className={`mt-1 text-sm ${semanticReadiness && !semanticReadiness.ready ? 'text-amber-800' : 'text-emerald-800'}`}>
+                    {semanticReadiness
+                      ? `${semanticReadiness.ready ? 'Operacional' : 'Nao operacional'} via ${semanticReadiness.provider} / ${semanticReadiness.model}.`
+                      : 'Quando ativo, a IA entende a intencao por contexto e sinonimos antes de cair no fallback por regras.'}
+                  </p>
                 </div>
                 <label className="flex items-center gap-2 text-sm font-medium text-emerald-900">
                   <input
@@ -680,6 +706,16 @@ export default function AIConfigPage() {
                   Ativo
                 </label>
               </div>
+              {semanticReadinessIssueCount > 0 && (
+                <div className="mt-3 grid gap-2">
+                  {(semanticReadiness?.issues || []).map(issue => (
+                    <div key={issue.code} className="rounded-lg border border-white/70 bg-white px-3 py-2 text-xs text-gray-700">
+                      <span className={`mr-2 font-semibold ${issue.severity === 'error' ? 'text-red-700' : 'text-amber-700'}`}>{issue.severity === 'error' ? 'Erro' : 'Alerta'}</span>
+                      {issue.message}
+                    </div>
+                  ))}
+                </div>
+              )}
               <div className="mt-3 grid gap-3 md:grid-cols-[1fr_160px]">
                 <label className="text-sm font-medium text-emerald-950">
                   Modelo do classificador
@@ -790,6 +826,9 @@ export default function AIConfigPage() {
                       <p className="mt-1 text-xs text-slate-600">{Math.round((routeDiagnosis.route.confidence || 0) * 100)}% · {routeDiagnosis.route.routerMode}</p>
                       {routeDiagnosis.route.semantic && (
                         <p className="mt-2 text-xs text-emerald-700">Semantico: {routeDiagnosis.route.semantic.intent} ({Math.round(routeDiagnosis.route.semantic.confidence * 100)}%)</p>
+                      )}
+                      {!routeDiagnosis.semanticReadiness?.ready && (
+                        <p className="mt-2 text-xs text-amber-700">Semantico nao operacional: {routeDiagnosis.route.semanticSkippedReason || routeDiagnosis.semanticReadiness?.mode}</p>
                       )}
                       {routeDiagnosis.route.configured && (
                         <p className="mt-2 text-xs text-blue-700">Config: {routeDiagnosis.route.configured.intent} ({Math.round(routeDiagnosis.route.configured.confidence * 100)}%)</p>

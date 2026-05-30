@@ -15,6 +15,7 @@ const { getAIAutoReplyQueueSnapshot } = require('../services/aiAutoReplyQueueSta
 const { buildAIRouteDiagnosis, buildAISourceReadiness, runAIRouteDiagnosticsSuite } = require('../services/aiRouteDiagnostics');
 const { DEFAULT_DEPARTMENTS, normalizeDepartmentConfig } = require('../agent/department-config');
 const { getDepartmentRoutingMap } = require('../agent/departments');
+const { buildSemanticIntentReadiness } = require('../router/semantic-intent-classifier');
 
 const router = express.Router();
 const upload = multer({
@@ -698,7 +699,7 @@ router.get('/stats',
 router.get('/operations',
   asyncHandler(async (req, res) => {
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const [{ data: config }, { data: integrations }, { data: recentLogs }, { count: successCount }, { count: errorCount }] = await Promise.all([
+    const [{ data: config }, { data: integrations }, { data: recentLogs }, { count: successCount }, { count: errorCount }, { data: clientProfile }] = await Promise.all([
       executeWithRLS(req.user.id, (client) =>
         client
           .from('evolution_ai_config')
@@ -736,6 +737,13 @@ router.get('/operations',
           .eq('client_id', req.user.id)
           .eq('status', 'error')
           .gte('created_at', since)
+      ),
+      executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_clients')
+          .select('openai_api_key, claude_api_key, ai_model')
+          .eq('id', req.user.id)
+          .single()
       )
     ]);
 
@@ -770,6 +778,7 @@ router.get('/operations',
       queueSettings: config?.queue_settings || {},
       departments: normalizeDepartmentConfig(effectiveConfig),
       departmentRouting: getDepartmentRoutingMap(effectiveConfig),
+      semanticReadiness: buildSemanticIntentReadiness(effectiveConfig, clientProfile || {}),
       sourceReadiness: buildAISourceReadiness(effectiveConfig),
       last24h: {
         success: successCount || 0,

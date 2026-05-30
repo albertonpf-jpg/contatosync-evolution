@@ -1,6 +1,7 @@
 const lightweightRouter = require('../src/router/lightweight-router');
 const { normalizeDepartmentConfig } = require('../src/agent/department-config');
 const { selectDepartmentAgent } = require('../src/agent/departments');
+const { buildSemanticIntentReadiness, classifyIntentSemantically } = require('../src/router/semantic-intent-classifier');
 
 describe('Semantic intent router', () => {
   test('uses semantic classifier before keyword fallback when confidence is high', async () => {
@@ -171,5 +172,53 @@ describe('Semantic intent router', () => {
     expect(route.intent).toBe('product');
     expect(route.semanticDepartmentId).toBe('support');
     expect(agent.id).toBe('support');
+  });
+
+  test('marks Claude classifier as ready when Claude key is configured', () => {
+    const readiness = buildSemanticIntentReadiness(
+      { semantic_intent_enabled: true, intent_classifier_model: 'claude-3-haiku' },
+      { claude_api_key: 'test-claude-key' }
+    );
+
+    expect(readiness.ready).toBe(true);
+    expect(readiness.provider).toBe('claude');
+    expect(readiness.mode).toBe('semantic_llm');
+  });
+
+  test('uses Claude semantic classifier when Claude model is selected', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        content: [{
+          text: JSON.stringify({
+            intent: 'billing',
+            departmentId: 'billing',
+            confidence: 0.91,
+            reason: 'cliente fala de pagamento e pedido'
+          })
+        }]
+      })
+    }));
+
+    try {
+      const result = await classifyIntentSemantically({
+        text: 'O comprovante ja foi enviado, liberou?',
+        effectiveConfig: {
+          semantic_intent_enabled: true,
+          intent_classifier_model: 'claude-3-haiku',
+          _intentRuntimeContext: { claudeApiKey: 'test-claude-key' }
+        }
+      });
+
+      expect(result.skipped).toBe(false);
+      expect(result.classification).toMatchObject({
+        intent: 'billing',
+        departmentId: 'billing'
+      });
+      expect(global.fetch).toHaveBeenCalledWith('https://api.anthropic.com/v1/messages', expect.any(Object));
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 });

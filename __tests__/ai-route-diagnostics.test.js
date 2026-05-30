@@ -227,4 +227,47 @@ describe('AI route diagnostics', () => {
       source: 'api'
     });
   });
+
+  test('reports semantic classifier readiness when API key is missing', async () => {
+    const diagnosis = await buildAIRouteDiagnosis({
+      message: 'Quero algo bonito para presente',
+      config: {
+        semantic_intent_enabled: true,
+        intent_classifier_model: 'gpt-4o-mini'
+      },
+      client: {}
+    });
+
+    expect(diagnosis.semanticReadiness.ready).toBe(false);
+    expect(diagnosis.semanticReadiness.mode).toBe('local_fallback_only');
+    expect(diagnosis.semanticReadiness.issues[0]).toMatchObject({
+      severity: 'error',
+      code: 'semantic_classifier_missing_openai_key'
+    });
+    expect(diagnosis.safety.willUseSemanticClassifier).toBe(false);
+  });
+
+  test('accepts Claude semantic classifier readiness when Claude key is configured', async () => {
+    const diagnosis = await buildAIRouteDiagnosis({
+      message: 'Ja enviei o comprovante, meu pedido liberou?',
+      config: {
+        semantic_intent_enabled: true,
+        intent_classifier_model: 'claude-3-haiku',
+        _intentRuntimeContext: {
+          classifyIntent: async () => ({
+            intent: 'billing',
+            departmentId: 'billing',
+            confidence: 0.9,
+            reason: 'pagamento e liberacao'
+          })
+        }
+      },
+      client: { claude_api_key: 'test-claude-key' }
+    });
+
+    expect(diagnosis.semanticReadiness.ready).toBe(true);
+    expect(diagnosis.semanticReadiness.provider).toBe('custom');
+    expect(diagnosis.route.routerMode).toBe('semantic');
+    expect(diagnosis.safety.willUseSemanticClassifier).toBe(true);
+  });
 });

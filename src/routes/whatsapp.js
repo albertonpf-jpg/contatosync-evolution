@@ -6,6 +6,7 @@ const { success, error, notFound, asyncHandler, handleSupabaseError } = require(
 const { formatActivity } = require('../utils/helpers');
 const { buildConnectionIsolation } = require('../services/connectionIsolationService');
 const { waitForSendSlot } = require('../services/whatsappSendPolicy');
+const { resolveConnectedWhatsAppSession, buildNoConnectedSessionError } = require('../services/whatsappConnectedSession');
 
 const router = express.Router();
 
@@ -361,6 +362,12 @@ router.post('/send-message', asyncHandler(async (req, res) => {
   }
 
   try {
+    const activeSession = resolveConnectedWhatsAppSession([session], baileysService);
+    if (!activeSession) {
+      const sendError = buildNoConnectedSessionError([session]);
+      return error(res, sendError.message, sendError.statusCode, { code: sendError.code });
+    }
+
     await waitForSendSlot({ clientId: req.user.id, sessionName: evolutionSessionName, source: 'whatsapp_send_message' });
     const sendResult = await baileysService.sendTextMessage(evolutionSessionName, phone, message);
     const now = new Date().toISOString();

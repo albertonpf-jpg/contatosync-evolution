@@ -9,6 +9,7 @@ const { emitConversationUpdate, emitNewMessage } = require('../services/socketSe
 const { createStoredFile, sanitizeFileName } = require('../utils/mediaStore');
 const { parseCarouselCommand } = require('../utils/carouselCommand');
 const { waitForSendSlot } = require('../services/whatsappSendPolicy');
+const { resolveConnectedWhatsAppSession, buildNoConnectedSessionError } = require('../services/whatsappConnectedSession');
 
 const router = express.Router();
 const upload = multer({
@@ -339,16 +340,12 @@ router.post('/send',
       return error(res, 'Nenhuma sessão WhatsApp configurada. Conecte o WhatsApp primeiro.', 404);
     }
 
-    // Preferir sessão com estado open/connected
-    let activeSessionName = null;
-    for (const dbSess of dbSessions) {
-      const status = baileysService.getSessionStatus(dbSess.session_name);
-      if (status.state === 'open' || status.status === 'connected') {
-        activeSessionName = dbSess.session_name;
-        break;
-      }
+    const activeSession = resolveConnectedWhatsAppSession(dbSessions, baileysService);
+    if (!activeSession) {
+      const sendError = buildNoConnectedSessionError(dbSessions);
+      return error(res, sendError.message, sendError.statusCode, { code: sendError.code });
     }
-    if (!activeSessionName) activeSessionName = dbSessions[0].session_name;
+    const activeSessionName = activeSession.sessionName;
 
     // 3. JID da conversa (preserva @lid para contatos LID)
     const jidToSend = resolveJidForSend(conversation, !!req.file);

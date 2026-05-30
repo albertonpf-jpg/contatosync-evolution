@@ -339,6 +339,10 @@ function textToList(value: string) {
   return value.split(/[\n,]+/).map(item => item.trim()).filter(Boolean);
 }
 
+function hasDepartmentConfig(value?: Record<string, DepartmentConfig>) {
+  return Boolean(value && Object.keys(value).length > 0);
+}
+
 function formatSync(value?: string) {
   if (!value) return 'Nunca';
   return new Date(value).toLocaleString('pt-BR');
@@ -390,6 +394,10 @@ export default function AIConfigPage() {
   const sourceReadinessSummary = operations?.sourceReadiness?.summary || { errors: 0, warnings: 0 };
   const semanticReadiness = operations?.semanticReadiness;
   const semanticReadinessIssueCount = (semanticReadiness?.summary?.errors || 0) + (semanticReadiness?.summary?.warnings || 0);
+  const effectiveDepartmentConfig = useMemo(
+    () => hasDepartmentConfig(config?.department_agent_config) ? config?.department_agent_config || {} : operations?.departments || {},
+    [config?.department_agent_config, operations?.departments]
+  );
 
   useEffect(() => {
     void loadPage();
@@ -437,7 +445,9 @@ export default function AIConfigPage() {
         intent_classifier_model: config.intent_classifier_model || config.model || 'gpt-4o-mini',
         intent_confidence_threshold: Number(config.intent_confidence_threshold || 0.68),
         department_agents_enabled: config.department_agents_enabled !== false,
-        department_agent_config: config.department_agent_config || operations?.departments || {},
+        department_agent_config: hasDepartmentConfig(config.department_agent_config)
+          ? config.department_agent_config
+          : operations?.departments || {},
         queue_settings: config.queue_settings || operations?.queueSettings || {},
         product_catalog_url: (config.product_catalog_url || '').trim(),
         product_source_urls: textToList(productSourceText),
@@ -778,7 +788,7 @@ export default function AIConfigPage() {
                 <div className="mt-3 grid gap-3 md:grid-cols-2">
                   {departmentOrder.map(id => {
                     const routing = operations?.departmentRouting?.[id];
-                    const department = (config.department_agent_config || operations?.departments || {})[id];
+                    const department = effectiveDepartmentConfig[id];
                     if (!routing && !department) return null;
                     return (
                       <div key={id} className="rounded-lg border border-indigo-100 bg-white p-3">
@@ -942,13 +952,13 @@ export default function AIConfigPage() {
 
               <h4 className="mb-3 text-sm font-semibold text-gray-900">Configuracao detalhada dos agentes</h4>
               <div className="grid gap-3 md:grid-cols-2">
-                {Object.entries(config.department_agent_config || operations?.departments || {}).map(([id, department]) => (
+                {Object.entries(effectiveDepartmentConfig).map(([id, department]) => (
                   <div key={id} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
                     <div className="flex items-center justify-between gap-3">
                       <input
                         value={department.name || id}
                         onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
+                          ...effectiveDepartmentConfig,
                           [id]: { ...department, name: event.target.value }
                         })}
                         className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-900"
@@ -958,7 +968,7 @@ export default function AIConfigPage() {
                         type="checkbox"
                         checked={department.enabled !== false}
                         onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
+                          ...effectiveDepartmentConfig,
                           [id]: { ...department, enabled: event.target.checked }
                         })}
                         className="h-4 w-4"
@@ -978,7 +988,7 @@ export default function AIConfigPage() {
                       <textarea
                         value={department.semanticDescription || ''}
                         onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
+                          ...effectiveDepartmentConfig,
                           [id]: { ...department, semanticDescription: event.target.value }
                         })}
                         rows={3}
@@ -990,7 +1000,7 @@ export default function AIConfigPage() {
                       <textarea
                         value={(department.activationExamples || []).join('\n')}
                         onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
+                          ...effectiveDepartmentConfig,
                           [id]: { ...department, activationExamples: textToList(event.target.value) }
                         })}
                         rows={3}
@@ -1003,7 +1013,7 @@ export default function AIConfigPage() {
                         <textarea
                           value={(department.boundaryRules || []).join('\n')}
                           onChange={event => updateConfigField('department_agent_config', {
-                            ...(config.department_agent_config || operations?.departments || {}),
+                            ...effectiveDepartmentConfig,
                             [id]: { ...department, boundaryRules: textToList(event.target.value) }
                           })}
                           rows={3}
@@ -1015,7 +1025,7 @@ export default function AIConfigPage() {
                         <textarea
                           value={(department.exclusionExamples || []).join('\n')}
                           onChange={event => updateConfigField('department_agent_config', {
-                            ...(config.department_agent_config || operations?.departments || {}),
+                            ...effectiveDepartmentConfig,
                             [id]: { ...department, exclusionExamples: textToList(event.target.value) }
                           })}
                           rows={3}
@@ -1028,7 +1038,7 @@ export default function AIConfigPage() {
                       <textarea
                         value={department.systemPrompt || ''}
                         onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
+                          ...effectiveDepartmentConfig,
                           [id]: { ...department, systemPrompt: event.target.value }
                         })}
                         rows={3}
@@ -1040,7 +1050,7 @@ export default function AIConfigPage() {
                       <textarea
                         value={department.objective || ''}
                         onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
+                          ...effectiveDepartmentConfig,
                           [id]: { ...department, objective: event.target.value }
                         })}
                         rows={2}
@@ -1052,7 +1062,7 @@ export default function AIConfigPage() {
                       <textarea
                         value={(department.responseRules || []).join('\n')}
                         onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
+                          ...effectiveDepartmentConfig,
                           [id]: { ...department, responseRules: textToList(event.target.value) }
                         })}
                         rows={3}
@@ -1068,7 +1078,7 @@ export default function AIConfigPage() {
                           max="10"
                           value={department.maxEvidence || 5}
                           onChange={event => updateConfigField('department_agent_config', {
-                            ...(config.department_agent_config || operations?.departments || {}),
+                            ...effectiveDepartmentConfig,
                             [id]: { ...department, maxEvidence: Number(event.target.value) }
                           })}
                           className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
@@ -1079,7 +1089,7 @@ export default function AIConfigPage() {
                         <input
                           value={listToText(department.allowedSources)}
                           onChange={event => updateConfigField('department_agent_config', {
-                            ...(config.department_agent_config || operations?.departments || {}),
+                            ...effectiveDepartmentConfig,
                             [id]: { ...department, allowedSources: textToList(event.target.value) }
                           })}
                           className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
@@ -1093,7 +1103,7 @@ export default function AIConfigPage() {
                         <input
                           value={listToText(department.allowedIntegrationTypes)}
                           onChange={event => updateConfigField('department_agent_config', {
-                            ...(config.department_agent_config || operations?.departments || {}),
+                            ...effectiveDepartmentConfig,
                             [id]: { ...department, allowedIntegrationTypes: textToList(event.target.value) }
                           })}
                           className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
@@ -1105,7 +1115,7 @@ export default function AIConfigPage() {
                         <input
                           value={listToText(department.allowedIntegrationIds)}
                           onChange={event => updateConfigField('department_agent_config', {
-                            ...(config.department_agent_config || operations?.departments || {}),
+                            ...effectiveDepartmentConfig,
                             [id]: { ...department, allowedIntegrationIds: textToList(event.target.value) }
                           })}
                           className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
@@ -1119,7 +1129,7 @@ export default function AIConfigPage() {
                         <textarea
                           value={(department.allowedSourceUrls || []).join('\n')}
                           onChange={event => updateConfigField('department_agent_config', {
-                            ...(config.department_agent_config || operations?.departments || {}),
+                            ...effectiveDepartmentConfig,
                             [id]: { ...department, allowedSourceUrls: textToList(event.target.value) }
                           })}
                           rows={3}
@@ -1132,7 +1142,7 @@ export default function AIConfigPage() {
                         <textarea
                           value={(department.allowedKnowledgeFileIds || []).join('\n')}
                           onChange={event => updateConfigField('department_agent_config', {
-                            ...(config.department_agent_config || operations?.departments || {}),
+                            ...effectiveDepartmentConfig,
                             [id]: { ...department, allowedKnowledgeFileIds: textToList(event.target.value) }
                           })}
                           rows={3}
@@ -1146,7 +1156,7 @@ export default function AIConfigPage() {
                       <textarea
                         value={(department.sourceUseRules || []).join('\n')}
                         onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
+                          ...effectiveDepartmentConfig,
                           [id]: { ...department, sourceUseRules: textToList(event.target.value) }
                         })}
                         rows={3}
@@ -1159,7 +1169,7 @@ export default function AIConfigPage() {
                         <select
                           value={department.model || ''}
                           onChange={event => updateConfigField('department_agent_config', {
-                            ...(config.department_agent_config || operations?.departments || {}),
+                            ...effectiveDepartmentConfig,
                             [id]: { ...department, model: event.target.value }
                           })}
                           className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
@@ -1178,7 +1188,7 @@ export default function AIConfigPage() {
                           value={department.temperature ?? ''}
                           placeholder="global"
                           onChange={event => updateConfigField('department_agent_config', {
-                            ...(config.department_agent_config || operations?.departments || {}),
+                            ...effectiveDepartmentConfig,
                             [id]: { ...department, temperature: event.target.value === '' ? null : Number(event.target.value) }
                           })}
                           className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
@@ -1190,7 +1200,7 @@ export default function AIConfigPage() {
                       <input
                         value={listToText(department.sourcePriority)}
                         onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
+                          ...effectiveDepartmentConfig,
                           [id]: { ...department, sourcePriority: textToList(event.target.value) }
                         })}
                         className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"
@@ -1201,7 +1211,7 @@ export default function AIConfigPage() {
                       <input
                         value={listToText(department.handoffKeywords)}
                         onChange={event => updateConfigField('department_agent_config', {
-                          ...(config.department_agent_config || operations?.departments || {}),
+                          ...effectiveDepartmentConfig,
                           [id]: { ...department, handoffKeywords: textToList(event.target.value) }
                         })}
                         className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm normal-case text-gray-900"

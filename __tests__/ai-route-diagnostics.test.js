@@ -143,6 +143,24 @@ describe('AI route diagnostics', () => {
     expect(readiness.availability.api.ready).toBe(true);
   });
 
+  test('counts product catalog URLs as site sources because runtime site retrieval uses them', () => {
+    const readiness = buildAISourceReadiness({
+      product_catalog_url: 'https://loja.example.com',
+      product_source_urls: ['https://instagram.com/loja'],
+      department_agent_config: {
+        support: {
+          name: 'Atendimento',
+          allowedSources: ['site'],
+          sourcePriority: ['site']
+        }
+      }
+    });
+
+    expect(readiness.availability.site.ready).toBe(true);
+    expect(readiness.departments.support.availability.site.ready).toBe(true);
+    expect(readiness.departments.support.issues).toEqual([]);
+  });
+
   test('reports API source missing when agent is bound to unmatched integration id', () => {
     const readiness = buildAISourceReadiness({
       product_integrations: [

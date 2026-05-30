@@ -96,6 +96,8 @@ function buildSourceAvailability(config = {}) {
     ...list(config.product_source_urls)
   ].filter(hasText);
   const siteUrls = [
+    config.product_catalog_url,
+    ...list(config.product_source_urls),
     config.site_url,
     config.store_url,
     config.knowledge_base_url,

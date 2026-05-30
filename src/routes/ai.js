@@ -15,6 +15,7 @@ const { getAIAutoReplyQueueSnapshot } = require('../services/aiAutoReplyQueueSta
 const { buildAIRouteDiagnosis, buildAISourceReadiness, runAIRouteDiagnosticsSuite } = require('../services/aiRouteDiagnostics');
 const { DEFAULT_DEPARTMENTS, normalizeDepartmentConfig } = require('../agent/department-config');
 const { getDepartmentRoutingMap } = require('../agent/departments');
+const { buildAIAgentReadiness } = require('../agent/agent-readiness');
 const { buildSemanticIntentReadiness } = require('../router/semantic-intent-classifier');
 const baileysService = require('../services/baileysService');
 const { buildWhatsAppOperationalReadiness } = require('../services/whatsappOperationalReadiness');
@@ -789,6 +790,7 @@ router.get('/operations',
       queueSettings: config?.queue_settings || {},
       departments: normalizeDepartmentConfig(effectiveConfig),
       departmentRouting: getDepartmentRoutingMap(effectiveConfig),
+      agentReadiness: buildAIAgentReadiness(effectiveConfig),
       semanticReadiness: buildSemanticIntentReadiness(effectiveConfig, clientProfile || {}),
       sourceReadiness: buildAISourceReadiness(effectiveConfig),
       whatsappReadiness: buildWhatsAppOperationalReadiness(whatsappSessions || [], baileysService),

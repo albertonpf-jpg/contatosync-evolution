@@ -115,6 +115,44 @@ interface SemanticReadiness {
   };
 }
 
+interface AgentReadinessIssue {
+  severity: 'error' | 'warning';
+  code: string;
+  message: string;
+  departmentId?: string;
+  departmentName?: string;
+}
+
+interface AgentReadiness {
+  ready: boolean;
+  score: number;
+  message: string;
+  summary: {
+    errors: number;
+    warnings: number;
+    enabledDepartments: number;
+  };
+  issues: AgentReadinessIssue[];
+  departments: Record<string, {
+    id: string;
+    name: string;
+    enabled: boolean;
+    ready: boolean;
+    score: number;
+    summary: string;
+    counts: {
+      intents: number;
+      activationExamples: number;
+      boundaryRules: number;
+      exclusionExamples: number;
+      allowedSources: number;
+      sourceUseRules: number;
+      responseRules: number;
+    };
+    issues: AgentReadinessIssue[];
+  }>;
+}
+
 interface AIOperations {
   engine: string;
   enabled: boolean;
@@ -130,6 +168,7 @@ interface AIOperations {
     intents: string[];
     triggerSummary: string;
   }>;
+  agentReadiness?: AgentReadiness;
   semanticReadiness?: SemanticReadiness;
   sourceReadiness?: SourceReadiness;
   whatsappReadiness?: {
@@ -417,6 +456,9 @@ export default function AIConfigPage() {
   const runningJobs = operations?.aiQueue?.processingQueues?.reduce((sum, queue) => sum + (queue.running || 0), 0) ?? 0;
   const sourceReadinessIssues = operations?.sourceReadiness?.issues || [];
   const sourceReadinessSummary = operations?.sourceReadiness?.summary || { errors: 0, warnings: 0 };
+  const agentReadiness = operations?.agentReadiness;
+  const agentReadinessSummary = agentReadiness?.summary || { errors: 0, warnings: 0, enabledDepartments: 0 };
+  const agentReadinessIssues = agentReadiness?.issues || [];
   const semanticReadiness = operations?.semanticReadiness;
   const semanticReadinessIssueCount = (semanticReadiness?.summary?.errors || 0) + (semanticReadiness?.summary?.warnings || 0);
   const whatsappReadiness = operations?.whatsappReadiness;
@@ -751,6 +793,52 @@ export default function AIConfigPage() {
                       {issue.message}
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+
+            <div className={`rounded-lg border p-4 ${agentReadinessSummary.errors ? 'border-red-200 bg-red-50' : agentReadinessSummary.warnings ? 'border-amber-200 bg-amber-50' : 'border-cyan-100 bg-cyan-50'}`}>
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <h3 className={`text-sm font-semibold ${agentReadinessSummary.errors ? 'text-red-950' : agentReadinessSummary.warnings ? 'text-amber-950' : 'text-cyan-950'}`}>Contrato semantico dos agentes</h3>
+                  <p className={`mt-1 text-sm ${agentReadinessSummary.errors ? 'text-red-800' : agentReadinessSummary.warnings ? 'text-amber-800' : 'text-cyan-800'}`}>
+                    {agentReadiness?.message || 'Verificando se cada agente tem intencoes, exemplos, limites, prompt e fontes suficientes.'}
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-cyan-700">{agentReadiness?.score ?? 0}% pronto</span>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-red-700">{agentReadinessSummary.errors} erros</span>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-amber-700">{agentReadinessSummary.warnings} alertas</span>
+                </div>
+              </div>
+              {agentReadinessIssues.length > 0 && (
+                <div className="mt-3 grid gap-2">
+                  {agentReadinessIssues.slice(0, 5).map((issue, index) => (
+                    <div key={`${issue.departmentId || 'agent'}-${issue.code}-${index}`} className="rounded-lg border border-white/70 bg-white px-3 py-2 text-xs text-gray-700">
+                      <span className={`mr-2 font-semibold ${issue.severity === 'error' ? 'text-red-700' : 'text-amber-700'}`}>{issue.severity === 'error' ? 'Erro' : 'Alerta'}</span>
+                      <span className="font-medium">{issue.departmentName || issue.departmentId}:</span> {issue.message}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {agentReadiness?.departments && (
+                <div className="mt-3 grid gap-2 md:grid-cols-2">
+                  {departmentOrder.map(id => {
+                    const item = agentReadiness.departments[id];
+                    if (!item) return null;
+                    return (
+                      <div key={id} className="rounded-lg border border-white/70 bg-white px-3 py-2 text-xs text-gray-700">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-semibold text-gray-900">{item.name}</span>
+                          <span className={`rounded-full px-2 py-1 font-semibold ${item.ready ? 'bg-green-50 text-green-700' : 'bg-amber-50 text-amber-700'}`}>{item.score}%</span>
+                        </div>
+                        <p className="mt-1">{item.summary}</p>
+                        <p className="mt-1 text-gray-500">
+                          {item.counts.activationExamples} exemplos, {item.counts.exclusionExamples} exclusoes, {item.counts.allowedSources} fontes
+                        </p>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>

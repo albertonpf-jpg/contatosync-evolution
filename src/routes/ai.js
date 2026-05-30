@@ -12,7 +12,7 @@ const { hasDifyConfig } = require('../services/difyService');
 const { createStoredFile, mediaRoot } = require('../utils/mediaStore');
 const { getSendPolicySnapshot } = require('../services/whatsappSendPolicy');
 const { getAIAutoReplyQueueSnapshot } = require('../services/aiAutoReplyQueueState');
-const { buildAIRouteDiagnosis } = require('../services/aiRouteDiagnostics');
+const { buildAIRouteDiagnosis, runAIRouteDiagnosticsSuite } = require('../services/aiRouteDiagnostics');
 const { DEFAULT_DEPARTMENTS, normalizeDepartmentConfig } = require('../agent/department-config');
 const { getDepartmentRoutingMap } = require('../agent/departments');
 
@@ -475,6 +475,51 @@ router.post('/route-diagnostics',
     });
 
     success(res, diagnosis, 'Diagnostico de roteamento gerado');
+  })
+);
+
+/**
+ * POST /api/ai/route-diagnostics/suite
+ * Rodar cenarios padrao ou customizados para validar intencao, agente e fontes.
+ */
+router.post('/route-diagnostics/suite',
+  asyncHandler(async (req, res) => {
+    const [{ data: config }, { data: client }] = await Promise.all([
+      executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_ai_config')
+          .select('*')
+          .eq('client_id', req.user.id)
+          .single()
+      ),
+      executeWithRLS(req.user.id, (client) =>
+        client
+          .from('evolution_clients')
+          .select('id, openai_api_key, claude_api_key, ai_model')
+          .eq('id', req.user.id)
+          .single()
+      )
+    ]);
+
+    if (!config) return notFound(res, 'Configuracao de IA nao encontrada');
+
+    const suite = await runAIRouteDiagnosticsSuite({
+      scenarios: Array.isArray(req.body?.scenarios) ? req.body.scenarios : undefined,
+      config,
+      client: client || {},
+      contact: {
+        name: 'Diagnostico IA',
+        phone: String(req.body?.phone || '')
+      },
+      conversation: {
+        id: '',
+        contact_name: 'Diagnostico IA',
+        phone: String(req.body?.phone || '')
+      },
+      conversationHistory: Array.isArray(req.body?.conversationHistory) ? req.body.conversationHistory : []
+    });
+
+    success(res, suite, 'Suite de diagnostico de roteamento executada');
   })
 );
 

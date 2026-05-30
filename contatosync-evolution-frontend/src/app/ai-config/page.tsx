@@ -143,6 +143,27 @@ interface AIRouteDiagnosis {
   };
 }
 
+interface AIRouteDiagnosticsSuite {
+  generatedAt: string;
+  total: number;
+  passed: number;
+  failed: number;
+  score: number;
+  results: Array<{
+    id: string;
+    label: string;
+    message: string;
+    passed: boolean;
+    checks: Array<{
+      id: string;
+      passed: boolean;
+      expected: unknown;
+      actual: unknown;
+    }>;
+    diagnosis: AIRouteDiagnosis;
+  }>;
+}
+
 interface Integration {
   id: string;
   integration_type: string;
@@ -269,7 +290,9 @@ export default function AIConfigPage() {
   const [testingId, setTestingId] = useState<string | null>(null);
   const [routeTestMessage, setRouteTestMessage] = useState('Quero saber se meu pagamento ja liberou');
   const [routeDiagnosis, setRouteDiagnosis] = useState<AIRouteDiagnosis | null>(null);
+  const [routeSuite, setRouteSuite] = useState<AIRouteDiagnosticsSuite | null>(null);
   const [diagnosingRoute, setDiagnosingRoute] = useState(false);
+  const [runningRouteSuite, setRunningRouteSuite] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -474,6 +497,19 @@ export default function AIConfigPage() {
     }
   };
 
+  const runRouteDiagnosticsSuite = async () => {
+    try {
+      setRunningRouteSuite(true);
+      setError(null);
+      const result = await apiService.runAIRouteDiagnosticsSuite();
+      setRouteSuite(result);
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.message || 'Erro ao rodar suite de roteamento');
+    } finally {
+      setRunningRouteSuite(false);
+    }
+  };
+
   if (loading || !config) {
     return (
       <DashboardLayout>
@@ -640,15 +676,26 @@ export default function AIConfigPage() {
                       className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-gray-900"
                     />
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => void diagnoseRoute()}
-                    disabled={diagnosingRoute}
-                    className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-50"
-                  >
-                    {diagnosingRoute ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Bot className="mr-2 h-4 w-4" />}
-                    Diagnosticar
-                  </button>
+                  <div className="flex flex-col gap-2 sm:flex-row lg:flex-col">
+                    <button
+                      type="button"
+                      onClick={() => void diagnoseRoute()}
+                      disabled={diagnosingRoute}
+                      className="inline-flex items-center justify-center rounded-lg bg-slate-900 px-4 py-2 text-sm text-white hover:bg-slate-800 disabled:opacity-50"
+                    >
+                      {diagnosingRoute ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Bot className="mr-2 h-4 w-4" />}
+                      Diagnosticar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void runRouteDiagnosticsSuite()}
+                      disabled={runningRouteSuite}
+                      className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm text-slate-800 hover:bg-slate-100 disabled:opacity-50"
+                    >
+                      {runningRouteSuite ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle2 className="mr-2 h-4 w-4" />}
+                      Rodar suite
+                    </button>
+                  </div>
                 </div>
                 {routeDiagnosis && (
                   <div className="mt-4 grid gap-3 md:grid-cols-3">
@@ -690,6 +737,46 @@ export default function AIConfigPage() {
                           <p className="mt-1 text-xs text-slate-600">{(routeDiagnosis.sourceBindings.responseRules || []).concat(routeDiagnosis.sourceBindings.sourceUseRules || []).slice(0, 4).join(' · ') || 'regras padrao do agente'}</p>
                         </div>
                       </div>
+                    </div>
+                  </div>
+                )}
+                {routeSuite && (
+                  <div className="mt-4 rounded-lg border border-slate-200 bg-white p-3">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-950">Suite operacional de roteamento</p>
+                        <p className="mt-1 text-xs text-slate-500">{routeSuite.passed}/{routeSuite.total} cenarios aprovados</p>
+                      </div>
+                      <span className={`rounded-full px-3 py-1 text-sm font-semibold ${routeSuite.failed ? 'bg-amber-100 text-amber-800' : 'bg-green-100 text-green-700'}`}>
+                        {routeSuite.score}%
+                      </span>
+                    </div>
+                    <div className="mt-3 grid gap-2">
+                      {routeSuite.results.map(result => (
+                        <div key={result.id} className={`rounded-lg border p-3 ${result.passed ? 'border-green-100 bg-green-50' : 'border-amber-100 bg-amber-50'}`}>
+                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                            <div>
+                              <p className="text-sm font-semibold text-slate-950">{result.label}</p>
+                              <p className="mt-1 text-xs text-slate-600">{result.message}</p>
+                              <p className="mt-1 text-xs text-slate-600">
+                                {result.diagnosis.route.intent} {'>'} {result.diagnosis.department.name} {'>'} {(result.diagnosis.retrievalPlan.executeSources || []).join(', ') || 'sem fonte'}
+                              </p>
+                            </div>
+                            <span className={`rounded-full px-2 py-1 text-xs font-medium ${result.passed ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-800'}`}>
+                              {result.passed ? 'Aprovado' : 'Revisar'}
+                            </span>
+                          </div>
+                          {!result.passed && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                              {result.checks.filter(check => !check.passed).map(check => (
+                                <span key={check.id} className="rounded-full bg-white px-2 py-1 text-xs text-amber-800">
+                                  {check.id}: esperado {Array.isArray(check.expected) ? check.expected.join('/') : String(check.expected)}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}

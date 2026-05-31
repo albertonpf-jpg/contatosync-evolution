@@ -46,6 +46,10 @@ async function rewrite({ message = {}, route = {}, retrievalPlan = {} } = {}) {
   if (!text) return '';
   if (missing.length > 0) return text;
 
+  if (route.routerMode === 'semantic' && String(route.semantic?.searchQuery || '').trim()) {
+    return String(route.semantic.searchQuery || '').trim();
+  }
+
   if ((isProductFollowUp(text) || (route.intent === 'product' && !isProductTopic(text))) && productHistoryTopic) {
     return `${productHistoryTopic}\n${text}`;
   }

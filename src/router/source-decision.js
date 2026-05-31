@@ -36,7 +36,7 @@ function inferMissingData(message = {}, route = {}) {
   if (route.intent === 'order_status' && !/\b\d{4,}\b|pedido\s*#?\s*\w+/i.test(text)) {
     return ['order_number'];
   }
-  if (route.intent === 'product' && /\b(mais op[cç][oõ]es|outras op[cç][oõ]es|me de mais|me dê mais)\b/i.test(text) && history.length === 0) {
+  if (route.intent === 'product' && !String(route.semantic?.searchQuery || '').trim() && /\b(mais op[cç][oõ]es|outras op[cç][oõ]es|me de mais|me dê mais)\b/i.test(text) && history.length === 0) {
     return ['product'];
   }
   if (route.intent === 'product' && /^(quanto custa|quanto fica|tem disponivel|tem disponível|tem)$/i.test(text.trim())) {

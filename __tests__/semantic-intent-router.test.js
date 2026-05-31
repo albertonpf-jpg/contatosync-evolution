@@ -1,7 +1,7 @@
 const lightweightRouter = require('../src/router/lightweight-router');
 const { normalizeDepartmentConfig } = require('../src/agent/department-config');
 const { selectDepartmentAgent } = require('../src/agent/departments');
-const { buildClassifierPrompt, buildSemanticIntentReadiness, classifyIntentSemantically } = require('../src/router/semantic-intent-classifier');
+const { buildSemanticPlannerPrompt, buildSemanticIntentReadiness, classifyIntentSemantically } = require('../src/router/semantic-intent-classifier');
 
 describe('Semantic intent router', () => {
   test('uses semantic classifier before keyword fallback when confidence is high', async () => {
@@ -48,7 +48,7 @@ describe('Semantic intent router', () => {
     expect(route.configuredDepartmentId).toBe('sales');
   });
 
-  test('strict semantic mode keeps high-confidence local intent when semantic confidence is low', async () => {
+  test('strict semantic mode does not let keyword fallback override available weak semantic decision', async () => {
     const route = await lightweightRouter.route({
       text: 'Tem vestido azul tamanho 4?',
       effectiveConfig: {
@@ -65,12 +65,35 @@ describe('Semantic intent router', () => {
       }
     });
 
+    expect(route.intent).toBe('unknown');
+    expect(route.routerMode).toBe('clarify_after_low_confidence_semantic');
+    expect(route.needsCatalog).toBe(false);
+  });
+
+  test('strict semantic mode can opt into local fallback only as explicit emergency mode', async () => {
+    const route = await lightweightRouter.route({
+      text: 'Tem vestido azul tamanho 4?',
+      effectiveConfig: {
+        semantic_intent_enabled: true,
+        require_semantic_intent_classifier: true,
+        allow_rule_fallback_after_semantic_low_confidence: true,
+        intent_confidence_threshold: 0.8,
+        _intentRuntimeContext: {
+          classifyIntent: async () => ({
+            intent: 'faq',
+            confidence: 0.41,
+            reason: 'baixa confianca'
+          })
+        }
+      }
+    });
+
     expect(route.intent).toBe('product');
     expect(route.routerMode).toBe('rules_after_low_confidence_semantic');
     expect(route.needsCatalog).toBe(true);
   });
 
-  test('strict semantic mode keeps product intent for contextual model follow-up', async () => {
+  test('semantic planner routes contextual product follow-up with source and search decision', async () => {
     const route = await lightweightRouter.route({
       text: 'Esses sao os mesmos, nao tem modelos diferentes?',
       conversationHistory: [
@@ -83,16 +106,24 @@ describe('Semantic intent router', () => {
         intent_confidence_threshold: 0.8,
         _intentRuntimeContext: {
           classifyIntent: async () => ({
-            intent: 'unknown',
-            confidence: 0.3,
-            reason: 'baixa confianca'
+            command: 'answer_with_sources',
+            intent: 'product',
+            departmentId: 'sales',
+            confidence: 0.91,
+            reason: 'cliente pediu alternativas ao produto apresentado usando contexto anterior',
+            sourceRequirements: ['catalog', 'rag', 'conversation_memory'],
+            searchQuery: 'modelos diferentes de tenis infantil com foto, excluindo Tenis adidas samba hello kitty',
+            responseGoal: 'informar se ha outros modelos de tenis e apresentar opcoes reais',
+            resolutionCriteria: ['consultar catalogo antes de responder']
           })
         }
       }
     });
 
     expect(route.intent).toBe('product');
-    expect(route.routerMode).toBe('rules_after_low_confidence_semantic');
+    expect(route.routerMode).toBe('semantic');
+    expect(route.semantic.searchQuery).toMatch(/modelos diferentes de tenis/i);
+    expect(route.requiredSources).toEqual(expect.arrayContaining(['catalog', 'rag', 'conversation_memory']));
     expect(route.needsCatalog).toBe(true);
   });
 
@@ -234,7 +265,7 @@ describe('Semantic intent router', () => {
   });
 
   test('semantic classifier prompt includes per-agent boundary contract', () => {
-    const prompt = buildClassifierPrompt({
+    const prompt = buildSemanticPlannerPrompt({
       message: { text: 'paguei no pix e nao confirmou' },
       config: {
         department_agent_config: {
@@ -248,6 +279,8 @@ describe('Semantic intent router', () => {
 
     expect(prompt).toMatch(/Nao acionar quando: nao tratar pagamento/);
     expect(prompt).toMatch(/Exemplos que pertencem a outro setor: paguei no pix e nao confirmou/);
+    expect(prompt).toMatch(/sourceRequirements/);
+    expect(prompt).toMatch(/searchQuery/);
   });
 
   test('department plan only executes allowed sources', async () => {

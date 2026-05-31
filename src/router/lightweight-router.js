@@ -103,6 +103,23 @@ function buildSourceFlags(intent, explicitHumanRequest) {
   return flags;
 }
 
+function applySemanticSourceRequirements(flags = {}, classification = null) {
+  const requirements = Array.isArray(classification?.sourceRequirements)
+    ? classification.sourceRequirements
+    : [];
+  if (!requirements.length || classification?.intent === 'unknown') return flags;
+  const normalized = new Set(requirements.map(source => source === 'file' ? 'files' : source));
+  return {
+    needsRag: normalized.has('rag'),
+    needsApi: normalized.has('api'),
+    needsCatalog: normalized.has('catalog'),
+    needsSite: normalized.has('site'),
+    needsFiles: normalized.has('files'),
+    needsConversationMemory: normalized.has('conversation_memory') || flags.needsConversationMemory === true,
+    needsHuman: flags.needsHuman === true
+  };
+}
+
 function shouldKeepRuleFallback(fallbackInferred = {}, configuredResult = {}) {
   if (!fallbackInferred.intent || fallbackInferred.intent === 'unknown') return false;
   if (!configuredResult || !configuredResult.intent || configuredResult.intent === fallbackInferred.intent) return false;
@@ -111,7 +128,8 @@ function shouldKeepRuleFallback(fallbackInferred = {}, configuredResult = {}) {
     && Number(configuredResult.confidence || 0) <= Number(fallbackInferred.confidence || 0) + 0.04;
 }
 
-function shouldUseHighConfidenceRuleFallback(fallbackInferred = {}) {
+function shouldUseHighConfidenceRuleFallback(fallbackInferred = {}, effectiveConfig = {}) {
+  if (effectiveConfig.allow_rule_fallback_after_semantic_low_confidence !== true) return false;
   if (!fallbackInferred.intent || fallbackInferred.intent === 'unknown') return false;
   return Number(fallbackInferred.confidence || 0) >= 0.78;
 }
@@ -156,7 +174,7 @@ async function route(normalizedMessage = {}) {
         routerMode = 'semantic';
       } else if (!semanticResult.skipped) {
         if (strictSemanticIntent) {
-          if (shouldUseHighConfidenceRuleFallback(fallbackInferred)) {
+          if (shouldUseHighConfidenceRuleFallback(fallbackInferred, effectiveConfig)) {
             inferred = fallbackInferred;
             routerMode = 'rules_after_low_confidence_semantic';
           } else {
@@ -222,7 +240,13 @@ async function route(normalizedMessage = {}) {
   const routingConflict = semanticResult && !semanticResult.skipped && semanticResult.classification.departmentId
     ? semanticResult.classification.departmentId !== resolveDepartmentIdForIntent(intent, effectiveConfig)
     : false;
-  const flags = buildSourceFlags(intent, explicitHumanRequest);
+  const semanticClassificationForSources = routerMode === 'semantic' && semanticResult && !semanticResult.skipped
+    ? semanticResult.classification
+    : null;
+  const flags = applySemanticSourceRequirements(
+    buildSourceFlags(intent, explicitHumanRequest),
+    semanticClassificationForSources
+  );
 
   const requiredSources = SOURCE_TYPES
     .filter(source => {
@@ -267,7 +291,12 @@ async function route(normalizedMessage = {}) {
       reason: semanticResult.classification.reason,
       missingInfo: semanticResult.classification.missingInfo || [],
       ambiguity: semanticResult.classification.ambiguity || '',
-      nextBestDepartments: semanticResult.classification.nextBestDepartments || []
+      nextBestDepartments: semanticResult.classification.nextBestDepartments || [],
+      command: semanticResult.classification.command || '',
+      sourceRequirements: semanticResult.classification.sourceRequirements || [],
+      searchQuery: semanticResult.classification.searchQuery || '',
+      responseGoal: semanticResult.classification.responseGoal || '',
+      resolutionCriteria: semanticResult.classification.resolutionCriteria || []
     } : null,
     semanticSkippedReason: semanticResult?.skipped ? semanticResult.reason : '',
     configured: configuredResult ? {

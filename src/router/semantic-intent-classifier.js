@@ -36,6 +36,14 @@ function parseJsonObject(value = '') {
 function normalizeClassification(raw = {}, fallbackReason = '') {
   const intent = ROUTER_INTENTS.includes(raw.intent) ? raw.intent : 'unknown';
   const confidence = Math.max(0, Math.min(1, Number(raw.confidence || 0)));
+  const allowedSources = new Set(['api', 'catalog', 'rag', 'site', 'file', 'files', 'conversation_memory']);
+  const sourceRequirements = Array.isArray(raw.sourceRequirements || raw.requiredSources || raw.sources)
+    ? (raw.sourceRequirements || raw.requiredSources || raw.sources)
+      .map(String)
+      .map(source => source === 'file' ? 'files' : source)
+      .filter(source => allowedSources.has(source))
+      .slice(0, 7)
+    : [];
   return {
     intent,
     departmentId: typeof raw.departmentId === 'string' ? raw.departmentId.trim() : '',
@@ -44,6 +52,13 @@ function normalizeClassification(raw = {}, fallbackReason = '') {
     missingInfo: Array.isArray(raw.missingInfo) ? raw.missingInfo.map(String).slice(0, 5) : [],
     ambiguity: typeof raw.ambiguity === 'string' ? raw.ambiguity.slice(0, 300) : '',
     nextBestDepartments: Array.isArray(raw.nextBestDepartments) ? raw.nextBestDepartments.map(String).slice(0, 3) : [],
+    command: String(raw.command || raw.action || '').slice(0, 80),
+    sourceRequirements: [...new Set(sourceRequirements)],
+    searchQuery: String(raw.searchQuery || raw.retrievalQuery || '').slice(0, 500),
+    responseGoal: String(raw.responseGoal || raw.goal || '').slice(0, 500),
+    resolutionCriteria: Array.isArray(raw.resolutionCriteria)
+      ? raw.resolutionCriteria.map(String).slice(0, 5)
+      : [],
     source: 'semantic'
   };
 }
@@ -104,6 +119,56 @@ function buildClassifierPrompt({ message = {}, config = {} } = {}) {
   ].join('\n');
 }
 
+function buildSemanticPlannerPrompt({ message = {}, config = {} } = {}) {
+  const departments = normalizeDepartmentConfig(config);
+  const agentLines = Object.entries(departments).map(([id, department]) => {
+    const examples = Array.isArray(department.activationExamples) ? department.activationExamples.join(' | ') : '';
+    const boundaryRules = Array.isArray(department.boundaryRules) ? department.boundaryRules.join(' | ') : '';
+    const exclusions = Array.isArray(department.exclusionExamples) ? department.exclusionExamples.join(' | ') : '';
+    const intents = Array.isArray(department.intents) ? department.intents.join(', ') : '';
+    return [
+      `- ${id} (${department.name})`,
+      `  Objetivo: ${department.objective}`,
+      `  Intencoes aceitas: ${intents || 'definidas pelo sistema'}`,
+      `  Quando acionar: ${department.semanticDescription || department.objective}`,
+      examples ? `  Exemplos de acionamento: ${examples}` : '',
+      boundaryRules ? `  Nao acionar quando: ${boundaryRules}` : '',
+      exclusions ? `  Exemplos que pertencem a outro setor: ${exclusions}` : ''
+    ].filter(Boolean).join('\n');
+  }).join('\n');
+
+  const history = Array.isArray(message.conversationHistory)
+    ? message.conversationHistory.slice(-8).map(item => `${item.direction || 'msg'}: ${item.content || item.text || ''}`).join('\n')
+    : '';
+
+  return [
+    'Gere uma decisao semantica executavel para atendimento no WhatsApp.',
+    'A decisao nao e uma busca de palavra-chave: entenda o problema que o cliente quer resolver considerando historico, ofertas anteriores, frustracoes, correcoes e mudancas de assunto.',
+    'Depois escolha uma acao, a intent, o setor responsavel e as fontes que precisam ser consultadas para resolver de verdade.',
+    'Use raciocinio contextual: se a mensagem atual depende do que foi dito antes, mantenha o fluxo ativo do historico e monte searchQuery com o assunto anterior.',
+    'Nao responda unknown apenas porque a mensagem atual esta curta; use o historico recente para inferir o objetivo.',
+    'Use unknown somente quando, mesmo com historico, nao der para saber qual problema o cliente quer resolver sem arriscar uma resposta errada.',
+    'Escolha exatamente uma intent desta lista: faq, policy, product, order_status, scheduling, billing, support, human_request, complaint, unknown.',
+    'Escolha tambem o departmentId do agente responsavel usando exatamente um dos IDs listados abaixo.',
+    'O departmentId precisa ser coerente com as intencoes aceitas pelo agente. Se houver duvida entre setores, use baixa confianca e explique em ambiguity.',
+    'Respeite "Nao acionar quando" e exemplos de exclusao de cada agente; eles tem prioridade sobre exemplos positivos parecidos.',
+    'Use human_request somente quando o cliente pedir explicitamente uma pessoa/atendente/humano.',
+    'sourceRequirements deve listar apenas as fontes necessarias para resolver: catalog para produtos/fotos/estoque; api para pedido/pagamento/agenda; rag/files/site para politicas e conhecimento; conversation_memory quando historico for necessario.',
+    'searchQuery deve ser uma busca semantica completa para as fontes, juntando o pedido atual com o contexto anterior quando isso for necessario.',
+    'responseGoal deve dizer o que a resposta final precisa resolver, nao a frase que sera enviada.',
+    'resolutionCriteria deve listar quais evidencias precisam existir para responder sem inventar.',
+    '',
+    'Agentes disponiveis:',
+    agentLines,
+    '',
+    history ? `Historico recente:\n${history}\n` : '',
+    `Mensagem atual: ${message.text || message.content || ''}`,
+    '',
+    'Responda somente JSON neste formato:',
+    '{"command":"answer_with_sources","intent":"product","departmentId":"sales","confidence":0.0,"reason":"motivo curto","sourceRequirements":["catalog","rag","conversation_memory"],"searchQuery":"pedido semantico para consulta","responseGoal":"objetivo da resposta","resolutionCriteria":["evidencia necessaria"],"missingInfo":[],"ambiguity":"","nextBestDepartments":[]}'
+  ].join('\n');
+}
+
 async function callOpenAIClassifier({ apiKey, model, prompt, timeoutMs = 8000 }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -117,9 +182,9 @@ async function callOpenAIClassifier({ apiKey, model, prompt, timeoutMs = 8000 })
       },
       body: JSON.stringify({
         model: model || 'gpt-4o-mini',
-        instructions: 'Voce e um classificador de intencao. Retorne apenas JSON valido.',
+        instructions: 'Voce e um planejador semantico de atendimento. Retorne apenas JSON valido.',
         input: [{ role: 'user', content: prompt }],
-        max_output_tokens: 220
+        max_output_tokens: 420
       })
     });
     const data = await response.json().catch(() => ({}));
@@ -146,9 +211,9 @@ async function callClaudeClassifier({ apiKey, model, prompt, timeoutMs = 8000 })
       },
       body: JSON.stringify({
         model: model || 'claude-3-haiku',
-        system: 'Voce e um classificador de intencao. Retorne apenas JSON valido.',
+        system: 'Voce e um planejador semantico de atendimento. Retorne apenas JSON valido.',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 220
+        max_tokens: 420
       })
     });
     const data = await response.json().catch(() => ({}));
@@ -227,7 +292,7 @@ async function classifyIntentSemantically(message = {}) {
     };
   }
 
-  const prompt = buildClassifierPrompt({ message, config });
+  const prompt = buildSemanticPlannerPrompt({ message, config });
   const model = getClassifierModel(config);
   const provider = getClassifierProvider(model);
   const timeoutMs = Number(config.intent_classifier_timeout_ms || 8000);
@@ -264,6 +329,7 @@ module.exports = {
   classifyIntentSemantically,
   getSemanticThreshold,
   buildClassifierPrompt,
+  buildSemanticPlannerPrompt,
   buildSemanticIntentReadiness,
   normalizeClassification,
   resolveDepartmentIdForIntent

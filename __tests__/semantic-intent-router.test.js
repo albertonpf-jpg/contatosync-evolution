@@ -70,6 +70,32 @@ describe('Semantic intent router', () => {
     expect(route.needsCatalog).toBe(true);
   });
 
+  test('strict semantic mode keeps product intent for contextual model follow-up', async () => {
+    const route = await lightweightRouter.route({
+      text: 'Esses sao os mesmos, nao tem modelos diferentes?',
+      conversationHistory: [
+        { direction: 'in', content: 'Tem mais modelos de tenis?' },
+        { direction: 'out', content: 'Encontrei este modelo no catalogo: Tenis adidas samba hello kitty.' }
+      ],
+      effectiveConfig: {
+        semantic_intent_enabled: true,
+        require_semantic_intent_classifier: true,
+        intent_confidence_threshold: 0.8,
+        _intentRuntimeContext: {
+          classifyIntent: async () => ({
+            intent: 'unknown',
+            confidence: 0.3,
+            reason: 'baixa confianca'
+          })
+        }
+      }
+    });
+
+    expect(route.intent).toBe('product');
+    expect(route.routerMode).toBe('rules_after_low_confidence_semantic');
+    expect(route.needsCatalog).toBe(true);
+  });
+
   test('strict semantic mode still asks clarification for vague low-confidence messages', async () => {
     const route = await lightweightRouter.route({
       text: 'Oi, preciso resolver uma coisa',

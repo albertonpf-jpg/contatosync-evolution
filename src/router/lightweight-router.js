@@ -22,9 +22,27 @@ function hasAny(text = '', patterns = []) {
   return patterns.some(pattern => pattern.test(text));
 }
 
+function hasRecentProductContext(history = []) {
+  if (!Array.isArray(history)) return false;
+  return history
+    .slice(-10)
+    .some(item => {
+      const content = normalizeText(item?.content || '');
+      return /\b(produto|produtos|catalogo|opcao|opcoes|modelo|modelos|foto|fotos|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|camiseta|camisetas|moletom|moletons|tenis|calcado|calcados|sapato|sapatos)\b/i.test(content);
+    });
+}
+
 function inferIntent(text = '', normalizedMessage = {}) {
   const raw = String(text || '');
   const normalized = normalizeText(raw);
+  const earlyProductContext = hasRecentProductContext(normalizedMessage.conversationHistory);
+  if (/\b(mais modelos?|modelos? diferentes?|outras? opcoes|outros? modelos?|mais opcoes|mais fotos?|fotos? diferentes?|sao os mesmos|sao iguais|mesmos modelos?|diferentes?)\b/i.test(normalized)
+    && (earlyProductContext || /\b(modelos?|opcoes|fotos?|produto|produtos|catalogo|tenis|calcados?|sapatos?)\b/i.test(normalized))) {
+    return { intent: 'product', confidence: 0.84, reason: 'Cliente pediu mais opcoes ou modelos diferentes mantendo o contexto de produto.' };
+  }
+  if (/\b(tenis|calcado|calcados|sapato|sapatos)\b/i.test(normalized)) {
+    return { intent: 'product', confidence: 0.82, reason: 'Cliente perguntou sobre produto, disponibilidade, preco ou variacao.' };
+  }
   if (hasAny(raw, HUMAN_REQUEST_PATTERNS)) return { intent: 'human_request', confidence: 0.95, reason: 'Cliente pediu explicitamente atendimento humano.' };
 
   const hasQuestion = /\?|\b(como|qual|quando|onde|porque|por que|quanto|voc[eê]s|aceita|faz|tem|posso|precisa)\b/i.test(raw);

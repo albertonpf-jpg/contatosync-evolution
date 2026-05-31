@@ -2193,6 +2193,8 @@ function buildOperationalSourcesForConfig(config = {}, message = '', contact = {
 function hasStrongProductIntent(message) {
   const text = normalizeSearchText(message);
   if (!text) return false;
+  const footwearProduct = /\b(tenis|calcado|calcados|sapato|sapatos)\b/i.test(text);
+  if (footwearProduct) return true;
   if (isProductRecommendationRequest(text)) return true;
   const nonCatalogInfo = /\b(como comprar|forma de comprar|formas de comprar|passo a passo|pedido minimo|valor minimo|compra minima|aviso|avisos|regras|endereco|localizacao|onde fica|horario|funcionamento|telefone|contato|pagamento|pagar|pix|cartao|boleto|entrega|frete|retirada|troca|devolucao|status|rastreio|pedido)\b/i.test(text);
   const wantsMedia = /\b(foto|fotos|imagem|imagens|mostra|mostrar|mande|manda|envie|envia|ver)\b/i.test(text);
@@ -2222,7 +2224,7 @@ function isProductRecommendationRequest(message = '') {
 function isMoreProductOptionsRequest(message) {
   const text = normalizeSearchText(message);
   return /\b(mais|outra|outras|outro|outros|novas|novos|diferentes|ver mais|mostrar mais|mande mais|manda mais|envie mais)\b/.test(text)
-    && /\b(opcao|opcoes|modelo|modelos|produto|produtos|foto|fotos|imagem|imagens|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|tshirt|cropped|moletom|moletons|moleton|moletons)\b/.test(text);
+    && /\b(opcao|opcoes|modelo|modelos|produto|produtos|foto|fotos|imagem|imagens|roupa|roupas|vestido|vestidos|conjunto|conjuntos|blusa|blusas|body|bodys|calca|calcas|macacao|jardineira|saia|saias|short|shorts|camiseta|camisetas|tshirt|cropped|moletom|moletons|moleton|moletons|tenis|calcado|calcados|sapato|sapatos)\b/.test(text);
 }
 
 function isCatalogFollowUpRequest(message) {
@@ -4362,7 +4364,7 @@ function extractPreviouslyMentionedProductTitles(conversationHistory = []) {
       .trim())
     .filter(line => line.length >= 4 && line.length <= 90)
     .filter(line => !ignored.test(normalizeSearchText(line)))
-    .filter(line => /\b(saia|short|vestido|conjunto|blusa|body|calca|macacao|jardineira|camiseta|cropped|tshirt|moletom|moleton)\b/i.test(normalizeSearchText(line)))
+    .filter(line => /\b(saia|short|vestido|conjunto|blusa|body|calca|macacao|jardineira|camiseta|cropped|tshirt|moletom|moleton|tenis|calcado|sapato)\b/i.test(normalizeSearchText(line)))
     .filter(line => {
       const key = normalizeSearchText(line);
       if (!key || seen.has(key)) return false;

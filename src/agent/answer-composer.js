@@ -68,6 +68,63 @@ function getCatalogCards(evidence = []) {
   return cards;
 }
 
+function getCardBaseTitle(card = {}) {
+  return String(card.title || card.name || '')
+    .replace(/\s*-\s*foto\s*\d+\s*$/i, '')
+    .trim();
+}
+
+function getUniqueCardTitles(cards = []) {
+  const seen = new Set();
+  const titles = [];
+  for (const card of cards) {
+    const title = getCardBaseTitle(card);
+    if (!title) continue;
+    const key = normalizeText(title);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    titles.push(title);
+  }
+  return titles;
+}
+
+function isFreshProductOptionsRequest(text = '') {
+  const normalized = normalizeText(text);
+  return /\b(mais modelos?|modelos? diferentes?|outras? opcoes|outros? modelos?|mais opcoes|mais fotos?|sao os mesmos|sao iguais|mesmos modelos?|diferentes?)\b/i.test(normalized);
+}
+
+function inferProductTopicLabel(text = '', fallbackText = '') {
+  const normalized = normalizeText(`${text} ${fallbackText}`);
+  const topics = [
+    ['tenis', 'tenis'],
+    ['calcado', 'calcado'],
+    ['sapato', 'sapato'],
+    ['conjunto', 'conjunto'],
+    ['vestido', 'vestido'],
+    ['moletom', 'moletom'],
+    ['blusa', 'blusa'],
+    ['camiseta', 'camiseta']
+  ];
+  const found = topics.find(([token]) => normalized.includes(token));
+  return found ? found[1] : 'esse produto';
+}
+
+function buildProductCardAnswer(cards = [], messageText = '') {
+  const titles = getUniqueCardTitles(cards);
+  const wantsFresh = isFreshProductOptionsRequest(messageText);
+  if (titles.length <= 1) {
+    const title = titles[0] || 'um produto';
+    if (wantsFresh) {
+      const topic = inferProductTopicLabel(messageText, title);
+      const topicText = topic === 'esse produto' ? 'desse produto' : `de ${topic}`;
+      return `Encontrei apenas este modelo no catalogo agora: ${title}. Nao achei outros modelos diferentes ${topicText} com foto disponivel. Quer que eu procure outra categoria, cor ou tamanho?`;
+    }
+    return `Encontrei este modelo no catalogo: ${title}. Enviei a foto acima; posso verificar tamanho, cor ou disponibilidade dele.`;
+  }
+  const list = titles.slice(0, 4).map((title, index) => `${index + 1}. ${title}`).join('\n');
+  return `Encontrei estes modelos no catalogo:\n${list}\nEnviei as fotos acima; posso verificar tamanho, cor ou disponibilidade de algum deles.`;
+}
+
 function getLineValue(text = '', pattern) {
   return String(text || '').match(pattern)?.[1]?.trim() || '';
 }
@@ -465,7 +522,7 @@ async function compose({ message = {}, route = {}, evidence = {} } = {}) {
     const catalogEvidence = ranked.find(item => item.sourceType === 'catalog') || firstUsefulEvidence(ranked, ['catalog']);
     if (productCards.length > 0) {
       return {
-        text: 'Encontrei essas opcoes no catalogo. Enviei as fotos acima; posso verificar tamanho, cor ou disponibilidade desse produto.',
+        text: buildProductCardAnswer(productCards, message.text || ''),
         confidence: 'high',
         grounded: true,
         product_cards: productCards

@@ -73,6 +73,29 @@ describe('Agent answer composer', () => {
     expect(generateAnswer).not.toHaveBeenCalled();
   });
 
+  test('does not imply several different models when catalog returns one card', async () => {
+    const result = await answerComposer.compose({
+      message: { text: 'Tem mais modelos de tenis?' },
+      route: { intent: 'product' },
+      evidence: {
+        topEvidence: [{
+          sourceType: 'catalog',
+          content: 'Tenis adidas samba hello kitty',
+          score: 0.95,
+          metadata: {
+            productCards: [{ title: 'Tenis adidas samba hello kitty', imageUrl: 'https://example.com/a.jpg' }]
+          }
+        }],
+        departmentSettings: { systemPrompt: 'Agente de vendas' }
+      }
+    });
+
+    expect(result.text).toMatch(/apenas este modelo|este modelo/i);
+    expect(result.text).toMatch(/Tenis adidas samba hello kitty/i);
+    expect(result.text).not.toMatch(/essas opcoes/i);
+    expect(result.product_cards).toHaveLength(1);
+  });
+
   test('recommends textual product options from grounded product evidence when cards are not available', async () => {
     const result = await answerComposer.compose({
       message: { text: 'Quero comprar um conjunto infantil tamanho 6, tem opcoes?' },

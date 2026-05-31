@@ -48,9 +48,9 @@ describe('Semantic intent router', () => {
     expect(route.configuredDepartmentId).toBe('sales');
   });
 
-  test('strict semantic mode does not let keyword fallback override available weak semantic decision', async () => {
+  test('strict semantic mode recovers answerable product questions after weak semantic decision', async () => {
     const route = await lightweightRouter.route({
-      text: 'Tem vestido azul tamanho 4?',
+      text: 'Quero saber se tem moletom pra crianca de 8 anos',
       effectiveConfig: {
         semantic_intent_enabled: true,
         require_semantic_intent_classifier: true,
@@ -65,9 +65,33 @@ describe('Semantic intent router', () => {
       }
     });
 
-    expect(route.intent).toBe('unknown');
-    expect(route.routerMode).toBe('clarify_after_low_confidence_semantic');
-    expect(route.needsCatalog).toBe(false);
+    expect(route.intent).toBe('product');
+    expect(route.routerMode).toBe('semantic_recovery_after_low_confidence');
+    expect(route.needsCatalog).toBe(true);
+    expect(route.semanticDepartmentId).toBe('');
+    expect(route.inferredDepartmentId).toBe('sales');
+  });
+
+  test('strict semantic mode treats catalog entry request as product instead of generic support', async () => {
+    const route = await lightweightRouter.route({
+      text: 'Produtos',
+      effectiveConfig: {
+        semantic_intent_enabled: true,
+        require_semantic_intent_classifier: true,
+        intent_confidence_threshold: 0.8,
+        _intentRuntimeContext: {
+          classifyIntent: async () => ({
+            intent: 'unknown',
+            confidence: 0.3,
+            reason: 'baixa confianca'
+          })
+        }
+      }
+    });
+
+    expect(route.intent).toBe('product');
+    expect(route.routerMode).toBe('semantic_recovery_after_low_confidence');
+    expect(route.requiredSources).toEqual(expect.arrayContaining(['catalog', 'rag']));
   });
 
   test('strict semantic mode can opt into local fallback only as explicit emergency mode', async () => {
@@ -90,6 +114,33 @@ describe('Semantic intent router', () => {
 
     expect(route.intent).toBe('product');
     expect(route.routerMode).toBe('rules_after_low_confidence_semantic');
+    expect(route.needsCatalog).toBe(true);
+  });
+
+  test('strict semantic mode recovers product follow-up from conversation context', async () => {
+    const route = await lightweightRouter.route({
+      text: 'Tem mais modelos diferentes?',
+      conversationHistory: [
+        { direction: 'in', content: 'Tem moletom para crianca de 8 anos?' },
+        { direction: 'out', content: 'Encontrei estes modelos no catalogo: Blusa de moletom e Conjunto moletom Minnie.' }
+      ],
+      effectiveConfig: {
+        semantic_intent_enabled: true,
+        require_semantic_intent_classifier: true,
+        intent_confidence_threshold: 0.8,
+        _intentRuntimeContext: {
+          classifyIntent: async () => ({
+            intent: 'unknown',
+            confidence: 0.3,
+            reason: 'baixa confianca'
+          })
+        }
+      }
+    });
+
+    expect(route.intent).toBe('product');
+    expect(route.routerMode).toBe('semantic_recovery_after_low_confidence');
+    expect(route.requiredSources).toEqual(expect.arrayContaining(['catalog', 'rag', 'conversation_memory']));
     expect(route.needsCatalog).toBe(true);
   });
 

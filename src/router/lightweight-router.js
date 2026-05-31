@@ -46,7 +46,7 @@ function inferIntent(text = '', normalizedMessage = {}) {
   if (hasAny(raw, HUMAN_REQUEST_PATTERNS)) return { intent: 'human_request', confidence: 0.95, reason: 'Cliente pediu explicitamente atendimento humano.' };
 
   const hasQuestion = /\?|\b(como|qual|quando|onde|porque|por que|quanto|voc[eê]s|aceita|faz|tem|posso|precisa)\b/i.test(raw);
-  const productSignals = /\b(produto|camiseta|blusa|cal[cç]a|vestido|conjunto|look|moletom|tamanho|tam\b|cor|modelo|pre[cç]o|quanto custa|disponivel|dispon[ií]vel|estoque|op[cç][oõ]es|fotos?)\b/i.test(raw);
+  const productSignals = /\b(produtos?|camiseta|blusa|cal[cç]a|vestido|conjunto|look|moletom|tamanho|tam\b|cor|modelo|pre[cç]o|quanto custa|disponivel|dispon[ií]vel|estoque|op[cç][oõ]es|fotos?)\b/i.test(raw);
   const orderSignals = /\b(pedido|rastreio|rastreamento|entrega do pedido|meu pedido|chegou|saiu|status)\b/i.test(raw);
   const schedulingSignals = /\b(agendar|agenda|horario marcado|marcar|retirada agendada)\b/i.test(raw);
   const billingSignals = /\b(cobran[cç]a|boleto|nota fiscal|reembolso|paguei|pagamento do pedido)\b/i.test(raw);
@@ -134,6 +134,25 @@ function shouldUseHighConfidenceRuleFallback(fallbackInferred = {}, effectiveCon
   return Number(fallbackInferred.confidence || 0) >= 0.78;
 }
 
+function shouldUseSemanticRecovery(fallbackInferred = {}, semanticClassification = {}, effectiveConfig = {}) {
+  if (effectiveConfig.semantic_recovery_enabled === false) return false;
+  const intent = fallbackInferred.intent || '';
+  if (!intent || ['unknown', 'human_request'].includes(intent)) return false;
+  if (Number(fallbackInferred.confidence || 0) < 0.78) return false;
+
+  const semanticIntent = semanticClassification?.intent || 'unknown';
+  const semanticConfidence = Number(semanticClassification?.confidence || 0);
+  const semanticIsUnsure = semanticIntent === 'unknown'
+    || Boolean(semanticClassification?.ambiguity)
+    || semanticConfidence < getSemanticThreshold(effectiveConfig);
+  if (!semanticIsUnsure) return false;
+
+  const recoverableIntents = new Set(['product', 'order_status', 'billing', 'scheduling', 'policy', 'faq', 'complaint']);
+  if (!recoverableIntents.has(intent)) return false;
+
+  return true;
+}
+
 function buildStrictSemanticClarification(reason = 'semantic_classifier_required', semanticClassification = null) {
   return {
     intent: 'unknown',
@@ -177,6 +196,12 @@ async function route(normalizedMessage = {}) {
           if (shouldUseHighConfidenceRuleFallback(fallbackInferred, effectiveConfig)) {
             inferred = fallbackInferred;
             routerMode = 'rules_after_low_confidence_semantic';
+          } else if (shouldUseSemanticRecovery(fallbackInferred, semanticClassification, effectiveConfig)) {
+            inferred = {
+              ...fallbackInferred,
+              reason: `recuperacao semantica: ${fallbackInferred.reason || 'intencao operacional clara apesar de baixa confianca do classificador'}`
+            };
+            routerMode = 'semantic_recovery_after_low_confidence';
           } else {
             const reason = semanticClassification.intent === 'unknown'
               ? 'classificador semantico nao encontrou uma intencao acionavel'
@@ -232,7 +257,7 @@ async function route(normalizedMessage = {}) {
 
   const intent = ROUTER_INTENTS.includes(inferred.intent) ? inferred.intent : 'unknown';
   const explicitHumanRequest = intent === 'human_request';
-  const semanticDepartmentId = semanticResult && !semanticResult.skipped
+  const semanticDepartmentId = routerMode === 'semantic' && semanticResult && !semanticResult.skipped
     ? (semanticResult.classification.departmentId || resolveDepartmentIdForIntent(intent, effectiveConfig))
     : '';
   const configuredDepartmentId = configuredResult?.departmentId || '';
